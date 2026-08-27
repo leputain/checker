@@ -1,16 +1,23 @@
 import { NextResponse } from 'next/server';
-import { calculateVerdict, database, ensureDatabase, type Verdict } from '@/db/runtime';
+import { database, ensureSchema, type Verdict } from '@/db/runtime';
+import { calculateAccuracy, calculateVerdict } from '@/lib/scoring.ts';
+
+const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
 
 export async function GET() {
   try {
-    await ensureDatabase();
+    await ensureSchema();
     const rows = await database()
       .prepare(
         `SELECT public_alias, verdict, score, base_max_score, correct_count, wrong_count,
           duration_seconds, completed_at
          FROM attempts
          WHERE status = 'completed'
-         ORDER BY score DESC, wrong_count ASC, duration_seconds ASC, completed_at ASC
+         ORDER BY CASE verdict
+           WHEN 'PASS' THEN 0
+           WHEN 'REVIEW' THEN 1
+           ELSE 2
+         END ASC, score DESC, wrong_count ASC, duration_seconds ASC, completed_at ASC
          LIMIT 20`,
       )
       .all<{
@@ -26,8 +33,7 @@ export async function GET() {
 
     return NextResponse.json({
       entries: rows.results.map((row) => {
-        const answeredCount = row.correct_count + row.wrong_count;
-        const accuracy = Math.round((row.correct_count / Math.max(1, answeredCount)) * 100);
+        const accuracy = calculateAccuracy(row.correct_count, row.wrong_count);
         return {
           alias: row.public_alias,
           verdict: row.verdict ?? calculateVerdict(row.score, row.base_max_score, accuracy),
@@ -39,9 +45,12 @@ export async function GET() {
           completedAt: new Date(row.completed_at).toISOString(),
         };
       }),
-    });
+    }, { headers: NO_STORE });
   } catch (error) {
     console.error('leaderboard_failed', error);
-    return NextResponse.json({ error: 'Не удалось загрузить рейтинг.' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Не удалось загрузить рейтинг.' },
+      { status: 500, headers: NO_STORE },
+    );
   }
 }
