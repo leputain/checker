@@ -30,7 +30,7 @@ function minimumBank() {
 }
 
 const valid = validateQuestionBank(minimumBank(), 'valid.json');
-assert.equal(valid.length, 10);
+assert.equal(valid.length, 24);
 assert.equal(summarizeQuestionBank(valid).warnings.length, 4);
 
 const bankWithReserve = minimumBank();

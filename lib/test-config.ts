@@ -1,18 +1,18 @@
 export const TEST_CONFIG = {
   totalTimeSeconds: 600,
-  questionTimeSeconds: 60,
+  questionTimeSeconds: 30,
   questionStatsMinSample: 5,
   plan: {
-    easy: 2,
-    medium: 2,
-    hard: 1,
+    easy: 7,
+    medium: 7,
+    hard: 5,
     expert: 1,
   },
   weights: {
     easy: 1,
     medium: 2,
     hard: 3,
-    expert: 5,
+    expert: 10,
   },
   verdict: {
     passScorePercent: 70,

@@ -33,6 +33,7 @@ yarn-error.log*
 /tg_token.txt
 /.dev.vars*
 /db/questions.json
+/ib_admin_questions_130.json
 /backups/
 /.data/
 

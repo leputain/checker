@@ -58,6 +58,7 @@ function correctChoiceForAttempt(attemptId: string) {
 }
 
 test('полный flow сохраняется после reload и показывает доступный результат', async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
   let attemptId = '';
   try {
     ({ attemptId } = await startCandidate(page, `${testInfo.project.name} ${Date.now()}`));

@@ -838,7 +838,7 @@ export default function Home() {
           <p className="eyebrow"><span className="live-dot" /> Короткая оценка навыков</p>
           <h1>Покажите, как вы <em>думаете</em>, а не как запоминаете.</h1>
           <p className="lead">
-            Небольшой адаптивный тест: десять минут, вопросы разной сложности и ничего лишнего.
+            Двадцать вопросов за десять минут: коротко, по делу и без лишнего стресса.
           </p>
           <div className="rules-row">
             <span><strong>{formatTime(TEST_CONFIG.totalTimeSeconds)}</strong> на весь тест</span>
