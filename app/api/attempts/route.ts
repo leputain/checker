@@ -9,6 +9,7 @@ import {
   publicAlias,
   sha256Hex,
 } from '@/db/runtime';
+import { selectUniqueQuestionPlan } from '@/lib/question-selection.ts';
 import { BASE_QUESTION_COUNT, DIFFICULTIES, TEST_CONFIG } from '@/lib/test-config.ts';
 
 const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
@@ -58,17 +59,26 @@ export async function POST(request: Request) {
 
     const bankRevision = await ensureQuestionBankReady();
     const db = database();
-    const selected: Array<{ id: number; weight: number }> = [];
+    const candidates: Array<{
+      id: number;
+      weight: number;
+      dedupe_key: string;
+      difficulty: typeof DIFFICULTIES[number];
+    }> = [];
     for (const difficulty of DIFFICULTIES) {
       const result = await db
         .prepare(
-          'SELECT id, weight FROM questions WHERE active = 1 AND difficulty = ? ORDER BY RANDOM() LIMIT ?',
+          `SELECT id, weight, dedupe_key FROM questions
+           WHERE active = 1 AND difficulty = ? ORDER BY RANDOM()`,
         )
-        .bind(difficulty, TEST_CONFIG.plan[difficulty])
-        .all<{ id: number; weight: number }>();
-      selected.push(...result.results);
+        .bind(difficulty)
+        .all<{ id: number; weight: number; dedupe_key: string }>();
+      for (const question of result.results) {
+        candidates.push({ ...question, difficulty });
+      }
     }
-    if (selected.length < BASE_QUESTION_COUNT) {
+    const selected = selectUniqueQuestionPlan(candidates, TEST_CONFIG.plan, 1);
+    if (!selected || selected.length < BASE_QUESTION_COUNT) {
       return NextResponse.json(
         { error: 'В банке недостаточно активных вопросов.' },
         { status: 503, headers: NO_STORE },

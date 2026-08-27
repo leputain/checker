@@ -12,6 +12,7 @@ export const questions = sqliteTable(
     weight: integer('weight').notNull(),
     active: integer('active').notNull().default(1),
     contentHash: text('content_hash'),
+    dedupeKey: text('dedupe_key').notNull().default(''),
   },
   (table) => [index('idx_questions_pool').on(table.active, table.difficulty)],
 );

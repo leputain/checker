@@ -4,6 +4,7 @@ import migration0001 from '../drizzle/0001_furry_wallow.sql?raw';
 import migration0002 from '../drizzle/0002_pink_wild_child.sql?raw';
 import migration0003 from '../drizzle/0003_thin_johnny_blaze.sql?raw';
 import migration0004 from '../drizzle/0004_overjoyed_vapor.sql?raw';
+import migration0005 from '../drizzle/0005_mighty_madame_masque.sql?raw';
 import { calculateAccuracy, calculateVerdict, type Verdict } from '@/lib/scoring.ts';
 import { TEST_CONFIG, type Difficulty } from '@/lib/test-config.ts';
 import { summarizeQuestionBank, type QuestionDefinition } from '@/lib/question-bank-validation.ts';
@@ -11,7 +12,7 @@ import { loadQuestionBank } from './question-bank';
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export type QuestionRow = {
   id: number;
@@ -23,6 +24,7 @@ export type QuestionRow = {
   weight: number;
   active: number;
   content_hash: string | null;
+  dedupe_key: string;
 };
 
 export type AttemptRow = {
@@ -73,6 +75,7 @@ const MANAGED_MIGRATIONS = [
   },
   { version: 2, name: 'telegram-and-bank-revisions-0003', sql: migration0003 },
   { version: 3, name: 'attempt-timing-0004', sql: migration0004 },
+  { version: 4, name: 'question-deduplication-0005', sql: migration0005 },
 ] as const;
 
 function migrationStatements(sql: string) {
@@ -183,7 +186,11 @@ async function questionContentHash(question: QuestionDefinition) {
 export async function questionBankRevision(questions = loadQuestionBank()) {
   const canonical = [...questions]
     .sort((left, right) => left.id - right.id)
-    .map((question) => ({ ...canonicalQuestion(question), active: question.active }));
+    .map((question) => ({
+      ...canonicalQuestion(question),
+      active: question.active,
+      dedupeKey: question.dedupeKey,
+    }));
   return sha256Hex(JSON.stringify(canonical));
 }
 
@@ -225,15 +232,16 @@ export function ensureQuestionBankReady() {
       if (byId.has(question.id)) {
         statements.push(
           db
-            .prepare('UPDATE questions SET active = ?, content_hash = ? WHERE id = ?')
-            .bind(question.active ? 1 : 0, hash, question.id),
+            .prepare('UPDATE questions SET active = ?, content_hash = ?, dedupe_key = ? WHERE id = ?')
+            .bind(question.active ? 1 : 0, hash, question.dedupeKey, question.id),
         );
       } else {
         statements.push(
           db
             .prepare(`INSERT INTO questions (
-              id, difficulty, topic, prompt, choices_json, correct_index, weight, active, content_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              id, difficulty, topic, prompt, choices_json, correct_index, weight, active,
+              content_hash, dedupe_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .bind(
               question.id,
               question.difficulty,
@@ -244,6 +252,7 @@ export function ensureQuestionBankReady() {
               TEST_CONFIG.weights[question.difficulty],
               question.active ? 1 : 0,
               hash,
+              question.dedupeKey,
             ),
         );
       }
@@ -306,7 +315,7 @@ export async function findAttemptByStartKey(startKey: string) {
 export async function findQuestion(id: number) {
   return database()
     .prepare(`SELECT id, difficulty, topic, prompt, choices_json, correct_index,
-      weight, active, content_hash FROM questions WHERE id = ?`)
+      weight, active, content_hash, dedupe_key FROM questions WHERE id = ?`)
     .bind(id)
     .first<QuestionRow>();
 }

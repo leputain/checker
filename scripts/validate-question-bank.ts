@@ -22,7 +22,8 @@ async function main() {
   for (const difficulty of DIFFICULTIES) {
     const pool = summary.pools[difficulty];
     console.log(
-      `${difficulty}: ${pool.active} активных, план ${pool.required}, резерв ${pool.reserve}`,
+      `${difficulty}: ${pool.active} активных, ${pool.unique} уникальных концепций, `
+      + `план ${pool.required}, резерв ${pool.reserve}`,
     );
   }
   for (const warning of summary.warnings) console.warn(`Предупреждение: ${warning}`);

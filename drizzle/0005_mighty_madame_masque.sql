@@ -1,0 +1,1 @@
+ALTER TABLE `questions` ADD `dedupe_key` text DEFAULT '' NOT NULL;

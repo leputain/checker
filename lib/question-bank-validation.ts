@@ -1,4 +1,5 @@
 import { DIFFICULTIES, TEST_CONFIG, type Difficulty } from './test-config.ts';
+import { selectUniqueQuestionPlan } from './question-selection.ts';
 
 export type QuestionDefinition = {
   id: number;
@@ -8,13 +9,14 @@ export type QuestionDefinition = {
   choices: string[];
   correctIndex: number;
   active: boolean;
+  dedupeKey: string;
 };
 
 export type QuestionBankSummary = {
   total: number;
   active: number;
   inactive: number;
-  pools: Record<Difficulty, { active: number; required: number; reserve: number }>;
+  pools: Record<Difficulty, { active: number; unique: number; required: number; reserve: number }>;
   warnings: string[];
 };
 
@@ -23,7 +25,16 @@ export const QUESTION_LIMITS = {
   choiceLength: 160,
   choicesMin: 2,
   choicesMax: 5,
+  dedupeKeyLength: 80,
 } as const;
+
+const DEDUPE_KEY_PATTERN = /^[a-z0-9][a-z0-9:_-]*$/;
+const PROMPT_STOP_WORDS = new Set([
+  'какой', 'какая', 'какое', 'какие', 'как', 'что', 'чем', 'где', 'для',
+  'используется', 'используют', 'обычно', 'основной', 'основное', 'основная',
+  'прежде', 'всего', 'лучше', 'наиболее', 'при', 'после', 'между', 'это',
+  'означает', 'предназначена', 'предназначено', 'выполняет',
+]);
 
 export class QuestionBankValidationError extends Error {
   readonly issues: string[];
@@ -37,6 +48,22 @@ export class QuestionBankValidationError extends Error {
 
 function normalized(value: string) {
   return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU');
+}
+
+function promptTokens(value: string) {
+  return new Set(normalized(value)
+    .replace(/ё/g, 'е')
+    .replace(/[^a-zа-я0-9]+/giu, ' ')
+    .split(' ')
+    .filter((token) => token.length > 2 && !PROMPT_STOP_WORDS.has(token)));
+}
+
+function promptsLikelyDuplicate(left: string, right: string) {
+  const leftTokens = promptTokens(left);
+  const rightTokens = promptTokens(right);
+  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  const union = leftTokens.size + rightTokens.size - intersection;
+  return intersection >= 3 && union > 0 && intersection / union >= 0.58;
 }
 
 export function validateQuestionBank(raw: unknown, source: string): QuestionDefinition[] {
@@ -58,7 +85,7 @@ export function validateQuestionBank(raw: unknown, source: string): QuestionDefi
     }
 
     const question = candidate as Record<string, unknown>;
-    const { id, difficulty, topic, prompt, choices, correctIndex, active } = question;
+    const { id, difficulty, topic, prompt, choices, correctIndex, active, dedupeKey } = question;
 
     if (!Number.isInteger(id) || (id as number) <= 0) {
       entryIssues.push('id должен быть положительным целым числом');
@@ -119,6 +146,17 @@ export function validateQuestionBank(raw: unknown, source: string): QuestionDefi
     if (typeof active !== 'boolean') {
       entryIssues.push('active должен быть boolean');
     }
+    if (
+      dedupeKey !== undefined && (
+        typeof dedupeKey !== 'string' ||
+        !DEDUPE_KEY_PATTERN.test(dedupeKey.trim().toLowerCase()) ||
+        dedupeKey.trim().length > QUESTION_LIMITS.dedupeKeyLength
+      )
+    ) {
+      entryIssues.push(
+        `dedupeKey должен содержать до ${QUESTION_LIMITS.dedupeKeyLength} символов: a-z, 0-9, :, _ или -`,
+      );
+    }
 
     issues.push(...entryIssues.map((issue) => `${label}: ${issue}`));
     if (entryIssues.length === 0) {
@@ -130,22 +168,67 @@ export function validateQuestionBank(raw: unknown, source: string): QuestionDefi
         choices: (choices as string[]).map((choice) => choice.trim().replace(/\s+/g, ' ')),
         correctIndex: correctIndex as number,
         active: active as boolean,
+        dedupeKey: typeof dedupeKey === 'string'
+          ? dedupeKey.trim().toLowerCase()
+          : `question:${id as number}`,
       });
     }
   });
 
   if (issues.length === 0) {
+    for (let leftIndex = 0; leftIndex < questions.length; leftIndex += 1) {
+      const left = questions[leftIndex];
+      if (!left.active) continue;
+      for (let rightIndex = leftIndex + 1; rightIndex < questions.length; rightIndex += 1) {
+        const right = questions[rightIndex];
+        if (
+          !right.active ||
+          normalized(left.topic) !== normalized(right.topic) ||
+          left.dedupeKey === right.dedupeKey ||
+          !promptsLikelyDuplicate(left.prompt, right.prompt)
+        ) continue;
+        issues.push(
+          `Вопросы id ${left.id} и ${right.id} похожи по смыслу; `
+          + 'назначьте им одинаковый dedupeKey или отключите один из них',
+        );
+      }
+    }
+
+    const topicByDedupeKey = new Map<string, string>();
+    for (const question of questions) {
+      const topic = normalized(question.topic);
+      const existingTopic = topicByDedupeKey.get(question.dedupeKey);
+      if (existingTopic && existingTopic !== topic) {
+        issues.push(`dedupeKey ${question.dedupeKey} используется в разных темах`);
+      } else {
+        topicByDedupeKey.set(question.dedupeKey, topic);
+      }
+    }
+
     for (const difficulty of DIFFICULTIES) {
-      const activeCount = questions.filter(
-        (question) => question.active && question.difficulty === difficulty,
-      ).length;
+      const activeCount = new Set(questions
+        .filter((question) => question.active && question.difficulty === difficulty)
+        .map((question) => question.dedupeKey)).size;
       const requiredWithReserve = TEST_CONFIG.plan[difficulty] + 1;
       if (activeCount < requiredWithReserve) {
         issues.push(
-          `Активных ${difficulty}: ${activeCount}; требуется минимум ${requiredWithReserve} `
+          `Уникальных активных ${difficulty}: ${activeCount}; требуется минимум ${requiredWithReserve} `
           + '(стартовая квота и хотя бы один remedial-вопрос)',
         );
       }
+    }
+    if (!selectUniqueQuestionPlan(
+      questions.filter((question) => question.active).map((question) => ({
+        id: question.id,
+        difficulty: question.difficulty,
+        dedupe_key: question.dedupeKey,
+      })),
+      TEST_CONFIG.plan,
+      1,
+    )) {
+      issues.push(
+        'Невозможно собрать стартовый тест и remedial-резерв без повторения смысловых групп между уровнями сложности',
+      );
     }
   }
 
@@ -157,15 +240,17 @@ export function summarizeQuestionBank(questions: QuestionDefinition[]): Question
   const warnings: string[] = [];
   const pools = Object.fromEntries(
     DIFFICULTIES.map((difficulty) => {
-      const active = questions.filter(
+      const activeQuestions = questions.filter(
         (question) => question.active && question.difficulty === difficulty,
-      ).length;
+      );
+      const active = activeQuestions.length;
+      const unique = new Set(activeQuestions.map((question) => question.dedupeKey)).size;
       const required = TEST_CONFIG.plan[difficulty];
-      const reserve = active - required;
+      const reserve = unique - required;
       if (reserve === 1) {
         warnings.push(`Пул ${difficulty} содержит только один remedial-вопрос.`);
       }
-      return [difficulty, { active, required, reserve }];
+      return [difficulty, { active, unique, required, reserve }];
     }),
   ) as QuestionBankSummary['pools'];
   const active = questions.filter((question) => question.active).length;

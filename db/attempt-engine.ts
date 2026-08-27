@@ -16,20 +16,27 @@ export class AttemptQuestionConflictError extends Error {}
 export class InvalidChoiceError extends Error {}
 export class PrematureTimeoutError extends Error {}
 
+function dedupeKey(question: { id: number; dedupe_key: string }) {
+  return question.dedupe_key || `question:${question.id}`;
+}
+
 async function chooseReplacementQuestion(
   difficulty: Difficulty,
   asked: number[],
   pending: number[],
 ) {
   const excluded = [...asked, ...pending];
-  const placeholders = excluded.map(() => '?').join(',');
-  const sql = `SELECT id FROM questions WHERE active = 1 AND difficulty = ? ${
-    excluded.length ? `AND id NOT IN (${placeholders})` : ''
-  } ORDER BY RANDOM() LIMIT 1`;
-  return database()
-    .prepare(sql)
-    .bind(difficulty, ...excluded)
-    .first<{ id: number }>();
+  const excludedIds = new Set(excluded);
+  const excludedQuestions = await loadQuestions(excluded);
+  const excludedDedupeKeys = new Set(excludedQuestions.map(dedupeKey));
+  const candidates = await database()
+    .prepare(`SELECT id, dedupe_key FROM questions
+      WHERE active = 1 AND difficulty = ? ORDER BY RANDOM()`)
+    .bind(difficulty)
+    .all<{ id: number; dedupe_key: string }>();
+  return candidates.results.find((candidate) => (
+    !excludedIds.has(candidate.id) && !excludedDedupeKeys.has(dedupeKey(candidate))
+  ));
 }
 
 async function alreadyProcessed(attemptId: string, questionId: number) {
@@ -131,9 +138,18 @@ export async function processAttemptAnswer(
       .prepare(
         `INSERT OR IGNORE INTO answers (
           attempt_id, question_id, selected_index, is_correct, answered_at
-        ) VALUES (?, ?, ?, ?, ?)`,
+        ) SELECT ?, ?, ?, ?, ? FROM attempts
+          WHERE id = ? AND status = 'active' AND current_question_id = ?`,
       )
-      .bind(attempt.id, question.id, selectedChoice, correct ? 1 : 0, now),
+      .bind(
+        attempt.id,
+        question.id,
+        selectedChoice,
+        correct ? 1 : 0,
+        now,
+        attempt.id,
+        question.id,
+      ),
   ];
 
   for (const skipped of skippedQuestions) {
@@ -141,8 +157,9 @@ export async function processAttemptAnswer(
       db
         .prepare(`INSERT OR IGNORE INTO answers (
           attempt_id, question_id, selected_index, is_correct, answered_at
-        ) VALUES (?, ?, NULL, 0, ?)`)
-        .bind(attempt.id, skipped.id, now),
+        ) SELECT ?, ?, NULL, 0, ? FROM attempts
+          WHERE id = ? AND status = 'active' AND current_question_id = ?`)
+        .bind(attempt.id, skipped.id, now, attempt.id, question.id),
     );
   }
 
@@ -201,8 +218,20 @@ export async function processAttemptAnswer(
         .prepare(`INSERT OR IGNORE INTO telegram_outbox (
           id, attempt_id, question_id, event_type, payload_text, status,
           attempt_count, next_attempt_at, created_at
-        ) VALUES (?, ?, ?, 'answer', ?, 'pending', 0, ?, ?)`)
-        .bind(answerEventId, attempt.id, question.id, answerMessage, now, now),
+        ) SELECT ?, ?, ?, 'answer', ?, 'pending', 0, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+          )`)
+        .bind(
+          answerEventId,
+          attempt.id,
+          question.id,
+          answerMessage,
+          now,
+          now,
+          attempt.id,
+          question.id,
+        ),
     );
 
     skippedQuestions.forEach((skipped, index) => {
@@ -229,8 +258,20 @@ export async function processAttemptAnswer(
           .prepare(`INSERT OR IGNORE INTO telegram_outbox (
             id, attempt_id, question_id, event_type, payload_text, status,
             attempt_count, next_attempt_at, created_at
-          ) VALUES (?, ?, ?, 'answer', ?, 'pending', 0, ?, ?)`)
-          .bind(eventId, attempt.id, skipped.id, message, now, eventTime),
+          ) SELECT ?, ?, ?, 'answer', ?, 'pending', 0, ?, ?
+            WHERE EXISTS (
+              SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+            )`)
+          .bind(
+            eventId,
+            attempt.id,
+            skipped.id,
+            message,
+            now,
+            eventTime,
+            attempt.id,
+            skipped.id,
+          ),
       );
     });
 
@@ -260,8 +301,16 @@ export async function processAttemptAnswer(
           .prepare(`INSERT OR IGNORE INTO telegram_outbox (
             id, attempt_id, question_id, event_type, payload_text, status,
             attempt_count, next_attempt_at, created_at
-          ) VALUES (?, ?, NULL, 'completed', ?, 'pending', 0, ?, ?)`)
-          .bind(completedEventId, attempt.id, summaryMessage, now, completedEventTime),
+          ) SELECT ?, ?, NULL, 'completed', ?, 'pending', 0, ?, ?
+            FROM attempts WHERE id = ? AND status = 'completed'`)
+          .bind(
+            completedEventId,
+            attempt.id,
+            summaryMessage,
+            now,
+            completedEventTime,
+            attempt.id,
+          ),
       );
     }
   }

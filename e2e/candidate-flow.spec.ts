@@ -376,6 +376,14 @@ test('идемпотентный API создаёт один ответ и од�
     };
     attemptId = payload.attemptId;
 
+    const baseSelection = queryLocalD1<{ total: number; uniqueConcepts: number }>(`
+      SELECT COUNT(*) AS total, COUNT(DISTINCT questions.dedupe_key) AS uniqueConcepts
+      FROM attempts, json_each(attempts.base_question_ids) AS selected
+      JOIN questions ON questions.id = selected.value
+      WHERE attempts.id = '${attemptId}'
+    `, E2E_STATE_PATH)[0];
+    expect(baseSelection).toEqual({ total: 20, uniqueConcepts: 20 });
+
     const replay = await request.post('/api/attempts', {
       data: { startKey, token },
       headers: { 'Idempotency-Key': startKey },
@@ -435,6 +443,48 @@ test('идемпотентный API создаёт один ответ и од�
       FROM attempts WHERE id = '${attemptId}'
     `, E2E_STATE_PATH)[0];
     expect(abortedState).toEqual({ status: 'aborted', outbox: 1 });
+  } finally {
+    if (attemptId) cleanupAttempt(attemptId);
+  }
+});
+
+test('после прерывания устаревший ответ не записывается', async ({ request }, testInfo) => {
+  test.skip(testInfo.project.name.includes('landscape'), 'API/D1 integration не зависит от orientation.');
+  const startKey = randomUUID();
+  const token = randomBytes(32).toString('base64url');
+  let attemptId = '';
+
+  try {
+    const start = await request.post('/api/attempts', {
+      data: { name: `E2E abort race ${Date.now()}`, startKey, token },
+      headers: { 'Idempotency-Key': startKey },
+    });
+    expect(start.status()).toBe(201);
+    const payload = await start.json() as { attemptId: string; question: { id: number } };
+    attemptId = payload.attemptId;
+
+    const aborted = await request.post(`/api/attempts/${attemptId}/abort`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(aborted.status()).toBe(200);
+    expect((await aborted.json()).status).toBe('aborted');
+
+    const staleAnswer = await request.post(`/api/attempts/${attemptId}/answer`, {
+      data: { questionId: payload.question.id, choiceIndex: 0 },
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(staleAnswer.status()).toBe(200);
+    expect((await staleAnswer.json()).status).toBe('aborted');
+
+    const state = queryLocalD1<{ answers: number; answerEvents: number; abortEvents: number }>(`
+      SELECT
+        (SELECT COUNT(*) FROM answers WHERE attempt_id = '${attemptId}') AS answers,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND event_type = 'answer') AS answerEvents,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND event_type = 'aborted') AS abortEvents
+    `, E2E_STATE_PATH)[0];
+    expect(state).toEqual({ answers: 0, answerEvents: 0, abortEvents: 1 });
   } finally {
     if (attemptId) cleanupAttempt(attemptId);
   }
