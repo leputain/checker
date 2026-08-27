@@ -65,7 +65,7 @@ export async function processAttemptAnswer(
   selectedChoice: number | null,
   now = Date.now(),
 ) {
-  if (attempt.status === 'completed' || attempt.current_question_id === null) return attempt;
+  if (attempt.status !== 'active' || attempt.current_question_id === null) return attempt;
 
   if (attempt.current_question_id !== questionId) {
     if (await alreadyProcessed(attempt.id, questionId)) return (await findAttempt(attempt.id))!;

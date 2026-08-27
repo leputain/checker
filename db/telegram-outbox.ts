@@ -17,7 +17,7 @@ type OutboxRow = {
   id: string;
   attempt_id: string;
   question_id: number | null;
-  event_type: 'answer' | 'completed';
+  event_type: 'answer' | 'completed' | 'aborted';
   payload_text: string;
   status: 'pending' | 'sending' | 'sent' | 'dead';
   attempt_count: number;
@@ -142,7 +142,7 @@ async function cleanupPrivateData(now: number) {
     db
       .prepare(`UPDATE attempts SET candidate_name = NULL
         WHERE candidate_name IS NOT NULL AND (
-          started_at < ? OR (status = 'completed' AND NOT EXISTS (
+          started_at < ? OR (status IN ('completed','aborted') AND NOT EXISTS (
             SELECT 1 FROM telegram_outbox
             WHERE telegram_outbox.attempt_id = attempts.id
               AND telegram_outbox.status IN ('pending','sending')
@@ -155,7 +155,7 @@ async function cleanupPrivateData(now: number) {
 async function cleanupCompletedAttempt(attemptId: string) {
   await database()
     .prepare(`UPDATE attempts SET candidate_name = NULL
-      WHERE id = ? AND status = 'completed' AND NOT EXISTS (
+      WHERE id = ? AND status IN ('completed','aborted') AND NOT EXISTS (
         SELECT 1 FROM telegram_outbox
         WHERE attempt_id = ? AND status IN ('pending','sending')
       )`)

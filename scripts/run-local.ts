@@ -4,8 +4,8 @@ import path from 'node:path';
 import { loadTelegramConfig, TelegramConfigError } from './telegram-config.ts';
 
 const command = process.argv[2];
-if (command !== 'dev' && command !== 'start') {
-  console.error('Использование: run-local.ts dev|start');
+if (command !== 'dev' && command !== 'start' && command !== 'preview') {
+  console.error('Использование: run-local.ts dev|start|preview');
   process.exit(2);
 }
 
@@ -53,7 +53,8 @@ function cliPort(args: string[]) {
 
 const cliArguments = process.argv.slice(3);
 const port = cliPort(cliArguments);
-const maintenanceUrl = `http://localhost:${port}/api/internal/maintenance`;
+const basePath = (childEnvironment.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/$/, '');
+const maintenanceUrl = `http://localhost:${port}${basePath}/api/internal/maintenance`;
 const retryDelays = [2_000, 5_000, 15_000, 30_000, 50_000] as const;
 let maintenanceTimer: NodeJS.Timeout | null = null;
 let maintenanceRequest: AbortController | null = null;
@@ -97,8 +98,13 @@ function stopMaintenance() {
   maintenanceRequest?.abort();
 }
 
-const executable = path.resolve('node_modules', 'vinext', 'dist', 'cli.js');
-const child = spawn(process.execPath, [executable, command, ...cliArguments], {
+const executable = command === 'preview'
+  ? path.resolve('node_modules', 'vite', 'bin', 'vite.js')
+  : path.resolve('node_modules', 'vinext', 'dist', 'cli.js');
+const executableArguments = command === 'preview'
+  ? [executable, 'preview', ...cliArguments]
+  : [executable, command, ...cliArguments];
+const child = spawn(process.execPath, executableArguments, {
   env: childEnvironment,
   stdio: 'inherit',
   shell: false,

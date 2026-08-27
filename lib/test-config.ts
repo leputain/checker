@@ -3,9 +3,9 @@ export const TEST_CONFIG = {
   questionTimeSeconds: 30,
   questionStatsMinSample: 5,
   plan: {
-    easy: 7,
+    easy: 5,
     medium: 7,
-    hard: 5,
+    hard: 7,
     expert: 1,
   },
   weights: {
@@ -28,5 +28,10 @@ export const DIFFICULTIES = Object.keys(TEST_CONFIG.plan) as Difficulty[];
 
 export const BASE_QUESTION_COUNT = DIFFICULTIES.reduce(
   (total, difficulty) => total + TEST_CONFIG.plan[difficulty],
+  0,
+);
+
+export const BASE_MAX_SCORE = DIFFICULTIES.reduce(
+  (total, difficulty) => total + TEST_CONFIG.plan[difficulty] * TEST_CONFIG.weights[difficulty],
   0,
 );

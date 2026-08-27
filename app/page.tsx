@@ -8,7 +8,8 @@ import {
   useRef,
   useState,
 } from 'react';
-import { BASE_QUESTION_COUNT, TEST_CONFIG } from '@/lib/test-config.ts';
+import { appPath } from '@/lib/app-path.ts';
+import { BASE_MAX_SCORE, BASE_QUESTION_COUNT, TEST_CONFIG } from '@/lib/test-config.ts';
 
 type Difficulty = 'easy' | 'medium' | 'hard' | 'expert';
 type Verdict = 'PASS' | 'REVIEW' | 'FAIL';
@@ -41,7 +42,7 @@ type Result = {
 type AttemptPayload = {
   attemptId: string;
   alias: string;
-  status: 'active' | 'completed';
+  status: 'active' | 'completed' | 'aborted';
   serverNowMs: number;
   question?: QuestionView;
   result?: Result;
@@ -267,6 +268,9 @@ export default function Home() {
   const [now, setNow] = useState(0);
   const [clockOffsetMs, setClockOffsetMs] = useState(0);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showAbortConfirm, setShowAbortConfirm] = useState(false);
+  const [aborting, setAborting] = useState(false);
+  const [notice, setNotice] = useState('');
   const [connectivity, setConnectivity] = useState<Connectivity>('checking');
   const submittingRef = useRef(false);
   const timeoutBackoffUntilRef = useRef(0);
@@ -274,6 +278,7 @@ export default function Home() {
   const flushTimerRef = useRef<number | null>(null);
   const flushingRef = useRef(false);
   const leaderboardButtonRef = useRef<HTMLButtonElement>(null);
+  const abortButtonRef = useRef<HTMLButtonElement>(null);
   const questionHeadingRef = useRef<HTMLHeadingElement>(null);
   const lastFocusedQuestionIdRef = useRef<number | null>(null);
 
@@ -313,7 +318,7 @@ export default function Home() {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 6_000);
       try {
-        const response = await fetch(`/api/attempts/${next.attemptId}/notifications/flush`, {
+        const response = await fetch(appPath(`/api/attempts/${next.attemptId}/notifications/flush`), {
           method: 'POST',
           headers: { Authorization: `Bearer ${next.token}` },
           cache: 'no-store',
@@ -364,7 +369,7 @@ export default function Home() {
     }
     setConnectivity('checking');
     try {
-      await requestJson<{ status: string }>('/api/health/ready', {}, 1);
+      await requestJson<{ status: string }>(appPath('/api/health/ready'), {}, 1);
       setConnectivity('online');
       return true;
     } catch {
@@ -384,7 +389,7 @@ export default function Home() {
             clearStoredSession();
             return;
           }
-          const data = await requestJson<AttemptPayload>('/api/attempts', {
+          const data = await requestJson<AttemptPayload>(appPath('/api/attempts'), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -392,9 +397,16 @@ export default function Home() {
             },
             body: JSON.stringify({ startKey: session.startKey, token: session.token }),
           }, 2);
+          applyServerTime(data.serverNowMs);
+          triggerNotificationFlush(data.attemptId, session.token);
+          if (data.status === 'aborted') {
+            clearStoredSession();
+            setAttempt(null);
+            setNotice('Предыдущий тест был прерван. Можно начать новый.');
+            return;
+          }
           const restored = { ...data, token: session.token };
           setAttempt(restored);
-          applyServerTime(data.serverNowMs);
           if (data.question) {
             writeStoredSession({
               version: 2,
@@ -404,17 +416,22 @@ export default function Home() {
               expiresAt: localSessionExpiry(data.question.totalDeadlineAt, data.serverNowMs),
             });
           } else if (data.status === 'completed') clearStoredSession();
-          triggerNotificationFlush(data.attemptId, session.token);
           return;
         }
 
-        const data = await requestJson<AttemptPayload>(`/api/attempts/${session.attemptId}`, {
+        const data = await requestJson<AttemptPayload>(appPath(`/api/attempts/${session.attemptId}`), {
           headers: { Authorization: `Bearer ${session.token}` },
         }, 2);
-        setAttempt({ ...data, token: session.token });
         applyServerTime(data.serverNowMs);
         triggerNotificationFlush(data.attemptId, session.token);
-        if (data.status === 'completed') clearStoredSession();
+        if (data.status === 'aborted') {
+          clearStoredSession();
+          setAttempt(null);
+          setNotice('Предыдущий тест был прерван. Можно начать новый.');
+        } else {
+          setAttempt({ ...data, token: session.token });
+          if (data.status === 'completed') clearStoredSession();
+        }
       } catch (caught) {
         if (caught instanceof RequestError && caught.status === 404) {
           clearStoredSession();
@@ -471,14 +488,20 @@ export default function Home() {
   const syncAttempt = useCallback(async () => {
     if (!attempt || !navigator.onLine) return;
     try {
-      const data = await requestJson<AttemptPayload>(`/api/attempts/${attempt.attemptId}`, {
+      const data = await requestJson<AttemptPayload>(appPath(`/api/attempts/${attempt.attemptId}`), {
         headers: { Authorization: `Bearer ${attempt.token}` },
       }, 1);
-      setAttempt({ ...data, token: attempt.token });
-      setSelectedChoice(null);
       applyServerTime(data.serverNowMs);
       triggerNotificationFlush(data.attemptId, attempt.token);
-      if (data.status === 'completed') clearStoredSession();
+      if (data.status === 'aborted') {
+        clearStoredSession();
+        setAttempt(null);
+        setNotice('Тест прерван. Можно начать новый.');
+      } else {
+        setAttempt({ ...data, token: attempt.token });
+        setSelectedChoice(null);
+        if (data.status === 'completed') clearStoredSession();
+      }
     } catch {
       // Существующая попытка остаётся локально и восстановится при следующем reconnect.
     }
@@ -491,7 +514,7 @@ export default function Home() {
     setTransitioning(timeout);
     setError('');
     try {
-      const data = await requestJson<AttemptPayload>(`/api/attempts/${attempt.attemptId}/answer`, {
+      const data = await requestJson<AttemptPayload>(appPath(`/api/attempts/${attempt.attemptId}/answer`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -499,12 +522,18 @@ export default function Home() {
         },
         body: JSON.stringify({ questionId: attempt.question.id, choiceIndex }),
       }, 2);
-      setAttempt({ ...data, token: attempt.token });
-      setSelectedChoice(null);
       applyServerTime(data.serverNowMs);
       timeoutBackoffUntilRef.current = 0;
       triggerNotificationFlush(data.attemptId, attempt.token);
-      if (data.status === 'completed') clearStoredSession();
+      if (data.status === 'aborted') {
+        clearStoredSession();
+        setAttempt(null);
+        setNotice('Тест прерван. Можно начать новый.');
+      } else {
+        setAttempt({ ...data, token: attempt.token });
+        setSelectedChoice(null);
+        if (data.status === 'completed') clearStoredSession();
+      }
     } catch (caught) {
       if (caught instanceof RequestError && caught.status === 404) {
         clearStoredSession();
@@ -606,6 +635,7 @@ export default function Home() {
 
     setBusy(true);
     setError('');
+    setNotice('');
     try {
       const stored = readStoredSession();
       const pending = stored?.phase === 'starting' && Date.now() - stored.createdAt < SESSION_GRACE_MS
@@ -618,7 +648,7 @@ export default function Home() {
             createdAt: Date.now(),
           };
       writeStoredSession(pending);
-      const data = await requestJson<AttemptPayload>('/api/attempts', {
+      const data = await requestJson<AttemptPayload>(appPath('/api/attempts'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -626,6 +656,11 @@ export default function Home() {
         },
         body: JSON.stringify({ name: cleanName, startKey: pending.startKey, token: pending.token }),
       }, 2);
+      if (data.status === 'aborted') {
+        clearStoredSession();
+        setNotice('Предыдущий запуск был прерван. Начните тест ещё раз.');
+        return;
+      }
       if (!data.question) throw new Error('Сервер не вернул первый вопрос.');
       const nextAttempt = { ...data, token: pending.token };
       writeStoredSession({
@@ -645,11 +680,48 @@ export default function Home() {
     }
   }
 
+  async function abortTest() {
+    if (!attempt || attempt.status !== 'active' || aborting || !navigator.onLine) return;
+    submittingRef.current = true;
+    setAborting(true);
+    setBusy(true);
+    setError('');
+    try {
+      const data = await requestJson<AttemptPayload>(
+        appPath(`/api/attempts/${attempt.attemptId}/abort`),
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${attempt.token}` },
+        },
+        2,
+      );
+      applyServerTime(data.serverNowMs);
+      triggerNotificationFlush(data.attemptId, attempt.token);
+      setShowAbortConfirm(false);
+      clearStoredSession();
+      setSelectedChoice(null);
+      if (data.status === 'aborted') {
+        setAttempt(null);
+        setName('');
+        setNotice('Тест прерван. Результат не добавлен в рейтинг.');
+      } else {
+        setAttempt({ ...data, token: attempt.token });
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось прервать тест.');
+    } finally {
+      submittingRef.current = false;
+      setAborting(false);
+      setBusy(false);
+    }
+  }
+
   function resetToStart() {
     clearStoredSession();
     setAttempt(null);
     setName('');
     setError('');
+    setNotice('');
   }
 
   const connectivityBanner = connectivity === 'online' ? null : (
@@ -757,71 +829,103 @@ export default function Home() {
 
   if (question) {
     return (
-      <main className="app-shell quiz-shell">
-        {connectivityBanner}
-        <div className="ambient ambient-one" />
-        <header className="quiz-header">
-          <div className="brand"><span className="brand-mark" aria-hidden="true" /><span>Candidate Check</span></div>
-          <div className="timer-group" aria-label="Оставшееся время">
-            <TimerDial kind="question" label="Вопрос" seconds={questionLeft} maximum={TEST_CONFIG.questionTimeSeconds} />
-            <TimerDial kind="total" label="Весь тест" seconds={totalLeft} maximum={TEST_CONFIG.totalTimeSeconds} />
-          </div>
-        </header>
-        <section className="quiz-stage">
-          <div className="quiz-meta">
-            <span className={`difficulty difficulty-${question.difficulty}`}>
-              {difficultyLabels[question.difficulty]} · {question.weight} балл(а)
-            </span>
-            <span>Вопрос {question.position} · минимум {question.minimumQuestions}</span>
-          </div>
-          <div
-            className="progress-track"
-            role="progressbar"
-            aria-label="Использованное общее время"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.round(timeProgress)}
-          >
-            <span style={{ width: `${timeProgress}%` }} />
-          </div>
-          <article key={question.id} className="question-card glass-card motion-card">
-            <p className="eyebrow">Выберите один ответ</p>
-            <h1 ref={questionHeadingRef} tabIndex={-1}>{question.prompt}</h1>
-            <fieldset className="answers" disabled={busy}>
-              <legend className="sr-only">Варианты ответа</legend>
-              {question.choices.map((choice, index) => (
-                <label
-                  key={`${index}-${choice}`}
-                  className={selectedChoice === index ? 'answer selected' : 'answer'}
-                >
-                  <input
-                    type="radio"
-                    name={`question-${question.id}`}
-                    value={index}
-                    checked={selectedChoice === index}
-                    onChange={() => setSelectedChoice(index)}
-                  />
-                  <span className="answer-letter">{String.fromCharCode(65 + index)}</span>
-                  <span>{choice}</span>
-                  <span className="answer-dot" aria-hidden="true" />
-                </label>
-              ))}
-            </fieldset>
-            <div className="question-footer">
-              <p>{transitioning ? 'Проверяем время…' : 'Ответ нельзя изменить после отправки.'}</p>
+      <>
+        <main
+          className="app-shell quiz-shell"
+          aria-hidden={showAbortConfirm || undefined}
+          inert={showAbortConfirm || undefined}
+        >
+          {connectivityBanner}
+          <div className="ambient ambient-one" />
+          <header className="quiz-header">
+            <div className="brand"><span className="brand-mark" aria-hidden="true" /><span>Candidate Check</span></div>
+            <div className="quiz-header-actions">
               <button
-                className="primary-button"
-                disabled={selectedChoice === null || busy || connectivity === 'offline'}
-                onClick={() => void submitAnswer(selectedChoice)}
+                ref={abortButtonRef}
+                className="abort-button"
+                disabled={busy}
+                onClick={() => {
+                  setError('');
+                  setShowAbortConfirm(true);
+                }}
               >
-                {transitioning ? 'Следующий вопрос…' : busy ? 'Сохраняем…' : 'Ответить'}
+                Прервать
               </button>
+              <div className="timer-group" aria-label="Оставшееся время">
+                <TimerDial kind="question" label="Вопрос" seconds={questionLeft} maximum={TEST_CONFIG.questionTimeSeconds} />
+                <TimerDial kind="total" label="Весь тест" seconds={totalLeft} maximum={TEST_CONFIG.totalTimeSeconds} />
+              </div>
             </div>
-          </article>
-          {error && <p className="error-message" role="alert">{error}</p>}
-          <TimerAnnouncement seconds={questionLeft} />
-        </section>
-      </main>
+          </header>
+          <section className="quiz-stage">
+            <div className="quiz-meta">
+              <span className={`difficulty difficulty-${question.difficulty}`}>
+                {difficultyLabels[question.difficulty]} · {question.weight} балл(а)
+              </span>
+              <span>Вопрос {question.position} · минимум {question.minimumQuestions}</span>
+            </div>
+            <div
+              className="progress-track"
+              role="progressbar"
+              aria-label="Использованное общее время"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(timeProgress)}
+            >
+              <span style={{ width: `${timeProgress}%` }} />
+            </div>
+            <article key={question.id} className="question-card glass-card motion-card">
+              <p className="eyebrow">Выберите один ответ</p>
+              <h1 ref={questionHeadingRef} tabIndex={-1}>{question.prompt}</h1>
+              <fieldset className="answers" disabled={busy}>
+                <legend className="sr-only">Варианты ответа</legend>
+                {question.choices.map((choice, index) => (
+                  <label
+                    key={`${index}-${choice}`}
+                    className={selectedChoice === index ? 'answer selected' : 'answer'}
+                  >
+                    <input
+                      type="radio"
+                      name={`question-${question.id}`}
+                      value={index}
+                      checked={selectedChoice === index}
+                      onChange={() => setSelectedChoice(index)}
+                    />
+                    <span className="answer-letter">{String.fromCharCode(65 + index)}</span>
+                    <span>{choice}</span>
+                    <span className="answer-dot" aria-hidden="true" />
+                  </label>
+                ))}
+              </fieldset>
+              <div className="question-footer">
+                <p>{transitioning ? 'Проверяем время…' : 'Ответ нельзя изменить после отправки.'}</p>
+                <button
+                  className="primary-button"
+                  disabled={selectedChoice === null || busy || connectivity === 'offline'}
+                  onClick={() => void submitAnswer(selectedChoice)}
+                >
+                  {transitioning ? 'Следующий вопрос…' : busy ? 'Сохраняем…' : 'Ответить'}
+                </button>
+              </div>
+            </article>
+            {error && <p className="error-message" role="alert">{error}</p>}
+            <TimerAnnouncement seconds={questionLeft} />
+          </section>
+        </main>
+        {showAbortConfirm && (
+          <AbortDialog
+            busy={aborting}
+            error={error}
+            offline={connectivity === 'offline'}
+            onCancel={() => {
+              setError('');
+              setShowAbortConfirm(false);
+            }}
+            onConfirm={() => void abortTest()}
+            returnFocusRef={abortButtonRef}
+          />
+        )}
+      </>
     );
   }
 
@@ -829,28 +933,47 @@ export default function Home() {
     <main className="app-shell welcome-shell">
       {connectivityBanner}
       <div className="ambient ambient-one" /><div className="ambient ambient-two" />
-      <header className="site-header">
+      <header
+        className="site-header"
+        aria-hidden={showLeaderboard || undefined}
+        inert={showLeaderboard || undefined}
+      >
         <div className="brand"><span className="brand-mark" aria-hidden="true" /><span>Candidate Check</span></div>
-        <StatusChip state={connectivity} />
+        <div className="header-actions">
+          <button
+            ref={leaderboardButtonRef}
+            className="text-button"
+            type="button"
+            onClick={() => setShowLeaderboard(true)}
+          >
+            Таблица лидеров
+          </button>
+          <StatusChip state={connectivity} />
+        </div>
       </header>
-      <section className="welcome-grid">
+      <section
+        className="welcome-grid"
+        aria-hidden={showLeaderboard || undefined}
+        inert={showLeaderboard || undefined}
+      >
         <div className="welcome-copy">
-          <p className="eyebrow"><span className="live-dot" /> Короткая оценка навыков</p>
-          <h1>Покажите, как вы <em>думаете</em>, а не как запоминаете.</h1>
+          <p className="eyebrow"><span className="live-dot" /> Технический тест</p>
+          <h1>Candidate Check</h1>
           <p className="lead">
-            Двадцать вопросов за десять минут: коротко, по делу и без лишнего стресса.
+            Сети, Linux, Windows и Active Directory, информационная безопасность.
           </p>
           <div className="rules-row">
             <span><strong>{formatTime(TEST_CONFIG.totalTimeSeconds)}</strong> на весь тест</span>
             <span><strong>{formatTime(TEST_CONFIG.questionTimeSeconds)}</strong> на вопрос</span>
             <span><strong>{BASE_QUESTION_COUNT}+</strong> вопросов</span>
+            <span><strong>{BASE_MAX_SCORE}</strong> баллов</span>
           </div>
         </div>
         <div className="welcome-mascot" aria-hidden="true" />
         <form className="start-card glass-card" onSubmit={startTest}>
-          <p className="eyebrow">Перед началом</p>
-          <h2>Как к вам обращаться?</h2>
-          <p className="muted">В рейтинге останется только имя и первая буква фамилии.</p>
+          <p className="eyebrow">Начало теста</p>
+          <h2>Введите имя</h2>
+          <p className="muted">После старта включатся таймеры. Вернуться к предыдущему вопросу нельзя.</p>
           <label htmlFor="candidate-name">Имя и фамилия</label>
           <input
             id="candidate-name"
@@ -870,13 +993,17 @@ export default function Home() {
             <span aria-hidden="true">→</span>
           </button>
           <p className="privacy-note">
-            Результат хранится на локальном сервере и передаётся в закрытую группу проверки.
+            Имя, ответы и итог доступны только проверяющим.
           </p>
+          {notice && <p className="notice-message" role="status">{notice}</p>}
         </form>
       </section>
-      <footer className="site-footer">
-        <span>Оценка без лишнего стресса</span><span>v0.5 · локальный iPad-инструмент</span>
-      </footer>
+      {showLeaderboard && (
+        <Leaderboard
+          onClose={() => setShowLeaderboard(false)}
+          returnFocusRef={leaderboardButtonRef}
+        />
+      )}
     </main>
   );
 }
@@ -995,6 +1122,61 @@ function useDialog(
   return dialogRef;
 }
 
+function AbortDialog({
+  busy,
+  error,
+  offline,
+  onCancel,
+  onConfirm,
+  returnFocusRef,
+}: {
+  busy: boolean;
+  error: string;
+  offline: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  returnFocusRef: { current: HTMLElement | null };
+}) {
+  const close = useCallback(() => {
+    if (!busy) onCancel();
+  }, [busy, onCancel]);
+  const dialogRef = useDialog(close, returnFocusRef);
+
+  return (
+    <div
+      className="modal-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) close();
+      }}
+    >
+      <section
+        ref={dialogRef}
+        className="leaderboard-card glass-card abort-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="abort-title"
+        aria-describedby="abort-description"
+        tabIndex={-1}
+      >
+        <p className="eyebrow">Завершение попытки</p>
+        <h2 id="abort-title">Прервать тест?</h2>
+        <p id="abort-description" className="muted">
+          Продолжить эту попытку будет нельзя. Незавершённый результат не попадёт в рейтинг.
+        </p>
+        {offline && <p className="error-message" role="status">Для прерывания нужно восстановить соединение.</p>}
+        {error && <p className="error-message" role="alert">{error}</p>}
+        <div className="dialog-actions">
+          <button className="ghost-button" disabled={busy} onClick={close}>Продолжить тест</button>
+          <button className="danger-button" disabled={busy || offline} onClick={onConfirm}>
+            {busy ? 'Прерываем…' : 'Да, прервать'}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function Leaderboard({
   onClose,
   returnFocusRef,
@@ -1014,7 +1196,7 @@ function Leaderboard({
       setLoading(true);
       setError('');
       try {
-        const data = await requestJson<{ entries: LeaderboardEntry[] }>('/api/leaderboard', {}, 1);
+        const data = await requestJson<{ entries: LeaderboardEntry[] }>(appPath('/api/leaderboard'), {}, 1);
         if (!cancelled) setEntries(data.entries);
       } catch {
         if (!cancelled) setError('Не удалось загрузить рейтинг.');

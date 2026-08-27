@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { calculateAccuracy, calculateScore, calculateVerdict } from '../lib/scoring.ts';
+import { BASE_MAX_SCORE, BASE_QUESTION_COUNT } from '../lib/test-config.ts';
+
+assert.equal(BASE_QUESTION_COUNT, 20);
+assert.equal(BASE_MAX_SCORE, 50);
 
 const baseMaxScore = 14;
 

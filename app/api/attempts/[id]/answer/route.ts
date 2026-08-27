@@ -26,7 +26,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         { status: 404, headers: NO_STORE },
       );
     }
-    if (attempt.status === 'completed') {
+    if (attempt.status !== 'active') {
       return NextResponse.json(await attemptPayload(attempt), { headers: NO_STORE });
     }
     if (!Number.isInteger(body.questionId) || body.choiceIndex === undefined) {

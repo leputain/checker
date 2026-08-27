@@ -57,6 +57,18 @@ function correctChoiceForAttempt(attemptId: string) {
   return (JSON.parse(row.choicesJson) as string[])[row.correctIndex];
 }
 
+test('таблица лидеров доступна до начала теста', async ({ page }) => {
+  await page.goto('/');
+  const leaderboardButton = page.getByRole('button', { name: 'Таблица лидеров' });
+  await expect(leaderboardButton).toBeVisible();
+  await leaderboardButton.click();
+  const dialog = page.getByRole('dialog', { name: 'Таблица лидеров' });
+  await expect(dialog).toBeVisible();
+  await dialog.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(leaderboardButton).toBeFocused();
+});
+
 test('полный flow сохраняется после reload и показывает доступный результат', async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   let attemptId = '';
@@ -186,6 +198,47 @@ test('длинный вопрос прокручивается без гориз
     await expectNoHorizontalOverflow(page);
     const overflowY = await page.locator('body').evaluate((body) => getComputedStyle(body).overflowY);
     expect(overflowY).not.toBe('hidden');
+  } finally {
+    await stopAndCleanup(page, attemptId);
+  }
+});
+
+test('кандидат может окончательно прервать активный тест', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes('landscape'), 'Серверная логика прерывания не зависит от orientation.');
+  let attemptId = '';
+
+  try {
+    ({ attemptId } = await startCandidate(page, `abort ${Date.now()}`));
+    const abortButton = page.getByRole('button', { name: 'Прервать' });
+    await expect(abortButton).toBeVisible();
+    await abortButton.click();
+
+    const dialog = page.getByRole('dialog', { name: 'Прервать тест?' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText('Продолжить эту попытку будет нельзя');
+    await dialog.press('Escape');
+    await expect(dialog).toBeHidden();
+    await expect(abortButton).toBeFocused();
+
+    await abortButton.click();
+    await page.getByRole('button', { name: 'Да, прервать' }).click();
+    await expect(page.getByRole('textbox', { name: 'Имя и фамилия' })).toBeVisible();
+    await expect(page.getByRole('status')).toContainText('Результат не добавлен в рейтинг');
+
+    const state = queryLocalD1<{ status: string; answers: number; outbox: number }>(`
+      SELECT status,
+        (SELECT COUNT(*) FROM answers WHERE attempt_id = attempts.id) AS answers,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = attempts.id AND event_type = 'aborted') AS outbox
+      FROM attempts WHERE id = '${attemptId}'
+    `, E2E_STATE_PATH)[0];
+    expect(state).toEqual({ status: 'aborted', answers: 0, outbox: 1 });
+
+    const leaderboard = queryLocalD1<{ count: number }>(`
+      SELECT COUNT(*) AS count FROM attempts
+      WHERE id = '${attemptId}' AND status = 'completed'
+    `, E2E_STATE_PATH)[0];
+    expect(leaderboard.count).toBe(0);
   } finally {
     await stopAndCleanup(page, attemptId);
   }
@@ -364,6 +417,22 @@ test('идемпотентный API создаёт один ответ и од�
         AND event_type = 'answer'
     `, E2E_STATE_PATH)[0];
     expect(afterFlush.outbox).toBe(1);
+
+    const abortUrl = `/api/attempts/${attemptId}/abort`;
+    for (let index = 0; index < 2; index += 1) {
+      const aborted = await request.post(abortUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(aborted.status()).toBe(200);
+      expect((await aborted.json()).status).toBe('aborted');
+    }
+    const abortedState = queryLocalD1<{ status: string; outbox: number }>(`
+      SELECT status,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND event_type = 'aborted') AS outbox
+      FROM attempts WHERE id = '${attemptId}'
+    `, E2E_STATE_PATH)[0];
+    expect(abortedState).toEqual({ status: 'aborted', outbox: 1 });
   } finally {
     if (attemptId) cleanupAttempt(attemptId);
   }

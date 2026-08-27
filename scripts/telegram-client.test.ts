@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { sendTelegramMessage } from '../lib/telegram-client.ts';
-import { answerTelegramMessage, completedTelegramMessage } from '../lib/telegram-messages.ts';
+import {
+  abortedTelegramMessage,
+  answerTelegramMessage,
+  completedTelegramMessage,
+} from '../lib/telegram-messages.ts';
 
 const credentials = {
   botToken: `${'1'.repeat(10)}:${'A'.repeat(35)}`,
@@ -110,5 +114,21 @@ assert.match(completedMessage, /Рекомендован/);
 assert.match(completedMessage, /Результат: 14 из 14 · 100%/);
 assert.match(completedMessage, /время: 02:00/);
 assert.match(completedMessage, /МСК/);
+
+const abortedMessage = abortedTelegramMessage({
+  eventId: 'aborted-attempt-1',
+  attemptId: 'attempt-1',
+  candidateName: 'Анна Петрова',
+  score: 3,
+  baseMaxScore: 28,
+  answeredCount: 4,
+  minimumQuestions: 20,
+  durationSeconds: 75,
+  abortedAt: 1_700_000_000_000,
+});
+assert.match(abortedMessage, /ТЕСТ ПРЕРВАН/);
+assert.match(abortedMessage, /Пройдено: 4 из 20/);
+assert.match(abortedMessage, /Баллы на момент остановки: 3 из 28/);
+assert.match(abortedMessage, /Время: 01:15/);
 
 console.log('telegram client tests: PASS');

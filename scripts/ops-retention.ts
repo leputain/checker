@@ -24,7 +24,8 @@ async function serverIsRunning() {
 const counts = queryLocalD1<{ completed: number; abandoned: number }>(`
   SELECT
     SUM(CASE WHEN status = 'completed' AND completed_at < ${completedCutoff} THEN 1 ELSE 0 END) AS completed,
-    SUM(CASE WHEN status = 'active' AND started_at < ${abandonedCutoff} THEN 1 ELSE 0 END) AS abandoned
+    SUM(CASE WHEN status IN ('active','aborted')
+      AND COALESCE(completed_at, started_at) < ${abandonedCutoff} THEN 1 ELSE 0 END) AS abandoned
   FROM attempts
 `)[0] ?? { completed: 0, abandoned: 0 };
 
@@ -48,16 +49,16 @@ if (!apply) {
       db.prepare(`DELETE FROM answers WHERE attempt_id IN (
         SELECT id FROM attempts
         WHERE (status = 'completed' AND completed_at < ?)
-          OR (status = 'active' AND started_at < ?)
+          OR (status IN ('active','aborted') AND COALESCE(completed_at, started_at) < ?)
       )`).bind(completedCutoff, abandonedCutoff),
       db.prepare(`DELETE FROM telegram_outbox WHERE attempt_id IN (
         SELECT id FROM attempts
         WHERE (status = 'completed' AND completed_at < ?)
-          OR (status = 'active' AND started_at < ?)
+          OR (status IN ('active','aborted') AND COALESCE(completed_at, started_at) < ?)
       )`).bind(completedCutoff, abandonedCutoff),
       db.prepare(`DELETE FROM attempts
         WHERE (status = 'completed' AND completed_at < ?)
-          OR (status = 'active' AND started_at < ?)`)
+          OR (status IN ('active','aborted') AND COALESCE(completed_at, started_at) < ?)`)
         .bind(completedCutoff, abandonedCutoff),
       db.prepare(`UPDATE telegram_outbox SET payload_text = ''
         WHERE created_at < ? AND payload_text != ''`).bind(abandonedCutoff),

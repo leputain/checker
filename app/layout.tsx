@@ -1,17 +1,15 @@
 import type { Metadata, Viewport } from 'next';
-import { Manrope, Playfair_Display } from 'next/font/google';
+import type { CSSProperties } from 'react';
 import './globals.css';
+import { appPath } from '@/lib/app-path.ts';
 
-const manrope = Manrope({ variable: '--font-manrope', subsets: ['cyrillic', 'latin'] });
-const playfair = Playfair_Display({ variable: '--font-playfair', subsets: ['cyrillic', 'latin'], style: ['italic'] });
-
-const metadataBase = new URL(process.env.SITE_ORIGIN ?? 'http://localhost:3001');
+const metadataBase = new URL('https://hub.themuha.cc/');
 
 export const metadata: Metadata = {
   metadataBase,
   title: 'Candidate Check — оценка кандидатов',
   description: 'Короткий адаптивный тест для прозрачной оценки кандидатов.',
-  manifest: '/manifest.webmanifest',
+  manifest: appPath('/manifest.webmanifest'),
   applicationName: 'Candidate Check',
   appleWebApp: {
     capable: true,
@@ -20,20 +18,20 @@ export const metadata: Metadata = {
   },
   formatDetection: { telephone: false },
   icons: {
-    icon: '/assets/brand/checker-mascot-v1.png',
-    apple: '/assets/brand/checker-mascot-v1.png',
+    icon: appPath('/assets/brand/checker-mascot-v1.png'),
+    apple: appPath('/assets/brand/checker-mascot-v1.png'),
   },
   openGraph: {
     type: 'website',
     title: 'Candidate Check',
     description: 'Оценка кандидатов без лишнего стресса.',
-    images: [{ url: '/og.png', width: 1730, height: 909, alt: 'Candidate Check' }],
+    images: [{ url: appPath('/og.png'), width: 1730, height: 909, alt: 'Candidate Check' }],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'Candidate Check',
     description: 'Оценка кандидатов без лишнего стресса.',
-    images: ['/og.png'],
+    images: [appPath('/og.png')],
   },
 };
 
@@ -44,13 +42,18 @@ export const viewport: Viewport = {
   themeColor: '#09100e',
 };
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const bodyStyle = {
+    '--candidate-background-image': `url("${appPath('/assets/brand/checker-background-v1.webp')}")`,
+    '--candidate-mascot-image': `url("${appPath('/assets/brand/checker-mascot-v1.webp')}")`,
+  } as CSSProperties;
+
   return (
     <html lang="ru">
       <head>
-        <link rel="preload" as="image" href="/assets/brand/checker-background-v1.webp" type="image/webp" />
-        <link rel="preload" as="image" href="/assets/brand/checker-mascot-v1.webp" type="image/webp" />
+        <link rel="preload" as="image" href={appPath('/assets/brand/checker-background-v1.webp')} type="image/webp" />
+        <link rel="preload" as="image" href={appPath('/assets/brand/checker-mascot-v1.webp')} type="image/webp" />
       </head>
-      <body className={`${manrope.variable} ${playfair.variable}`}>{children}</body>
+      <body style={bodyStyle}>{children}</body>
     </html>
   );
 }

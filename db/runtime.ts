@@ -32,7 +32,7 @@ export type AttemptRow = {
   candidate_name: string | null;
   public_alias: string;
   bank_revision: string | null;
-  status: 'active' | 'completed';
+  status: 'active' | 'completed' | 'aborted';
   started_at: number;
   total_deadline_at: number;
   current_question_started_at: number;
@@ -321,6 +321,15 @@ export async function attemptPayload(attempt: AttemptRow) {
   const serverNowMs = Date.now();
   const answeredCount = attempt.correct_count + attempt.wrong_count;
   const accuracy = calculateAccuracy(attempt.correct_count, attempt.wrong_count);
+
+  if (attempt.status === 'aborted') {
+    return {
+      attemptId: attempt.id,
+      alias: attempt.public_alias,
+      status: 'aborted' as const,
+      serverNowMs,
+    };
+  }
 
   if (attempt.status === 'completed' || attempt.current_question_id === null) {
     const verdict = attempt.verdict ?? calculateVerdict(attempt.score, attempt.base_max_score, accuracy);

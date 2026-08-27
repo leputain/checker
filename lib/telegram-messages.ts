@@ -110,3 +110,27 @@ export function completedTelegramMessage(input: {
     `ID: ${shortId(input.attemptId)} / ${shortId(input.eventId)} · банк ${input.bankRevision?.slice(0, 8) ?? 'legacy'}`,
   ].join('\n');
 }
+
+export function abortedTelegramMessage(input: {
+  eventId: string;
+  attemptId: string;
+  candidateName: string;
+  score: number;
+  baseMaxScore: number;
+  answeredCount: number;
+  minimumQuestions: number;
+  durationSeconds: number;
+  abortedAt: number;
+}) {
+  return [
+    '⛔ CANDIDATE CHECK · ТЕСТ ПРЕРВАН',
+    `👤 ${input.candidateName}`,
+    '',
+    `Пройдено: ${input.answeredCount} из ${input.minimumQuestions}`,
+    `Баллы на момент остановки: ${input.score} из ${input.baseMaxScore}`,
+    `Время: ${durationLabel(input.durationSeconds)}`,
+    '',
+    `Прервано: ${completedAtLabel(input.abortedAt)}`,
+    `ID: ${shortId(input.attemptId)} / ${shortId(input.eventId)}`,
+  ].join('\n');
+}
