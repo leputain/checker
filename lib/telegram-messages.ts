@@ -14,8 +14,36 @@ const verdictLabels: Record<Verdict, string> = {
   FAIL: 'Порог не пройден',
 };
 
-function secondsLabel(seconds: number) {
-  return `${Math.max(0, Math.round(seconds))} сек.`;
+const verdictIcons: Record<Verdict, string> = {
+  PASS: '🟢',
+  REVIEW: '🟡',
+  FAIL: '🔴',
+};
+
+function durationLabel(seconds: number) {
+  const safe = Math.max(0, Math.round(seconds));
+  return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+function pointsLabel(points: number) {
+  const lastTwo = points % 100;
+  const last = points % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${points} баллов`;
+  if (last === 1) return `${points} балл`;
+  if (last >= 2 && last <= 4) return `${points} балла`;
+  return `${points} баллов`;
+}
+
+function completedAtLabel(timestamp: number) {
+  return `${new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(timestamp)).replace(',', ' ·')} МСК`;
 }
 
 function shortId(value: string) {
@@ -39,17 +67,17 @@ export function answerTelegramMessage(input: {
 }) {
   const result = input.timedOut ? '⏱ Таймаут' : input.correct ? '✅ Верно' : '❌ Неверно';
   return [
-    'Candidate Check · ответ',
-    `Кандидат: ${input.candidateName}`,
-    `Попытка: ${shortId(input.attemptId)} · событие: ${shortId(input.eventId)}`,
-    `Вопрос ${input.position} · ${difficultyLabels[input.difficulty]} · ${input.weight} балл(а)`,
+    `${result} · вопрос ${input.position}`,
+    `👤 ${input.candidateName}`,
+    `${difficultyLabels[input.difficulty]} · ${pointsLabel(input.weight)}`,
     '',
-    input.prompt,
+    `🧩 ${input.prompt}`,
     '',
-    `Ответ кандидата: ${input.selectedAnswer ?? 'Нет ответа'}`,
-    `Правильный ответ: ${input.correctAnswer}`,
-    `Результат: ${result}`,
-    `Время на вопрос: ${secondsLabel(input.questionElapsedSeconds)} · осталось в тесте: ${secondsLabel(input.totalRemainingSeconds)}`,
+    `Ответ: ${input.selectedAnswer ?? 'не дан'}`,
+    `Эталон: ${input.correctAnswer}`,
+    '',
+    `⏱ ${durationLabel(input.questionElapsedSeconds)} на вопрос · ${durationLabel(input.totalRemainingSeconds)} до конца`,
+    `ID: ${shortId(input.attemptId)} / ${shortId(input.eventId)}`,
   ].join('\n');
 }
 
@@ -70,14 +98,15 @@ export function completedTelegramMessage(input: {
   completedAt: number;
 }) {
   return [
-    'Candidate Check · итог',
-    `Кандидат: ${input.candidateName}`,
-    `Попытка: ${shortId(input.attemptId)} · событие: ${shortId(input.eventId)}`,
-    `Вердикт: ${verdictLabels[input.verdict]}`,
-    `Баллы: ${input.score}/${input.baseMaxScore} (${input.scorePercent}%)`,
-    `Точность: ${input.accuracy}% · верно: ${input.correctCount} · ошибок: ${input.wrongCount}`,
-    `Всего ответов: ${input.answeredCount} · длительность: ${secondsLabel(input.durationSeconds)}`,
-    `Ревизия банка: ${input.bankRevision?.slice(0, 12) ?? 'legacy'}`,
-    `Завершено: ${new Date(input.completedAt).toISOString()}`,
+    '🏁 CANDIDATE CHECK · ИТОГ',
+    `👤 ${input.candidateName}`,
+    `${verdictIcons[input.verdict]} ${verdictLabels[input.verdict]}`,
+    '',
+    `Результат: ${input.score} из ${input.baseMaxScore} · ${input.scorePercent}%`,
+    `Верно: ${input.correctCount} из ${input.answeredCount} · ошибок: ${input.wrongCount}`,
+    `Точность: ${input.accuracy}% · время: ${durationLabel(input.durationSeconds)}`,
+    '',
+    `Завершено: ${completedAtLabel(input.completedAt)}`,
+    `ID: ${shortId(input.attemptId)} / ${shortId(input.eventId)} · банк ${input.bankRevision?.slice(0, 8) ?? 'legacy'}`,
   ].join('\n');
 }

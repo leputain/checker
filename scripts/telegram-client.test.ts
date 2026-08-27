@@ -86,8 +86,9 @@ const answerMessage = answerTelegramMessage({
   totalRemainingSeconds: 540,
 });
 assert.match(answerMessage, /Анна Петрова/);
-assert.match(answerMessage, /Правильный ответ: Логику/);
-assert.match(answerMessage, /✅ Верно/);
+assert.match(answerMessage, /Эталон: Логику/);
+assert.match(answerMessage, /✅ Верно · вопрос 1/);
+assert.match(answerMessage, /00:12 на вопрос · 09:00 до конца/);
 
 const completedMessage = completedTelegramMessage({
   eventId: 'completed-attempt-1',
@@ -106,6 +107,8 @@ const completedMessage = completedTelegramMessage({
   completedAt: 1_700_000_000_000,
 });
 assert.match(completedMessage, /Рекомендован/);
-assert.match(completedMessage, /14\/14/);
+assert.match(completedMessage, /Результат: 14 из 14 · 100%/);
+assert.match(completedMessage, /время: 02:00/);
+assert.match(completedMessage, /МСК/);
 
 console.log('telegram client tests: PASS');

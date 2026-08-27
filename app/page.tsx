@@ -698,22 +698,34 @@ export default function Home() {
           aria-hidden={showLeaderboard || undefined}
           inert={showLeaderboard || undefined}
         >
-          <div className="result-mascot" aria-hidden="true" />
-          <span className="verdict-badge">{verdictLabels[result.verdict]}</span>
-          <div
-            className="score-ring"
-            style={{ '--score': `${result.scorePercent * 3.6}deg` } as React.CSSProperties}
-          >
-            <div>
-              <strong>{result.score} / {result.baseMaxScore}</strong>
-              <span>баллов · {result.scorePercent}%</span>
+          <div className="result-topline">
+            <span className="verdict-badge">
+              <i aria-hidden="true" />
+              {verdictLabels[result.verdict]}
+            </span>
+            <div className="result-mascot" aria-hidden="true" />
+          </div>
+          <div className="result-hero">
+            <div
+              className="score-ring"
+              role="img"
+              aria-label={`${result.scorePercent}%: ${result.score} из ${result.baseMaxScore} баллов`}
+              style={{ '--score': `${result.scorePercent * 3.6}deg` } as React.CSSProperties}
+            >
+              <div>
+                <strong>{result.scorePercent}%</strong>
+                <span>{result.score} из {result.baseMaxScore} баллов</span>
+              </div>
+            </div>
+            <div className="result-summary">
+              <p className="eyebrow">Итоговая оценка</p>
+              <h1>Результат готов.</h1>
+              <p className="verdict-copy">{verdictCopy[result.verdict]}</p>
+              <p className="muted result-copy">
+                Верно {result.correctCount} из {result.answeredCount}. Правильные ответы не раскрываются.
+              </p>
             </div>
           </div>
-          <h1>Результат готов.</h1>
-          <p className="verdict-copy">{verdictCopy[result.verdict]}</p>
-          <p className="muted result-copy">
-            Правильные ответы кандидату не раскрываются: банк остаётся пригодным для следующих оценок.
-          </p>
           <div className="stats-grid result-stats">
             <div><strong>{result.accuracy}%</strong><span>точность</span></div>
             <div><strong>{result.correctCount}</strong><span>верных</span></div>
@@ -731,6 +743,7 @@ export default function Home() {
             </button>
             <button className="ghost-button" onClick={resetToStart}>На стартовую</button>
           </div>
+          <p className="result-privacy"><span aria-hidden="true">◆</span> Банк ответов остаётся закрытым</p>
         </section>
         {showLeaderboard && (
           <Leaderboard
