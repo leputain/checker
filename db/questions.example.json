@@ -1,0 +1,74 @@
+[
+  {
+    "id": 1,
+    "difficulty": "easy",
+    "topic": "network",
+    "prompt": "Какой HTTP-метод обычно используют для чтения ресурса?",
+    "choices": ["POST", "GET", "PATCH", "DELETE"],
+    "correctIndex": 1,
+    "active": true
+  },
+  {
+    "id": 2,
+    "difficulty": "easy",
+    "topic": "general",
+    "prompt": "Что лучше всего описывает переменную в программе?",
+    "choices": ["Именованное место для значения", "Сетевой порт", "Запрос к базе данных"],
+    "correctIndex": 0,
+    "active": true
+  },
+  {
+    "id": 3,
+    "difficulty": "medium",
+    "topic": "database",
+    "prompt": "Что помогает безопасно передавать значения в SQL-запрос?",
+    "choices": ["Конкатенация строк", "Подготовленные параметры", "Base64"],
+    "correctIndex": 1,
+    "active": true
+  },
+  {
+    "id": 4,
+    "difficulty": "medium",
+    "topic": "security",
+    "prompt": "Почему секреты не следует хранить в Git?",
+    "choices": ["Они остаются в истории", "Git не поддерживает текст", "Это замедляет CSS"],
+    "correctIndex": 0,
+    "active": true
+  },
+  {
+    "id": 5,
+    "difficulty": "hard",
+    "topic": "architecture",
+    "prompt": "Как предотвратить повторное выполнение одной операции?",
+    "choices": ["Идемпотентность", "Увеличение таймаута", "Скрытие кнопки"],
+    "correctIndex": 0,
+    "active": true
+  },
+  {
+    "id": 6,
+    "difficulty": "hard",
+    "topic": "database",
+    "prompt": "Какой подход безопаснее для миграции без простоя?",
+    "choices": ["Expand/migrate/contract", "Мгновенное удаление старой схемы", "Отключение логов"],
+    "correctIndex": 0,
+    "active": true
+  },
+  {
+    "id": 7,
+    "difficulty": "expert",
+    "topic": "architecture",
+    "prompt": "Какой паттерн связывает запись в БД и публикацию события?",
+    "choices": ["Outbox", "Singleton UI", "Round-robin DNS"],
+    "correctIndex": 0,
+    "active": true
+  },
+  {
+    "id": 8,
+    "difficulty": "expert",
+    "topic": "architecture",
+    "prompt": "Какое свойство нужно обработчику повторно доставляемых событий?",
+    "choices": ["Идемпотентность", "Случайная задержка", "Общий root-токен"],
+    "correctIndex": 0,
+    "active": true
+  }
+]
