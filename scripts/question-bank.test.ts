@@ -5,7 +5,10 @@ import {
   validateQuestionBank,
 } from '../lib/question-bank-validation.ts';
 import { DIFFICULTIES, TEST_CONFIG, type Difficulty } from '../lib/test-config.ts';
-import { selectUniqueQuestionPlan } from '../lib/question-selection.ts';
+import {
+  selectRemedialQuestion,
+  selectUniqueQuestionPlan,
+} from '../lib/question-selection.ts';
 
 let nextId = 1;
 
@@ -35,6 +38,39 @@ const valid = validateQuestionBank(minimumBank(), 'valid.json');
 assert.equal(valid.length, 24);
 assert.equal(summarizeQuestionBank(valid).warnings.length, 4);
 
+const contextBank = minimumBank();
+const originalContext = 'server {\r\n  listen 443;\r\n}';
+Object.assign(contextBank[0], { contextType: 'config', context: originalContext });
+const contextQuestion = validateQuestionBank(contextBank, 'context.json')[0];
+assert.equal(contextQuestion.contextType, 'config');
+assert.equal(contextQuestion.context, originalContext, 'context line endings and indentation must remain intact');
+
+const incompleteContextBank = minimumBank();
+Object.assign(incompleteContextBank[0], { contextType: 'log' });
+assert.throws(
+  () => validateQuestionBank(incompleteContextBank, 'incomplete-context.json'),
+  /contextType и context должны задаваться совместно/,
+);
+
+const invalidContextBank = minimumBank();
+Object.assign(invalidContextBank[0], {
+  contextType: 'html',
+  context: '<strong>unsafe</strong>',
+});
+Object.assign(invalidContextBank[1], {
+  contextType: 'text',
+  context: 'x'.repeat(2_001),
+});
+assert.throws(
+  () => validateQuestionBank(invalidContextBank, 'invalid-context.json'),
+  (error: unknown) => {
+    assert.ok(error instanceof QuestionBankValidationError);
+    assert.match(error.message, /contextType должен быть одним из/);
+    assert.match(error.message, /context должен содержать не более 2000/);
+    return true;
+  },
+);
+
 const bankWithReserve = minimumBank();
 for (const difficulty of DIFFICULTIES) bankWithReserve.push(question(difficulty));
 assert.equal(summarizeQuestionBank(validateQuestionBank(bankWithReserve, 'reserve.json')).warnings.length, 0);
@@ -45,6 +81,34 @@ const matchedPlan = selectUniqueQuestionPlan([
   { id: 3, difficulty: 'medium', dedupe_key: 'shared' },
 ], { easy: 1, medium: 1, hard: 0, expert: 0 });
 assert.deepEqual(matchedPlan?.map((item) => item.id), [2, 3]);
+
+const remedialCandidates = [
+  { id: 11, difficulty: 'medium' as const, topic: 'Сети', dedupe_key: 'network-a' },
+  { id: 12, difficulty: 'medium' as const, topic: 'Linux', dedupe_key: 'linux-a' },
+  { id: 13, difficulty: 'medium' as const, topic: 'Сети', dedupe_key: 'network-b' },
+];
+assert.equal(
+  selectRemedialQuestion(
+    remedialCandidates,
+    'medium',
+    'сети',
+    new Set([11]),
+    new Set(),
+  )?.id,
+  13,
+  'same-topic remedial must win over an earlier fallback candidate',
+);
+assert.equal(
+  selectRemedialQuestion(
+    remedialCandidates,
+    'medium',
+    'Windows',
+    new Set([11]),
+    new Set(['linux-a']),
+  )?.id,
+  13,
+  'fallback must preserve id/dedupe exclusions',
+);
 
 const deduplicatedPool = minimumBank();
 deduplicatedPool[0].dedupeKey = 'shared-concept';

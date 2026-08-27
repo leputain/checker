@@ -22,6 +22,34 @@ export type TelegramSendResult =
       retryAfterMs?: number;
     };
 
+export const TELEGRAM_MESSAGE_VISIBLE_LIMIT = 4_096;
+
+const TELEGRAM_HTML_TAG_PATTERN = /<\/?(?:b|strong|i|em|u|ins|s|strike|del|span|tg-spoiler|a|code|pre|blockquote|tg-emoji)(?:\s[^<>]*)?>/giu;
+const TELEGRAM_HTML_ENTITY_PATTERN = /&(?:lt|gt|amp|quot|#\d+|#x[\da-f]+);/giu;
+
+function decodeTelegramHtmlEntity(entity: string) {
+  const normalized = entity.toLowerCase();
+  if (normalized === '&lt;') return '<';
+  if (normalized === '&gt;') return '>';
+  if (normalized === '&amp;') return '&';
+  if (normalized === '&quot;') return '"';
+
+  const numeric = normalized.startsWith('&#x')
+    ? Number.parseInt(normalized.slice(3, -1), 16)
+    : Number.parseInt(normalized.slice(2, -1), 10);
+  if (!Number.isInteger(numeric) || numeric < 0 || numeric > 0x10ffff) return entity;
+  return String.fromCodePoint(numeric);
+}
+
+export function telegramVisibleTextLength(text: string, parseMode?: 'HTML') {
+  if (parseMode !== 'HTML') return text.length;
+  const withoutTags = text.replace(TELEGRAM_HTML_TAG_PATTERN, '');
+  return withoutTags.replace(
+    TELEGRAM_HTML_ENTITY_PATTERN,
+    (entity) => decodeTelegramHtmlEntity(entity),
+  ).length;
+}
+
 type TelegramApiResponse = {
   ok?: boolean;
   result?: { message_id?: number } | boolean;
@@ -37,7 +65,8 @@ export async function sendTelegramMessage(
   timeoutMs = 5_000,
 ): Promise<TelegramSendResult> {
   const deliveryMethod = request.deliveryMethod ?? 'send';
-  if (request.text.length === 0 || request.text.length > 4_096) {
+  const visibleTextLength = telegramVisibleTextLength(request.text, request.parseMode);
+  if (visibleTextLength === 0 || visibleTextLength > TELEGRAM_MESSAGE_VISIBLE_LIMIT) {
     return { ok: false, code: 'telegram_payload_invalid', retryable: false };
   }
   if (deliveryMethod !== 'send' && !Number.isInteger(request.rootMessageId)) {

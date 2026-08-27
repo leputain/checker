@@ -11,6 +11,7 @@ import {
   OUTBOX_MAINTENANCE_NEXT_ATTEMPT_SQL,
   outboxClaimBindings,
   outboxMaintenanceBindings,
+  telegramDeliveryStateForError,
   TELEGRAM_GROUP_MIN_INTERVAL_MS,
   TELEGRAM_MAX_AGE_MS,
   TELEGRAM_MAX_ATTEMPTS,
@@ -280,7 +281,7 @@ export async function flushAttemptNotifications(attemptId: string) {
       .run();
     await recordDeliveryState(
       fingerprint,
-      result.retryable ? 'degraded' : 'misconfigured',
+      telegramDeliveryStateForError(result),
       result.code,
     );
   }

@@ -1,6 +1,6 @@
 {
   "name": "candidate-check",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -22,9 +22,10 @@
     "ops:backup:verify": "node --experimental-strip-types scripts/ops-backup-verify.ts",
     "ops:restore": "node --experimental-strip-types scripts/ops-restore.ts",
     "ops:retention": "node --experimental-strip-types scripts/ops-retention.ts",
-    "test": "npm run test:scoring && npm run test:bank && npm run test:telegram",
+    "test": "npm run test:scoring && npm run test:bank && npm run test:leaderboard && npm run test:telegram",
     "test:scoring": "node --experimental-strip-types scripts/scoring.test.ts",
     "test:bank": "node --experimental-strip-types scripts/question-bank.test.ts",
+    "test:leaderboard": "node --experimental-strip-types scripts/leaderboard.test.ts",
     "test:telegram": "node --experimental-strip-types scripts/telegram-config.test.ts && node --experimental-strip-types scripts/telegram-client.test.ts && node --experimental-strip-types scripts/telegram-outbox-policy.test.ts",
     "test:e2e": "node --experimental-strip-types scripts/reset-e2e-state.ts && playwright test",
     "verify": "npm run secrets:check && npm run questions:validate && npm test && npm run typecheck && npm run lint && npm run build && npm run secrets:artifacts && npm run test:e2e && npm audit --omit=dev"

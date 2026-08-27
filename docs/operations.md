@@ -1,4 +1,4 @@
-# Candidate Check v0.5.1: локальный runbook
+# Candidate Check v0.6.0: локальный runbook
 
 ## Границы
 

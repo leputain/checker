@@ -4,6 +4,11 @@ export const TELEGRAM_MAX_AGE_MS = 24 * 60 * 60 * 1_000;
 export const TELEGRAM_LEASE_MS = 30_000;
 export const TELEGRAM_GROUP_MIN_INTERVAL_MS = 3_100;
 
+export function telegramDeliveryStateForError(result: { code: string; retryable: boolean }) {
+  if (result.retryable || result.code === 'telegram_payload_invalid') return 'degraded' as const;
+  return 'misconfigured' as const;
+}
+
 export const OUTBOX_CLAIM_SQL = `UPDATE telegram_outbox
   SET status = 'sending', attempt_count = attempt_count + 1,
     lease_token = ?, lease_until = ?, next_attempt_at = ?

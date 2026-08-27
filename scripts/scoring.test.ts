@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { calculateAccuracy, calculateScore, calculateVerdict } from '../lib/scoring.ts';
 import { BASE_MAX_SCORE, BASE_QUESTION_COUNT } from '../lib/test-config.ts';
+import { summarizeAttemptStatistics } from '../lib/attempt-statistics.ts';
 
 assert.equal(BASE_QUESTION_COUNT, 20);
 assert.equal(BASE_MAX_SCORE, 50);
@@ -31,5 +32,40 @@ assert.notEqual(calculateVerdict(unstableScore, baseMaxScore, unstableAccuracy),
 assert.equal(calculateScore(14, 5, baseMaxScore, true), 14);
 assert.equal(calculateScore(9, 5, baseMaxScore, false), 9);
 assert.equal(calculateVerdict(7, baseMaxScore, 50), 'REVIEW');
+
+const answerStatistics = summarizeAttemptStatistics([
+  {
+    difficulty: 'easy',
+    topic: 'Сети',
+    answeredCount: 2,
+    correctCount: 1,
+    timeoutCount: 1,
+    elapsedSeconds: 40,
+    measuredCount: 2,
+  },
+  {
+    difficulty: 'medium',
+    topic: 'Linux',
+    answeredCount: 1,
+    correctCount: 0,
+    timeoutCount: 1,
+    elapsedSeconds: 0,
+    measuredCount: 0,
+  },
+]);
+assert.equal(answerStatistics.timeoutCount, 2);
+assert.equal(
+  answerStatistics.averageAnswerSeconds,
+  20,
+  'questions skipped at the total deadline must not reduce the measured average',
+);
+assert.deepEqual(answerStatistics.difficultyStats, [
+  { difficulty: 'easy', answeredCount: 2, correctCount: 1, accuracy: 50 },
+  { difficulty: 'medium', answeredCount: 1, correctCount: 0, accuracy: 0 },
+]);
+assert.deepEqual(answerStatistics.topicStats, [
+  { topic: 'Сети', answeredCount: 2, correctCount: 1, accuracy: 50 },
+  { topic: 'Linux', answeredCount: 1, correctCount: 0, accuracy: 0 },
+]);
 
 console.log('scoring tests: PASS');

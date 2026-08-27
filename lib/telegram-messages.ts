@@ -1,12 +1,22 @@
 import type { Verdict } from './scoring.ts';
 import type { Difficulty } from './test-config.ts';
 
+const TELEGRAM_FIELD_LIMITS = {
+  candidateName: 80,
+  prompt: 280,
+  context: 2_000,
+  answer: 160,
+  topic: 120,
+} as const;
+
 const difficultyLabels: Record<Difficulty, string> = {
   easy: 'Базовый',
   medium: 'Средний',
   hard: 'Сложный',
   expert: 'Экспертный',
 };
+
+const difficultyOrder: Difficulty[] = ['easy', 'medium', 'hard', 'expert'];
 
 const verdictLabels: Record<Verdict, string> = {
   PASS: 'Рекомендован',
@@ -22,6 +32,15 @@ const verdictIcons: Record<Verdict, string> = {
 
 export function escapeTelegramHtml(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function truncateTelegramField(value: string, maxLength: number) {
+  if (value.length <= maxLength) return value;
+  const suffix = '…';
+  let end = Math.max(0, maxLength - suffix.length);
+  const lastCodeUnit = value.charCodeAt(end - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) end -= 1;
+  return `${value.slice(0, end)}${suffix}`;
 }
 
 function durationLabel(seconds: number) {
@@ -76,7 +95,10 @@ export function progressTelegramMessage(input: {
   return [
     `${icon} <b>${heading}</b>`,
     '',
-    `👤 <b>${escapeTelegramHtml(input.candidateName)}</b>`,
+    `👤 <b>${escapeTelegramHtml(truncateTelegramField(
+      input.candidateName,
+      TELEGRAM_FIELD_LIMITS.candidateName,
+    ))}</b>`,
     `Прогресс: <b>${input.answeredCount} из ${input.totalQuestions}</b>`,
     '',
     `✅ ${input.correctCount}   ❌ ${input.wrongCount}`,
@@ -94,6 +116,8 @@ export function answerTelegramMessage(input: {
   difficulty: Difficulty;
   weight: number;
   prompt: string;
+  contextType?: 'text' | 'code' | 'command' | 'log' | 'config';
+  context?: string;
   selectedAnswer: string | null;
   correctAnswer: string;
   correct: boolean;
@@ -101,14 +125,40 @@ export function answerTelegramMessage(input: {
   questionElapsedSeconds: number;
 }) {
   const result = input.timedOut ? '⏱ Таймаут' : input.correct ? '✅ Верно' : '❌ Неверно';
+  const contextLabels = {
+    text: 'Контекст',
+    code: 'Код',
+    command: 'Команда',
+    log: 'Фрагмент журнала',
+    config: 'Конфигурация',
+  } as const;
+  const contextLines = input.context && input.contextType
+    ? [
+        '',
+        `<b>${contextLabels[input.contextType]}:</b>`,
+        input.contextType === 'text'
+          ? escapeTelegramHtml(truncateTelegramField(input.context, TELEGRAM_FIELD_LIMITS.context))
+          : `<pre>${escapeTelegramHtml(truncateTelegramField(
+              input.context,
+              TELEGRAM_FIELD_LIMITS.context,
+            ))}</pre>`,
+      ]
+    : [];
   return [
     `<b>${result} · вопрос ${input.position} из ${input.totalQuestions}</b>`,
     `${difficultyLabels[input.difficulty]} · ${pointsLabel(input.weight)}`,
     '',
-    escapeTelegramHtml(input.prompt),
+    escapeTelegramHtml(truncateTelegramField(input.prompt, TELEGRAM_FIELD_LIMITS.prompt)),
+    ...contextLines,
     '',
-    `<b>Выбрано:</b> ${escapeTelegramHtml(input.selectedAnswer ?? 'ответ не дан')}`,
-    `<b>Правильно:</b> <tg-spoiler>${escapeTelegramHtml(input.correctAnswer)}</tg-spoiler>`,
+    `<b>Выбрано:</b> ${escapeTelegramHtml(truncateTelegramField(
+      input.selectedAnswer ?? 'ответ не дан',
+      TELEGRAM_FIELD_LIMITS.answer,
+    ))}`,
+    `<b>Правильно:</b> ${escapeTelegramHtml(truncateTelegramField(
+      input.correctAnswer,
+      TELEGRAM_FIELD_LIMITS.answer,
+    ))}`,
     '',
     `⏱ ${durationLabel(input.questionElapsedSeconds)}`,
     `<code>#${shortId(input.attemptId)}</code>`,
@@ -126,8 +176,16 @@ export function completedTelegramMessage(input: {
   wrongCount: number;
   answeredCount: number;
   accuracy: number;
+  timeoutCount: number;
   durationSeconds: number;
+  averageAnswerSeconds: number;
   completedAt: number;
+  difficultyStats: Array<{
+    difficulty: Difficulty;
+    correctCount: number;
+    answeredCount: number;
+    accuracy: number;
+  }>;
   topicErrors: Array<{ topic: string; count: number }>;
 }) {
   const sortedTopics = [...input.topicErrors]
@@ -138,18 +196,35 @@ export function completedTelegramMessage(input: {
     ? [
         '',
         '<b>Слабые темы:</b>',
-        ...visibleTopics.map(({ topic, count }) => `• ${escapeTelegramHtml(topic)} — ${count}`),
+        ...visibleTopics.map(({ topic, count }) => (
+          `• ${escapeTelegramHtml(truncateTelegramField(topic, TELEGRAM_FIELD_LIMITS.topic))} — ${count}`
+        )),
         ...(hiddenTopics ? [`• ещё тем: ${hiddenTopics}`] : []),
       ]
     : [];
+  const difficultyLines = difficultyOrder
+    .map((difficulty) => input.difficultyStats.find((item) => item.difficulty === difficulty))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item && item.answeredCount > 0))
+    .map(
+      (item) =>
+        `• ${difficultyLabels[item.difficulty]}: ${item.correctCount}/${item.answeredCount} · ${item.accuracy}%`,
+    );
+  const difficultyBlock = difficultyLines.length
+    ? ['', '<b>По сложности:</b>', ...difficultyLines]
+    : [];
 
   return [
-    `${verdictIcons[input.verdict]} <b>${escapeTelegramHtml(input.candidateName)}</b>`,
+    `${verdictIcons[input.verdict]} <b>${escapeTelegramHtml(truncateTelegramField(
+      input.candidateName,
+      TELEGRAM_FIELD_LIMITS.candidateName,
+    ))}</b>`,
     `<b>${verdictLabels[input.verdict]}</b>`,
     '',
     `<b>${input.score} / ${input.baseMaxScore} баллов · ${input.scorePercent}%</b>`,
-    `✅ ${input.correctCount} верных   ❌ ${input.wrongCount} ошибок`,
-    `Точность: ${input.accuracy}% · время: ${durationLabel(input.durationSeconds)}`,
+    `✅ Верно: ${input.correctCount} · ❌ Ошибок: ${input.wrongCount} · из них таймаутов: ${input.timeoutCount}`,
+    `Точность: ${input.accuracy}%`,
+    `Время: ${durationLabel(input.durationSeconds)} · среднее на ответ: ${durationLabel(input.averageAnswerSeconds)}`,
+    ...difficultyBlock,
     ...topicLines,
     '',
     `Дата теста: ${completedAtLabel(input.completedAt)}`,
@@ -168,7 +243,10 @@ export function abortedTelegramMessage(input: {
   abortedAt: number;
 }) {
   return [
-    `⛔ <b>${escapeTelegramHtml(input.candidateName)}</b>`,
+    `⛔ <b>${escapeTelegramHtml(truncateTelegramField(
+      input.candidateName,
+      TELEGRAM_FIELD_LIMITS.candidateName,
+    ))}</b>`,
     '<b>Тестирование прервано</b>',
     '',
     `Пройдено: <b>${input.answeredCount} из ${input.minimumQuestions}</b>`,

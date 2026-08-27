@@ -6,8 +6,37 @@ export type SelectableQuestion = {
   dedupe_key: string;
 };
 
+export type RemedialCandidate = SelectableQuestion & {
+  topic: string;
+};
+
 function questionDedupeKey(question: SelectableQuestion) {
   return question.dedupe_key || `question:${question.id}`;
+}
+
+function normalizedTopic(topic: string) {
+  return topic.trim().toLocaleLowerCase('ru-RU');
+}
+
+/**
+ * Candidates are expected in randomized order. Prefer a unique question from the
+ * same topic, then fall back to any unique question of the requested difficulty.
+ */
+export function selectRemedialQuestion<T extends RemedialCandidate>(
+  candidates: readonly T[],
+  difficulty: Difficulty,
+  topic: string,
+  excludedIds: ReadonlySet<number>,
+  excludedDedupeKeys: ReadonlySet<string>,
+) {
+  const available = candidates.filter((candidate) => (
+    candidate.difficulty === difficulty &&
+    !excludedIds.has(candidate.id) &&
+    !excludedDedupeKeys.has(questionDedupeKey(candidate))
+  ));
+  const targetTopic = normalizedTopic(topic);
+  return available.find((candidate) => normalizedTopic(candidate.topic) === targetTopic)
+    ?? available[0];
 }
 
 export function selectUniqueQuestionPlan<T extends SelectableQuestion>(

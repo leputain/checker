@@ -11,6 +11,7 @@ import {
 } from '@/db/runtime';
 import { selectUniqueQuestionPlan } from '@/lib/question-selection.ts';
 import { progressTelegramMessage } from '@/lib/telegram-messages.ts';
+import { candidateKey } from '@/lib/candidate-key.ts';
 import { BASE_QUESTION_COUNT, DIFFICULTIES, TEST_CONFIG } from '@/lib/test-config.ts';
 
 const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
@@ -88,17 +89,18 @@ export async function POST(request: Request) {
 
     const id = crypto.randomUUID();
     const now = Date.now();
+    const identityKey = await candidateKey(name);
     const baseQuestionIds = selected.map((question) => question.id);
     const baseMaxScore = selected.reduce((sum, question) => sum + question.weight, 0);
     const [first, ...pending] = baseQuestionIds;
     const insertStatement = db
       .prepare(
         `INSERT INTO attempts (
-          id, token_hash, start_key, candidate_name, public_alias, bank_revision,
+          id, token_hash, start_key, candidate_name, candidate_key, public_alias, bank_revision,
           status, started_at, total_deadline_at, current_question_started_at, question_deadline_at,
           current_question_id, pending_question_ids, asked_question_ids,
           base_question_ids, base_max_score
-        ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(start_key) DO NOTHING`,
       )
       .bind(
@@ -106,6 +108,7 @@ export async function POST(request: Request) {
         tokenHash,
         startKey,
         name,
+        identityKey,
         publicAlias(name),
         bankRevision,
         now,

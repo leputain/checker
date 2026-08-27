@@ -6,11 +6,16 @@ export type QuestionDefinition = {
   difficulty: Difficulty;
   topic: string;
   prompt: string;
+  contextType?: QuestionContextType;
+  context?: string;
   choices: string[];
   correctIndex: number;
   active: boolean;
   dedupeKey: string;
 };
+
+export const QUESTION_CONTEXT_TYPES = ['text', 'code', 'command', 'log', 'config'] as const;
+export type QuestionContextType = typeof QUESTION_CONTEXT_TYPES[number];
 
 export type QuestionBankSummary = {
   total: number;
@@ -26,6 +31,7 @@ export const QUESTION_LIMITS = {
   choicesMin: 2,
   choicesMax: 5,
   dedupeKeyLength: 80,
+  contextLength: 2_000,
 } as const;
 
 const DEDUPE_KEY_PATTERN = /^[a-z0-9][a-z0-9:_-]*$/;
@@ -85,7 +91,18 @@ export function validateQuestionBank(raw: unknown, source: string): QuestionDefi
     }
 
     const question = candidate as Record<string, unknown>;
-    const { id, difficulty, topic, prompt, choices, correctIndex, active, dedupeKey } = question;
+    const {
+      id,
+      difficulty,
+      topic,
+      prompt,
+      contextType,
+      context,
+      choices,
+      correctIndex,
+      active,
+      dedupeKey,
+    } = question;
 
     if (!Number.isInteger(id) || (id as number) <= 0) {
       entryIssues.push('id должен быть положительным целым числом');
@@ -112,6 +129,17 @@ export function validateQuestionBank(raw: unknown, source: string): QuestionDefi
       } else if (Number.isInteger(id)) {
         seenPrompts.set(promptKey, id as number);
       }
+    }
+    if ((contextType === undefined) !== (context === undefined)) {
+      entryIssues.push('contextType и context должны задаваться совместно');
+    } else if (contextType !== undefined && !QUESTION_CONTEXT_TYPES.includes(
+      contextType as QuestionContextType,
+    )) {
+      entryIssues.push(`contextType должен быть одним из: ${QUESTION_CONTEXT_TYPES.join(', ')}`);
+    } else if (context !== undefined && (typeof context !== 'string' || !context.trim())) {
+      entryIssues.push('context должен быть непустой строкой');
+    } else if (typeof context === 'string' && context.length > QUESTION_LIMITS.contextLength) {
+      entryIssues.push(`context должен содержать не более ${QUESTION_LIMITS.contextLength} символов`);
     }
     if (
       !Array.isArray(choices) ||
@@ -165,6 +193,13 @@ export function validateQuestionBank(raw: unknown, source: string): QuestionDefi
         difficulty: difficulty as Difficulty,
         topic: (topic as string).trim(),
         prompt: (prompt as string).trim().replace(/\s+/g, ' '),
+        ...(contextType !== undefined && typeof context === 'string'
+          ? {
+              contextType: contextType as QuestionContextType,
+              // Context can contain significant indentation and line endings (logs/config/code).
+              context,
+            }
+          : {}),
         choices: (choices as string[]).map((choice) => choice.trim().replace(/\s+/g, ' ')),
         correctIndex: correctIndex as number,
         active: active as boolean,

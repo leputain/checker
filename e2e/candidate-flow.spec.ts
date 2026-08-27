@@ -20,14 +20,22 @@ async function expectNoHorizontalOverflow(page: Page) {
 async function startCandidate(page: Page, suffix: string) {
   await page.goto('/');
   await expect(page.getByText('Система готова', { exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Имя и фамилия' }).fill(`E2E ${suffix}`);
+  await page.getByRole('button', { name: 'Продолжить' }).click();
+  await expect(page.getByRole('heading', { name: 'Пробный вопрос' })).toBeVisible();
+  await page.locator('label.answer').filter({
+    hasText: 'Выбрать карточку и нажать «Проверить ответ»',
+  }).click();
+  await page.getByRole('button', { name: 'Проверить ответ' }).click();
   const responsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === '/api/attempts' && response.request().method() === 'POST';
   });
-  await page.getByRole('textbox', { name: 'Имя и фамилия' }).fill(`E2E ${suffix}`);
-  await page.getByRole('button', { name: 'Начать тест' }).click();
+  await page.getByRole('button', { name: 'Начать настоящий тест' }).click();
+  await expect(page.getByRole('status', { name: 'До начала теста' })).toBeVisible();
   const started = await (await responsePromise).json() as StartedAttempt;
   await expect(page.getByRole('group', { name: 'Варианты ответа' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1 })).toBeFocused();
   return started;
 }
 
@@ -64,9 +72,90 @@ test('таблица лидеров доступна до начала тест�
   await leaderboardButton.click();
   const dialog = page.getByRole('dialog', { name: 'Таблица лидеров' });
   await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('tab', { name: 'Сегодня' })).toHaveAttribute('aria-selected', 'true');
+  await dialog.getByRole('tab', { name: 'Все' }).click();
+  await expect(dialog.getByRole('tab', { name: 'Все' })).toHaveAttribute('aria-selected', 'true');
+  await expect(dialog.getByRole('tabpanel')).toBeVisible();
   await dialog.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(leaderboardButton).toBeFocused();
+});
+
+test('пробный вопрос не запускает серверный таймер и позволяет исправить выбор', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes('landscape'), 'Логика demo не зависит от orientation.');
+  let attemptId = '';
+  let startRequests = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/attempts' && request.method() === 'POST') {
+      startRequests += 1;
+    }
+  });
+
+  try {
+    await page.goto('/');
+    await expect(page.getByText('Система готова', { exact: true })).toBeVisible();
+    await page.getByRole('textbox', { name: 'Имя и фамилия' }).fill(`E2E demo ${Date.now()}`);
+    await page.getByRole('button', { name: 'Продолжить' }).click();
+    await expect(page.getByRole('heading', { name: 'Пробный вопрос' })).toBeVisible();
+    expect(startRequests).toBe(0);
+
+    await page.locator('label.answer').filter({ hasText: 'Дождаться окончания времени' }).click();
+    await page.getByRole('button', { name: 'Проверить ответ' }).click();
+    await expect(page.getByText(/Попробуйте ещё раз/)).toBeVisible();
+    expect(startRequests).toBe(0);
+
+    await page.locator('label.answer').filter({
+      hasText: 'Выбрать карточку и нажать «Проверить ответ»',
+    }).click();
+    await page.getByRole('button', { name: 'Проверить ответ' }).click();
+    const responsePromise = page.waitForResponse((response) => (
+      new URL(response.url()).pathname === '/api/attempts'
+      && response.request().method() === 'POST'
+    ));
+    await page.getByRole('button', { name: 'Начать настоящий тест' }).click();
+    await expect(page.getByRole('status', { name: 'До начала теста' })).toContainText('3');
+    expect(startRequests).toBe(0);
+    const response = await responsePromise;
+    const started = await response.json() as StartedAttempt;
+    attemptId = started.attemptId;
+    expect(startRequests).toBe(1);
+    await expect(page.getByRole('group', { name: 'Варианты ответа' })).toBeVisible();
+  } finally {
+    await stopAndCleanup(page, attemptId);
+  }
+});
+
+test('пробный вопрос доступен без readiness, а настоящий старт остаётся заблокирован', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes('landscape'), 'Логика readiness не зависит от orientation.');
+  let startRequests = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/attempts' && request.method() === 'POST') {
+      startRequests += 1;
+    }
+  });
+
+  await page.goto('/');
+  await expect(page.getByText('Система готова', { exact: true })).toBeVisible();
+  await page.route('**/api/health/ready', (route) => route.fulfill({
+    status: 503,
+    contentType: 'application/json',
+    body: JSON.stringify({ status: 'unavailable', code: 'telegram_misconfigured' }),
+  }));
+
+  await page.getByRole('textbox', { name: 'Имя и фамилия' }).fill(`E2E no readiness ${Date.now()}`);
+  await page.getByRole('button', { name: 'Продолжить' }).click();
+  await expect(page.getByRole('heading', { name: 'Пробный вопрос' })).toBeVisible();
+  expect(startRequests).toBe(0);
+
+  await page.locator('label.answer').filter({
+    hasText: 'Выбрать карточку и нажать «Проверить ответ»',
+  }).click();
+  await page.getByRole('button', { name: 'Проверить ответ' }).click();
+  await page.getByRole('button', { name: 'Начать настоящий тест' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Пробный вопрос' })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('Сервис пока не готов');
+  expect(startRequests).toBe(0);
 });
 
 test('полный flow сохраняется после reload и показывает доступный результат', async ({ page }, testInfo) => {
@@ -102,6 +191,8 @@ test('полный flow сохраняется после reload и показы
     }
 
     await expect(page.getByRole('heading', { name: 'Результат готов.' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Компетенции' })).toBeVisible();
+    await expect.poll(() => page.getByRole('progressbar').count()).toBeGreaterThanOrEqual(4);
     const completed = queryLocalD1<{ completedAt: number }>(`
       SELECT completed_at AS completedAt FROM attempts WHERE id = '${attemptId}'
     `, E2E_STATE_PATH)[0];
@@ -122,7 +213,7 @@ test('полный flow сохраняется после reload и показы
     await expect(dialog).toBeVisible();
     await expect(dialog.locator(`time[datetime="${completedAtIso}"]`)).toHaveText(/^\d{2}\.\d{2}\.\d{4}$/);
     await dialog.press('Shift+Tab');
-    await expect(page.getByRole('button', { name: 'Закрыть' })).toBeFocused();
+    await expect(dialog.getByRole('tab', { name: 'Все' })).toBeFocused();
     await dialog.press('Escape');
     await expect(dialog).toBeHidden();
     await expect(leaderboardButton).toBeFocused();
@@ -155,6 +246,8 @@ test('offline/reconnect и возврат на экран сохраняют а�
     ))).toBeGreaterThanOrEqual(1);
 
     await page.locator('label.answer').first().click();
+    const selectedRadio = page.getByRole('radio').first();
+    await expect(selectedRadio).toBeChecked();
     await context.setOffline(true);
     await expect(page.getByRole('status')).toContainText('Нет связи.');
     await expect(page.getByRole('button', { name: 'Ответить' })).toBeDisabled();
@@ -181,6 +274,7 @@ test('offline/reconnect и возврат на экран сохраняют а�
       (window as typeof window & { __wakeLockRequests?: number }).__wakeLockRequests ?? 0
     ))).toBeGreaterThanOrEqual(2);
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(question ?? '');
+    await expect(selectedRadio).toBeChecked();
   } finally {
     await context.setOffline(false).catch(() => undefined);
     await stopAndCleanup(page, attemptId);
@@ -190,6 +284,8 @@ test('offline/reconnect и возврат на экран сохраняют а�
 test('длинный вопрос прокручивается без горизонтального overflow', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('landscape'), 'Длинный portrait layout — наиболее жёсткий вариант.');
   const longPrompt = `Длинный вопрос для проверки адаптивной вёрстки: ${'контекст и уточнение '.repeat(10)}`.slice(0, 280);
+  const longToken = `C:\\${'very-long-technical-token'.repeat(10)}`;
+  const longTopic = `Linux-${'infrastructure'.repeat(6)}`;
   let attemptId = '';
 
   try {
@@ -200,12 +296,26 @@ test('длинный вопрос прокручивается без гориз
       }
       const response = await route.fetch();
       const body = await response.json();
-      if (body.question) body.question.prompt = longPrompt;
+      if (body.question) {
+        body.question.prompt = longPrompt;
+        body.question.topic = longTopic;
+        body.question.contextType = 'log';
+        body.question.context = `sshd[1842]: Failed password\n${'audit context '.repeat(24)}`;
+        body.question.choices[0] = longToken;
+      }
       await route.fulfill({ response, json: body });
     });
 
     ({ attemptId } = await startCandidate(page, `long ${Date.now()}`));
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(longPrompt);
+    await expect(page.getByLabel('Фрагмент журнала')).toContainText('sshd[1842]');
+    await expect(page.locator('.topic-chip')).toHaveText(longTopic);
+    const longChoice = page.locator('.answer-copy').filter({ hasText: longToken });
+    await expect(longChoice).toBeVisible();
+    await expect.poll(() => longChoice.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+    await expect.poll(() => page.locator('.topic-chip').evaluate((element) => (
+      element.scrollWidth <= element.clientWidth + 1
+    ))).toBe(true);
     await expectNoHorizontalOverflow(page);
     const overflowY = await page.locator('body').evaluate((body) => getComputedStyle(body).overflowY);
     expect(overflowY).not.toBe('hidden');
@@ -227,6 +337,10 @@ test('кандидат может окончательно прервать ак
     const dialog = page.getByRole('dialog', { name: 'Прервать тест?' });
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText('Продолжить эту попытку будет нельзя');
+    const continueButton = dialog.getByRole('button', { name: 'Продолжить тест' });
+    await continueButton.focus();
+    await page.waitForTimeout(700);
+    await expect(continueButton).toBeFocused();
     await dialog.press('Escape');
     await expect(dialog).toBeHidden();
     await expect(abortButton).toBeFocused();
@@ -255,7 +369,7 @@ test('кандидат может окончательно прервать ак
   }
 });
 
-test('истечение клиентского дедлайна отправляет один timeout и безопасно синхронизируется', async ({ page }, testInfo) => {
+test('таймаут закрывает abort-диалог, отправляет один ответ и безопасно синхронизируется', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('landscape'), 'Логика дедлайна не зависит от orientation.');
   let timeoutRequests = 0;
   let attemptId = '';
@@ -273,7 +387,7 @@ test('истечение клиентского дедлайна отправл�
       }
       const response = await route.fetch();
       const body = await response.json() as StartedAttempt & { serverNowMs: number };
-      const deadlineAt = body.serverNowMs + 500;
+      const deadlineAt = body.serverNowMs + 3_000;
       runWrangler([
         'd1', 'execute', 'DB', '--command',
         `UPDATE attempts SET question_deadline_at = ${deadlineAt} WHERE id = '${body.attemptId}';`,
@@ -287,11 +401,16 @@ test('истечение клиентского дедлайна отправл�
     const started = await startCandidate(page, `timeout ${Date.now()}`);
     attemptId = started.attemptId;
     const firstQuestion = await page.getByRole('heading', { level: 1 }).textContent();
+    await page.getByRole('button', { name: 'Прервать' }).click();
+    const abortDialog = page.getByRole('dialog', { name: 'Прервать тест?' });
+    await expect(abortDialog).toBeVisible();
     await expect.poll(() => timeoutRequests).toBe(1);
+    await expect(abortDialog).toBeHidden();
     await expect.poll(() => queryLocalD1<{ count: number }>(`
       SELECT COUNT(*) AS count FROM answers
       WHERE attempt_id = '${attemptId}' AND question_id = ${started.question.id}
         AND selected_index IS NULL AND is_correct = 0
+        AND timed_out = 1 AND elapsed_seconds >= 1
     `, E2E_STATE_PATH)[0]?.count ?? 0).toBe(1);
     await expect.poll(async () => (
       await page.getByRole('radio').count() === 0
@@ -309,6 +428,11 @@ test('истечение клиентского дедлайна отправл�
         AND event_type = 'progress' AND delivery_method = 'edit_root'
     `, E2E_STATE_PATH)[0];
     expect(progress.count).toBe(1);
+    const abortEvents = queryLocalD1<{ count: number }>(`
+      SELECT COUNT(*) AS count FROM telegram_outbox
+      WHERE attempt_id = '${attemptId}' AND event_type = 'aborted'
+    `, E2E_STATE_PATH)[0];
+    expect(abortEvents.count).toBe(0);
     await page.waitForTimeout(1_200);
     expect(timeoutRequests).toBe(1);
   } finally {

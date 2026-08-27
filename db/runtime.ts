@@ -6,20 +6,25 @@ import migration0003 from '../drizzle/0003_thin_johnny_blaze.sql?raw';
 import migration0004 from '../drizzle/0004_overjoyed_vapor.sql?raw';
 import migration0005 from '../drizzle/0005_mighty_madame_masque.sql?raw';
 import migration0006 from '../drizzle/0006_numerous_jack_flag.sql?raw';
+import migration0007 from '../drizzle/0007_youthful_nekra.sql?raw';
+import migration0008 from '../drizzle/0008_lowly_mentor.sql?raw';
 import { calculateAccuracy, calculateVerdict, type Verdict } from '@/lib/scoring.ts';
 import { TEST_CONFIG, type Difficulty } from '@/lib/test-config.ts';
+import { summarizeAttemptStatistics } from '@/lib/attempt-statistics.ts';
 import { summarizeQuestionBank, type QuestionDefinition } from '@/lib/question-bank-validation.ts';
 import { loadQuestionBank } from './question-bank';
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 7;
 
 export type QuestionRow = {
   id: number;
   difficulty: Difficulty;
   topic: string;
   prompt: string;
+  context_type: QuestionDefinition['contextType'] | null;
+  context_text: string | null;
   choices_json: string;
   correct_index: number;
   weight: number;
@@ -33,6 +38,7 @@ export type AttemptRow = {
   token_hash: string;
   start_key: string | null;
   candidate_name: string | null;
+  candidate_key: string;
   public_alias: string;
   bank_revision: string | null;
   telegram_root_message_id: number | null;
@@ -79,6 +85,8 @@ const MANAGED_MIGRATIONS = [
   { version: 3, name: 'attempt-timing-0004', sql: migration0004 },
   { version: 4, name: 'question-deduplication-0005', sql: migration0005 },
   { version: 5, name: 'telegram-reporting-0006', sql: migration0006 },
+  { version: 6, name: 'question-context-and-answer-metrics-0007', sql: migration0007 },
+  { version: 7, name: 'candidate-identity-key-0008', sql: migration0008 },
 ] as const;
 
 function migrationStatements(sql: string) {
@@ -176,6 +184,9 @@ function canonicalQuestion(question: QuestionDefinition) {
     difficulty: question.difficulty,
     topic: question.topic,
     prompt: question.prompt,
+    ...(question.contextType && question.context !== undefined
+      ? { contextType: question.contextType, context: question.context }
+      : {}),
     choices: question.choices,
     correctIndex: question.correctIndex,
     weight: TEST_CONFIG.weights[question.difficulty],
@@ -202,6 +213,8 @@ function rowMatchesQuestion(row: QuestionRow, question: QuestionDefinition) {
     row.difficulty === question.difficulty &&
     row.topic === question.topic &&
     row.prompt === question.prompt &&
+    row.context_type === (question.contextType ?? null) &&
+    row.context_text === (question.context ?? null) &&
     row.choices_json === JSON.stringify(question.choices) &&
     row.correct_index === question.correctIndex &&
     row.weight === TEST_CONFIG.weights[question.difficulty]
@@ -242,14 +255,16 @@ export function ensureQuestionBankReady() {
         statements.push(
           db
             .prepare(`INSERT INTO questions (
-              id, difficulty, topic, prompt, choices_json, correct_index, weight, active,
-              content_hash, dedupe_key
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              id, difficulty, topic, prompt, context_type, context_text, choices_json,
+              correct_index, weight, active, content_hash, dedupe_key
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
             .bind(
               question.id,
               question.difficulty,
               question.topic,
               question.prompt,
+              question.contextType ?? null,
+              question.context ?? null,
               JSON.stringify(question.choices),
               question.correctIndex,
               TEST_CONFIG.weights[question.difficulty],
@@ -317,8 +332,9 @@ export async function findAttemptByStartKey(startKey: string) {
 
 export async function findQuestion(id: number) {
   return database()
-    .prepare(`SELECT id, difficulty, topic, prompt, choices_json, correct_index,
-      weight, active, content_hash, dedupe_key FROM questions WHERE id = ?`)
+    .prepare(`SELECT id, difficulty, topic, prompt, context_type, context_text,
+      choices_json, correct_index, weight, active, content_hash, dedupe_key
+      FROM questions WHERE id = ?`)
     .bind(id)
     .first<QuestionRow>();
 }
@@ -327,6 +343,44 @@ export async function verifyAttempt(id: string, token: string) {
   const attempt = await findAttempt(id);
   if (!attempt || !token || (await sha256Hex(token)) !== attempt.token_hash) return null;
   return attempt;
+}
+
+type AttemptStatisticRow = {
+  difficulty: Difficulty;
+  topic: string;
+  answered_count: number;
+  correct_count: number;
+  timeout_count: number;
+  elapsed_seconds: number;
+  measured_count: number;
+};
+
+async function loadAttemptResultStats(attemptId: string) {
+  const rows = await database()
+    .prepare(`SELECT questions.difficulty, questions.topic,
+      COUNT(*) AS answered_count,
+      COALESCE(SUM(answers.is_correct), 0) AS correct_count,
+      COALESCE(SUM(answers.timed_out), 0) AS timeout_count,
+      COALESCE(SUM(answers.elapsed_seconds), 0) AS elapsed_seconds,
+      COALESCE(SUM(CASE
+        WHEN answers.selected_index IS NOT NULL OR answers.elapsed_seconds > 0 THEN 1
+        ELSE 0
+      END), 0) AS measured_count
+      FROM answers JOIN questions ON questions.id = answers.question_id
+      WHERE answers.attempt_id = ?
+      GROUP BY questions.difficulty, questions.topic`)
+    .bind(attemptId)
+    .all<AttemptStatisticRow>();
+
+  return summarizeAttemptStatistics(rows.results.map((row) => ({
+    difficulty: row.difficulty,
+    topic: row.topic,
+    answeredCount: row.answered_count,
+    correctCount: row.correct_count,
+    timeoutCount: row.timeout_count,
+    elapsedSeconds: row.elapsed_seconds,
+    measuredCount: row.measured_count,
+  })));
 }
 
 export async function attemptPayload(attempt: AttemptRow) {
@@ -345,6 +399,7 @@ export async function attemptPayload(attempt: AttemptRow) {
 
   if (attempt.status === 'completed' || attempt.current_question_id === null) {
     const verdict = attempt.verdict ?? calculateVerdict(attempt.score, attempt.base_max_score, accuracy);
+    const resultStats = await loadAttemptResultStats(attempt.id);
     return {
       attemptId: attempt.id,
       alias: attempt.public_alias,
@@ -362,6 +417,10 @@ export async function attemptPayload(attempt: AttemptRow) {
         answeredCount,
         accuracy,
         durationSeconds: attempt.duration_seconds ?? 0,
+        timeoutCount: resultStats.timeoutCount,
+        averageAnswerSeconds: resultStats.averageAnswerSeconds,
+        difficultyStats: resultStats.difficultyStats,
+        topicStats: resultStats.topicStats,
         completedAt: new Date(
           attempt.completed_at ?? attempt.started_at + (attempt.duration_seconds ?? 0) * 1_000,
         ).toISOString(),
@@ -382,6 +441,10 @@ export async function attemptPayload(attempt: AttemptRow) {
     question: {
       id: question.id,
       prompt: question.prompt,
+      topic: question.topic,
+      ...(question.context_type && question.context_text !== null
+        ? { contextType: question.context_type, context: question.context_text }
+        : {}),
       choices: permutation.map((index) => choices[index]),
       difficulty: question.difficulty,
       weight: question.weight,

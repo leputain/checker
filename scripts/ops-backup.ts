@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { queryLocalD1, runWrangler } from './local-d1.ts';
+import { APP_RELEASE } from '../lib/release.ts';
 
 type Counts = {
   attempts: number;
@@ -40,7 +41,7 @@ export async function createBackup() {
   const manifest = {
     format: 1,
     createdAt: new Date().toISOString(),
-    appVersion: '0.5.1',
+    appVersion: APP_RELEASE,
     sha256: createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.length,
     counts,

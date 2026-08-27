@@ -15,6 +15,22 @@ import { BASE_MAX_SCORE, BASE_QUESTION_COUNT, TEST_CONFIG } from '@/lib/test-con
 type Difficulty = 'easy' | 'medium' | 'hard' | 'expert';
 type Verdict = 'PASS' | 'REVIEW' | 'FAIL';
 type Connectivity = 'checking' | 'online' | 'offline' | 'service-error';
+type PretestStep = 'welcome' | 'demo' | 'countdown';
+type QuestionContextType = 'text' | 'code' | 'command' | 'log' | 'config';
+
+type CompetencyStat = {
+  answeredCount: number;
+  correctCount: number;
+  accuracy: number;
+};
+
+type DifficultyStat = CompetencyStat & {
+  difficulty: Difficulty;
+};
+
+type TopicStat = CompetencyStat & {
+  topic: string;
+};
 
 type QuestionView = {
   id: number;
@@ -26,6 +42,9 @@ type QuestionView = {
   minimumQuestions: number;
   questionDeadlineAt: number;
   totalDeadlineAt: number;
+  topic?: string;
+  contextType?: QuestionContextType;
+  context?: string;
 };
 
 type Result = {
@@ -39,6 +58,10 @@ type Result = {
   accuracy: number;
   durationSeconds: number;
   completedAt: string;
+  timeoutCount: number;
+  averageAnswerSeconds: number;
+  difficultyStats: DifficultyStat[];
+  topicStats: TopicStat[];
 };
 
 type AttemptPayload = {
@@ -96,6 +119,13 @@ const DELIVERY_STORAGE_KEY = 'candidate-check:pending-telegram-deliveries';
 const REQUEST_TIMEOUT_MS = 8_000;
 const SESSION_GRACE_MS = 15 * 60 * 1_000;
 const DELIVERY_TTL_MS = 24 * 60 * 60 * 1_000;
+const DEMO_CORRECT_CHOICE = 1;
+const DEMO_CHOICES = [
+  'Сразу перейти дальше, не выбирая вариант',
+  'Выбрать карточку и нажать «Проверить ответ»',
+  'Дождаться окончания времени',
+  'Выбрать сразу несколько вариантов',
+];
 
 const difficultyLabels: Record<Difficulty, string> = {
   easy: 'Базовый',
@@ -270,6 +300,10 @@ async function requestJson<T>(
 
 export default function Home() {
   const [name, setName] = useState('');
+  const [pretestStep, setPretestStep] = useState<PretestStep>('welcome');
+  const [demoSelectedChoice, setDemoSelectedChoice] = useState<number | null>(null);
+  const [demoResult, setDemoResult] = useState<'idle' | 'incorrect' | 'correct'>('idle');
+  const [countdown, setCountdown] = useState(3);
   const [attempt, setAttempt] = useState<AttemptState | null>(null);
   const [selectedChoice, setSelectedChoice] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -294,15 +328,12 @@ export default function Home() {
   const abortButtonRef = useRef<HTMLButtonElement>(null);
   const questionHeadingRef = useRef<HTMLHeadingElement>(null);
   const lastFocusedQuestionIdRef = useRef<number | null>(null);
+  const startRequestRef = useRef(false);
 
   const question = attempt?.question;
   const questionId = question?.id ?? null;
   const totalLeft = question ? Math.ceil((question.totalDeadlineAt - now) / 1_000) : 0;
   const questionLeft = question ? Math.ceil((question.questionDeadlineAt - now) / 1_000) : 0;
-  const timeProgress = question
-    ? Math.min(100, Math.max(0, ((TEST_CONFIG.totalTimeSeconds - totalLeft) / TEST_CONFIG.totalTimeSeconds) * 100))
-    : 0;
-
   const applyServerTime = useCallback((serverNowMs: number) => {
     const offset = serverNowMs - Date.now();
     setClockOffsetMs(offset);
@@ -415,6 +446,7 @@ export default function Home() {
           if (data.status === 'aborted') {
             clearStoredSession();
             setAttempt(null);
+            setPretestStep('welcome');
             setNotice('Предыдущий тест был прерван. Можно начать новый.');
             return;
           }
@@ -440,6 +472,7 @@ export default function Home() {
         if (data.status === 'aborted') {
           clearStoredSession();
           setAttempt(null);
+          setPretestStep('welcome');
           setNotice('Предыдущий тест был прерван. Можно начать новый.');
         } else {
           setAttempt({ ...data, token: session.token });
@@ -491,7 +524,7 @@ export default function Home() {
     }
     const previousQuestionId = lastFocusedQuestionIdRef.current;
     lastFocusedQuestionIdRef.current = questionId;
-    if (previousQuestionId === null || previousQuestionId === questionId) return;
+    if (previousQuestionId === questionId) return;
     const frame = window.requestAnimationFrame(() => {
       questionHeadingRef.current?.focus({ preventScroll: true });
     });
@@ -509,10 +542,17 @@ export default function Home() {
       if (data.status === 'aborted') {
         clearStoredSession();
         setAttempt(null);
+        setPretestStep('welcome');
+        setShowAbortConfirm(false);
         setNotice('Тест прерван. Можно начать новый.');
       } else {
+        const sameQuestion = data.status === 'active'
+          && data.question?.id === attempt.question?.id;
         setAttempt({ ...data, token: attempt.token });
-        setSelectedChoice(null);
+        if (!sameQuestion) {
+          setSelectedChoice(null);
+          setShowAbortConfirm(false);
+        }
         if (data.status === 'completed') clearStoredSession();
       }
     } catch {
@@ -523,6 +563,7 @@ export default function Home() {
   const submitAnswer = useCallback(async (choiceIndex: number | null, timeout = false) => {
     if (!attempt?.question || submittingRef.current || !navigator.onLine) return;
     submittingRef.current = true;
+    if (timeout) setShowAbortConfirm(false);
     setBusy(true);
     setTransitioning(timeout);
     setError('');
@@ -538,9 +579,13 @@ export default function Home() {
       applyServerTime(data.serverNowMs);
       timeoutBackoffUntilRef.current = 0;
       triggerNotificationFlush(data.attemptId, attempt.token);
+      if (data.status !== 'active' || data.question?.id !== attempt.question.id) {
+        setShowAbortConfirm(false);
+      }
       if (data.status === 'aborted') {
         clearStoredSession();
         setAttempt(null);
+        setPretestStep('welcome');
         setNotice('Тест прерван. Можно начать новый.');
       } else {
         setAttempt({ ...data, token: attempt.token });
@@ -551,6 +596,8 @@ export default function Home() {
       if (caught instanceof RequestError && caught.status === 404) {
         clearStoredSession();
         setAttempt(null);
+        setPretestStep('welcome');
+        setShowAbortConfirm(false);
         setError('Попытка больше недоступна. Начните новый тест.');
       } else if (caught instanceof RequestError && caught.status === 409 && timeout) {
         timeoutBackoffUntilRef.current = Date.now() + 1_000;
@@ -634,18 +681,24 @@ export default function Home() {
     if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current);
   }, []);
 
-  async function startTest(event: FormEvent) {
+  function openDemo(event: FormEvent) {
     event.preventDefault();
     const cleanName = name.trim().replace(/\s+/g, ' ');
     if (cleanName.length < 2) {
       setError('Введите имя — хотя бы 2 символа.');
       return;
     }
-    if (!(await checkReadiness())) {
-      setError('Сервис пока не готов. Проверьте сеть или обратитесь к администратору.');
-      return;
-    }
+    setName(cleanName);
+    setDemoSelectedChoice(null);
+    setDemoResult('idle');
+    setError('');
+    setNotice('');
+    setPretestStep('demo');
+  }
 
+  const createAttempt = useCallback(async () => {
+    if (startRequestRef.current) return;
+    startRequestRef.current = true;
     setBusy(true);
     setError('');
     setNotice('');
@@ -667,11 +720,13 @@ export default function Home() {
           'Content-Type': 'application/json',
           'Idempotency-Key': pending.startKey,
         },
-        body: JSON.stringify({ name: cleanName, startKey: pending.startKey, token: pending.token }),
+        body: JSON.stringify({ name, startKey: pending.startKey, token: pending.token }),
       }, 2);
       if (data.status === 'aborted') {
         clearStoredSession();
         setNotice('Предыдущий запуск был прерван. Начните тест ещё раз.');
+        setDemoResult('correct');
+        setPretestStep('demo');
         return;
       }
       if (!data.question) throw new Error('Сервер не вернул первый вопрос.');
@@ -684,17 +739,68 @@ export default function Home() {
         expiresAt: localSessionExpiry(data.question.totalDeadlineAt, data.serverNowMs),
       });
       setAttempt(nextAttempt);
+      setPretestStep('welcome');
       applyServerTime(data.serverNowMs);
       triggerNotificationFlush(data.attemptId, pending.token);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Что-то пошло не так');
+      setPretestStep('demo');
+      setDemoResult('correct');
+      setError(
+        caught instanceof Error
+          ? `${caught.message} Имя сохранено — попробуйте начать ещё раз.`
+          : 'Не удалось начать тест. Имя сохранено — попробуйте ещё раз.',
+      );
     } finally {
+      startRequestRef.current = false;
+      setBusy(false);
+    }
+  }, [applyServerTime, name, triggerNotificationFlush]);
+
+  useEffect(() => {
+    if (pretestStep !== 'countdown') return;
+    const timer = window.setTimeout(() => {
+      if (countdown > 1) setCountdown((value) => value - 1);
+      else void createAttempt();
+    }, 1_000);
+    return () => window.clearTimeout(timer);
+  }, [countdown, createAttempt, pretestStep]);
+
+  function checkDemoAnswer() {
+    if (demoSelectedChoice === null) return;
+    setDemoResult(demoSelectedChoice === DEMO_CORRECT_CHOICE ? 'correct' : 'incorrect');
+  }
+
+  async function startCountdown() {
+    if (demoResult !== 'correct' || startRequestRef.current) return;
+    startRequestRef.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      if (!(await checkReadiness())) {
+        setError('Сервис пока не готов. Проверьте сеть или обратитесь к администратору.');
+        return;
+      }
+      setCountdown(3);
+      setPretestStep('countdown');
+    } finally {
+      startRequestRef.current = false;
       setBusy(false);
     }
   }
 
+  const closeAbortDialog = useCallback(() => {
+    setError('');
+    setShowAbortConfirm(false);
+  }, []);
+
   async function abortTest() {
-    if (!attempt || attempt.status !== 'active' || aborting || !navigator.onLine) return;
+    if (
+      !attempt
+      || attempt.status !== 'active'
+      || aborting
+      || submittingRef.current
+      || !navigator.onLine
+    ) return;
     submittingRef.current = true;
     setAborting(true);
     setBusy(true);
@@ -716,6 +822,7 @@ export default function Home() {
       if (data.status === 'aborted') {
         setAttempt(null);
         setName('');
+        setPretestStep('welcome');
         setNotice('Тест прерван. Результат не добавлен в рейтинг.');
       } else {
         setAttempt({ ...data, token: attempt.token });
@@ -733,6 +840,11 @@ export default function Home() {
     clearStoredSession();
     setAttempt(null);
     setName('');
+    setPretestStep('welcome');
+    setDemoSelectedChoice(null);
+    setDemoResult('idle');
+    setCountdown(3);
+    setShowAbortConfirm(false);
     setError('');
     setNotice('');
   }
@@ -815,13 +927,19 @@ export default function Home() {
             <div><strong>{result.accuracy}%</strong><span>точность</span></div>
             <div><strong>{result.correctCount}</strong><span>верных</span></div>
             <div><strong>{result.wrongCount}</strong><span>ошибок</span></div>
+            <div><strong>{result.timeoutCount ?? 0}</strong><span>таймаутов</span></div>
             <div><strong>{result.answeredCount}</strong><span>вопросов</span></div>
+            <div><strong>{Math.round(result.averageAnswerSeconds ?? 0)} сек.</strong><span>средний ответ</span></div>
             <div><strong>{formatTime(result.durationSeconds)}</strong><span>время</span></div>
             <div className="result-stat-date">
               <strong><time dateTime={result.completedAt}>{formatTestDate(result.completedAt)}</time></strong>
               <span>дата теста</span>
             </div>
           </div>
+          <CompetencyProfile
+            difficultyStats={result.difficultyStats ?? []}
+            topicStats={result.topicStats ?? []}
+          />
           <div className="result-actions">
             <button
               ref={leaderboardButtonRef}
@@ -869,51 +987,34 @@ export default function Home() {
                 Прервать
               </button>
               <div className="timer-group" aria-label="Оставшееся время">
-                <TimerDial kind="question" label="Вопрос" seconds={questionLeft} maximum={TEST_CONFIG.questionTimeSeconds} />
-                <TimerDial kind="total" label="Весь тест" seconds={totalLeft} maximum={TEST_CONFIG.totalTimeSeconds} />
+                <TimerDial label="Вопрос" seconds={questionLeft} maximum={TEST_CONFIG.questionTimeSeconds} />
+                <TotalTimer seconds={totalLeft} maximum={TEST_CONFIG.totalTimeSeconds} />
               </div>
             </div>
           </header>
           <section className="quiz-stage">
             <div className="quiz-meta">
-              <span className={`difficulty difficulty-${question.difficulty}`}>
-                {difficultyLabels[question.difficulty]} · {question.weight} балл(а)
+              <span className="question-tags">
+                <span className={`difficulty difficulty-${question.difficulty}`}>
+                  {difficultyLabels[question.difficulty]} · {question.weight} балл(а)
+                </span>
+                {question.topic && <span className="topic-chip">{question.topic}</span>}
               </span>
               <span>Вопрос {question.position} · минимум {question.minimumQuestions}</span>
-            </div>
-            <div
-              className="progress-track"
-              role="progressbar"
-              aria-label="Использованное общее время"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(timeProgress)}
-            >
-              <span style={{ width: `${timeProgress}%` }} />
             </div>
             <article key={question.id} className="question-card glass-card motion-card">
               <p className="eyebrow">Выберите один ответ</p>
               <h1 ref={questionHeadingRef} tabIndex={-1}>{question.prompt}</h1>
-              <fieldset className="answers" disabled={busy}>
-                <legend className="sr-only">Варианты ответа</legend>
-                {question.choices.map((choice, index) => (
-                  <label
-                    key={`${index}-${choice}`}
-                    className={selectedChoice === index ? 'answer selected' : 'answer'}
-                  >
-                    <input
-                      type="radio"
-                      name={`question-${question.id}`}
-                      value={index}
-                      checked={selectedChoice === index}
-                      onChange={() => setSelectedChoice(index)}
-                    />
-                    <span className="answer-letter">{String.fromCharCode(65 + index)}</span>
-                    <span>{choice}</span>
-                    <span className="answer-dot" aria-hidden="true" />
-                  </label>
-                ))}
-              </fieldset>
+              {question.context && (
+                <QuestionContext type={question.contextType ?? 'text'} value={question.context} />
+              )}
+              <AnswerCards
+                choices={question.choices}
+                selectedChoice={selectedChoice}
+                onSelect={setSelectedChoice}
+                name={`question-${question.id}`}
+                disabled={busy}
+              />
               <div className="question-footer">
                 <p>{transitioning ? 'Проверяем время…' : 'Ответ нельзя изменить после отправки.'}</p>
                 <button
@@ -931,18 +1032,102 @@ export default function Home() {
         </main>
         {showAbortConfirm && (
           <AbortDialog
-            busy={aborting}
+            busy={busy || aborting}
             error={error}
             offline={connectivity === 'offline'}
-            onCancel={() => {
-              setError('');
-              setShowAbortConfirm(false);
-            }}
+            onCancel={closeAbortDialog}
             onConfirm={() => void abortTest()}
             returnFocusRef={abortButtonRef}
           />
         )}
       </>
+    );
+  }
+
+  if (pretestStep === 'countdown') {
+    return (
+      <main className="app-shell countdown-shell">
+        {connectivityBanner}
+        <div className="ambient ambient-one" /><div className="ambient ambient-two" />
+        <section className="countdown-card glass-card" role="status" aria-live="assertive" aria-label="До начала теста">
+          <span className="brand-mark countdown-brand" aria-hidden="true" />
+          <p className="eyebrow">До начала теста</p>
+          <strong className="countdown-number" key={countdown}>{countdown}</strong>
+          <p>{busy ? 'Открываем первый вопрос…' : 'Сосредоточьтесь. Таймер включится после отсчёта.'}</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (pretestStep === 'demo') {
+    return (
+      <main className="app-shell demo-shell">
+        {connectivityBanner}
+        <div className="ambient ambient-one" /><div className="ambient ambient-two" />
+        <header className="site-header demo-header">
+          <div className="brand"><span className="brand-mark" aria-hidden="true" /><span>Candidate Check</span></div>
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => {
+              setError('');
+              setPretestStep('welcome');
+            }}
+          >
+            Назад
+          </button>
+        </header>
+        <section className="demo-stage">
+          <div className="demo-intro">
+            <p className="eyebrow">Без таймеров и без баллов</p>
+            <h1>Пробный вопрос</h1>
+            <p className="muted">Выберите одну карточку и подтвердите ответ. В настоящем тесте всё работает точно так же.</p>
+          </div>
+          <article className={`question-card demo-question-card demo-${demoResult} glass-card motion-card`}>
+            <p className="eyebrow">Тренировка</p>
+            <h2>Как правильно отправить выбранный вариант?</h2>
+            <AnswerCards
+              choices={DEMO_CHOICES}
+              selectedChoice={demoSelectedChoice}
+              onSelect={(index) => {
+                setDemoSelectedChoice(index);
+                if (demoResult !== 'correct') setDemoResult('idle');
+                setError('');
+              }}
+              name="demo-question"
+              disabled={demoResult === 'correct' || busy}
+            />
+            <div className="question-footer demo-footer">
+              <div className="demo-feedback" aria-live="polite">
+                {demoResult === 'incorrect' && <p className="demo-incorrect">Попробуйте ещё раз: сначала выберите карточку, затем подтвердите выбор.</p>}
+                {demoResult === 'correct' && <p className="demo-correct">Готово. Теперь можно запускать тест с таймерами.</p>}
+                {demoResult === 'idle' && <p>Этот вопрос не влияет на результат.</p>}
+                {notice && <p className="notice-message" role="status">{notice}</p>}
+                {error && <p className="error-message" role="alert">{error}</p>}
+              </div>
+              {demoResult === 'correct' ? (
+                <button
+                  className="primary-button demo-action"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void startCountdown()}
+                >
+                  {busy ? 'Проверяем готовность…' : 'Начать настоящий тест'}
+                </button>
+              ) : (
+                <button
+                  className="primary-button demo-action"
+                  type="button"
+                  disabled={demoSelectedChoice === null || busy}
+                  onClick={checkDemoAnswer}
+                >
+                  Проверить ответ
+                </button>
+              )}
+            </div>
+          </article>
+        </section>
+      </main>
     );
   }
 
@@ -994,7 +1179,7 @@ export default function Home() {
           alt=""
           aria-hidden="true"
         />
-        <form className="start-card glass-card" onSubmit={startTest}>
+        <form className="start-card glass-card" onSubmit={openDemo}>
           <p className="eyebrow">Начало теста</p>
           <h2>Введите имя</h2>
           <p className="muted">После старта включатся таймеры. Вернуться к предыдущему вопросу нельзя.</p>
@@ -1010,10 +1195,10 @@ export default function Home() {
           {error && <p className="error-message" role="alert">{error}</p>}
           <button
             className="primary-button full-button"
-            disabled={busy || connectivity !== 'online'}
+            disabled={busy}
             type="submit"
           >
-            {busy ? 'Готовим вопросы…' : connectivity === 'checking' ? 'Проверяем готовность…' : 'Начать тест'}
+            Продолжить
             <span aria-hidden="true">→</span>
           </button>
           <p className="privacy-note">
@@ -1032,25 +1217,85 @@ export default function Home() {
   );
 }
 
+function AnswerCards({
+  choices,
+  selectedChoice,
+  onSelect,
+  name,
+  disabled = false,
+}: {
+  choices: string[];
+  selectedChoice: number | null;
+  onSelect: (index: number) => void;
+  name: string;
+  disabled?: boolean;
+}) {
+  return (
+    <fieldset className="answers" disabled={disabled}>
+      <legend className="sr-only">Варианты ответа</legend>
+      {choices.map((choice, index) => (
+        <label
+          key={`${index}-${choice}`}
+          className={selectedChoice === index ? 'answer selected' : 'answer'}
+          data-selected={selectedChoice === index || undefined}
+        >
+          <input
+            type="radio"
+            name={name}
+            value={index}
+            checked={selectedChoice === index}
+            onChange={() => onSelect(index)}
+          />
+          <span className="answer-letter" aria-hidden="true">{String.fromCharCode(65 + index)}</span>
+          <span className="answer-copy">{choice}</span>
+          <span className="answer-dot" aria-hidden="true" />
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+function QuestionContext({ type, value }: { type: QuestionContextType; value: string }) {
+  const labels: Record<QuestionContextType, string> = {
+    text: 'Контекст',
+    code: 'Код',
+    command: 'Команда',
+    log: 'Фрагмент журнала',
+    config: 'Конфигурация',
+  };
+  if (type === 'text') {
+    return (
+      <aside className="question-context context-text" aria-label={labels[type]}>
+        <span>{labels[type]}</span>
+        <p>{value}</p>
+      </aside>
+    );
+  }
+  return (
+    <aside className={`question-context context-${type}`} aria-label={labels[type]}>
+      <span>{labels[type]}</span>
+      <pre><code>{value}</code></pre>
+    </aside>
+  );
+}
+
 function TimerDial({
-  kind,
   label,
   seconds,
   maximum,
 }: {
-  kind: 'question' | 'total';
   label: string;
   seconds: number;
   maximum: number;
 }) {
   const remaining = Math.min(maximum, Math.max(0, seconds));
   const degrees = (remaining / maximum) * 360;
-  const warningAt = kind === 'question' ? 15 : 60;
-  const criticalAt = kind === 'question' ? 10 : 30;
+  const warningAt = 15;
+  const criticalAt = 10;
   const urgency = remaining <= criticalAt ? 'critical' : remaining <= warningAt ? 'warning' : 'normal';
   return (
     <div
-      className={`timer-dial timer-${kind} timer-${urgency}`}
+      className={`timer-dial timer-question timer-${urgency}`}
       style={{ '--timer-progress': `${degrees}deg` } as React.CSSProperties}
       role="timer"
       aria-label={`${label}: ${formatTime(remaining)}. ${urgency === 'critical' ? 'Время заканчивается.' : ''}`}
@@ -1058,11 +1303,101 @@ function TimerDial({
       <div className="timer-dial-face">
         <span>{label}</span>
         <strong>{formatTime(remaining)}</strong>
-        {kind === 'question' && urgency !== 'normal' && (
-          <small>{urgency === 'critical' ? 'Срочно' : 'Мало времени'}</small>
+        {urgency !== 'normal' && (
+          <small>{urgency === 'critical' ? 'Последние 10 секунд' : 'Осталось мало времени'}</small>
         )}
       </div>
     </div>
+  );
+}
+
+function TotalTimer({ seconds, maximum }: { seconds: number; maximum: number }) {
+  const remaining = Math.min(maximum, Math.max(0, seconds));
+  const percent = maximum > 0 ? (remaining / maximum) * 100 : 0;
+  return (
+    <div className="total-timer" role="timer" aria-label={`Весь тест: ${formatTime(remaining)}`}>
+      <span>Весь тест</span>
+      <strong>{formatTime(remaining)}</strong>
+      <span className="total-timer-track" aria-hidden="true">
+        <i style={{ width: `${percent}%` }} />
+      </span>
+    </div>
+  );
+}
+
+function CompetencyProfile({
+  difficultyStats,
+  topicStats,
+}: {
+  difficultyStats: DifficultyStat[];
+  topicStats: TopicStat[];
+}) {
+  const difficultyOrder: Difficulty[] = ['easy', 'medium', 'hard', 'expert'];
+  const topics = topicStats.slice(0, 5);
+  return (
+    <section className="competency-profile" aria-labelledby="competency-profile-title">
+      <div className="profile-heading">
+        <div>
+          <p className="eyebrow">Профиль результата</p>
+          <h2 id="competency-profile-title">Компетенции</h2>
+        </div>
+        <p>Без раскрытия правильных ответов</p>
+      </div>
+      <div className="profile-columns">
+        <div className="profile-section">
+          <h3>По сложности</h3>
+          <div className="skill-bars">
+            {difficultyOrder.map((difficulty) => {
+              const stat = difficultyStats.find((item) => item.difficulty === difficulty);
+              const accuracy = stat ? Math.max(0, Math.min(100, stat.accuracy)) : 0;
+              return (
+                <div className="skill-row" key={difficulty}>
+                  <div>
+                    <span>{difficultyLabels[difficulty]}</span>
+                    <strong>{stat ? `${accuracy}% · ${stat.correctCount}/${stat.answeredCount}` : '—'}</strong>
+                  </div>
+                  <span
+                    className="skill-track"
+                    role="progressbar"
+                    aria-label={`${difficultyLabels[difficulty]}: ${stat ? `${accuracy}%` : 'нет данных'}`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={stat ? accuracy : undefined}
+                  >
+                    <i style={{ width: `${accuracy}%` }} />
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {topics.length > 0 && (
+          <div className="profile-section topic-profile">
+            <h3>По направлениям</h3>
+            <div className="skill-bars">
+              {topics.map((stat) => {
+                const accuracy = Math.max(0, Math.min(100, stat.accuracy));
+                return (
+                  <div className="skill-row" key={stat.topic}>
+                    <div><span>{stat.topic}</span><strong>{accuracy}% · {stat.correctCount}/{stat.answeredCount}</strong></div>
+                    <span
+                      className="skill-track"
+                      role="progressbar"
+                      aria-label={`${stat.topic}: ${accuracy}%`}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={accuracy}
+                    >
+                      <i style={{ width: `${accuracy}%` }} />
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1107,6 +1442,10 @@ function useDialog(
   returnFocusRef: { current: HTMLElement | null } | null = null,
 ) {
   const dialogRef = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
   useEffect(() => {
     const opener = returnFocusRef?.current
       ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
@@ -1118,7 +1457,7 @@ function useDialog(
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab' || !dialog) return;
@@ -1142,7 +1481,7 @@ function useDialog(
       if (appShell) appShell.style.overflow = previousOverflow;
       opener?.focus();
     };
-  }, [onClose, returnFocusRef]);
+  }, [returnFocusRef]);
   return dialogRef;
 }
 
@@ -1208,6 +1547,7 @@ function Leaderboard({
   onClose: () => void;
   returnFocusRef: { current: HTMLElement | null };
 }) {
+  const [period, setPeriod] = useState<'today' | 'all'>('today');
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -1220,7 +1560,11 @@ function Leaderboard({
       setLoading(true);
       setError('');
       try {
-        const data = await requestJson<{ entries: LeaderboardEntry[] }>(appPath('/api/leaderboard'), {}, 1);
+        const data = await requestJson<{ entries: LeaderboardEntry[]; period: 'today' | 'all' }>(
+          appPath(`/api/leaderboard?period=${period}`),
+          {},
+          1,
+        );
         if (!cancelled) setEntries(data.entries);
       } catch {
         if (!cancelled) setError('Не удалось загрузить рейтинг.');
@@ -1230,10 +1574,20 @@ function Leaderboard({
     };
     void load();
     return () => { cancelled = true; };
-  }, [revision]);
+  }, [period, revision]);
 
   function closeOnBackdrop(event: ReactKeyboardEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) {
     if (event.target === event.currentTarget) onClose();
+  }
+
+  function movePeriodTab(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    event.preventDefault();
+    const nextPeriod = period === 'today' ? 'all' : 'today';
+    setPeriod(nextPeriod);
+    window.requestAnimationFrame(() => {
+      document.getElementById(`leaderboard-tab-${nextPeriod}`)?.focus();
+    });
   }
 
   return (
@@ -1257,35 +1611,92 @@ function Leaderboard({
           <div><p className="eyebrow">Лучшие результаты</p><h2 id="leaderboard-title">Таблица лидеров</h2></div>
           <button className="close-button" onClick={onClose} aria-label="Закрыть">×</button>
         </div>
-        {loading ? (
-          <p className="empty-state" role="status">Загружаем результаты…</p>
-        ) : error ? (
-          <div className="modal-error" role="alert">
-            <p>{error}</p>
-            <button className="ghost-button" onClick={() => setRevision((value) => value + 1)}>Повторить</button>
-          </div>
-        ) : entries.length === 0 ? (
-          <p className="empty-state">Пока здесь пусто. Первый результат задаст планку.</p>
-        ) : (
-          <ol className="leader-list">
-            {entries.map((entry, index) => (
-              <li className={entry.verdict === 'FAIL' ? 'leader-fail' : ''} key={`${entry.alias}-${entry.completedAt}`}>
-                <span className="rank">{String(index + 1).padStart(2, '0')}</span>
-                <span className="leader-name">
-                  <strong>{entry.alias}</strong>
-                  <small>
-                    <time dateTime={entry.completedAt}>{formatTestDate(entry.completedAt)}</time>
-                    <span aria-hidden="true"> · </span>{formatTime(entry.durationSeconds)}
-                  </small>
-                </span>
-                <span className={`mini-verdict mini-${entry.verdict.toLowerCase()}`}>{verdictLabels[entry.verdict]}</span>
-                <strong className="leader-score">{entry.score}/{entry.baseMaxScore}</strong>
-                <span className="leader-metric">{entry.accuracy}%<small>точность</small></span>
-                <span className="leader-metric">{entry.wrongCount}<small>ошибок</small></span>
-              </li>
-            ))}
-          </ol>
-        )}
+        <div
+          className="leaderboard-tabs"
+          role="tablist"
+          aria-label="Период рейтинга"
+          onKeyDown={movePeriodTab}
+        >
+          <button
+            id="leaderboard-tab-today"
+            role="tab"
+            aria-selected={period === 'today'}
+            aria-controls="leaderboard-panel"
+            tabIndex={period === 'today' ? 0 : -1}
+            onClick={() => setPeriod('today')}
+          >
+            Сегодня
+          </button>
+          <button
+            id="leaderboard-tab-all"
+            role="tab"
+            aria-selected={period === 'all'}
+            aria-controls="leaderboard-panel"
+            tabIndex={period === 'all' ? 0 : -1}
+            onClick={() => setPeriod('all')}
+          >
+            Все
+          </button>
+        </div>
+        <div
+          id="leaderboard-panel"
+          className="leaderboard-panel"
+          role="tabpanel"
+          aria-labelledby={`leaderboard-tab-${period}`}
+        >
+          {loading ? (
+            <p className="empty-state" role="status">Загружаем результаты…</p>
+          ) : error ? (
+            <div className="modal-error" role="alert">
+              <p>{error}</p>
+              <button className="ghost-button" onClick={() => setRevision((value) => value + 1)}>Повторить</button>
+            </div>
+          ) : entries.length === 0 ? (
+            <p className="empty-state">За выбранный период результатов пока нет.</p>
+          ) : (
+            <>
+              <ol className="leader-podium" aria-label="Первые три места">
+                {entries.slice(0, 3).map((entry, index) => (
+                  <li
+                    className={`podium-card podium-place-${index + 1} ${entry.verdict === 'FAIL' ? 'leader-fail' : ''}`}
+                    key={`${entry.alias}-${entry.completedAt}`}
+                  >
+                    {index === 0 && <span className="leader-winner-mascot" aria-hidden="true" />}
+                    <span className="podium-rank">{index + 1}</span>
+                    <strong className="podium-name">{entry.alias}</strong>
+                    <strong className="podium-score">{entry.score}/{entry.baseMaxScore}</strong>
+                    <span className={`mini-verdict mini-${entry.verdict.toLowerCase()}`}>{verdictLabels[entry.verdict]}</span>
+                    <small>
+                      <time dateTime={entry.completedAt}>{formatTestDate(entry.completedAt)}</time>
+                      <span aria-hidden="true"> · </span>{formatTime(entry.durationSeconds)}
+                    </small>
+                    <span className="podium-accuracy">Точность {entry.accuracy}%</span>
+                  </li>
+                ))}
+              </ol>
+              {entries.length > 3 && (
+                <ol className="leader-list" start={4} aria-label="Остальные результаты">
+                  {entries.slice(3).map((entry, index) => (
+                    <li className={entry.verdict === 'FAIL' ? 'leader-fail' : ''} key={`${entry.alias}-${entry.completedAt}`}>
+                      <span className="rank">{String(index + 4).padStart(2, '0')}</span>
+                      <span className="leader-name">
+                        <strong>{entry.alias}</strong>
+                        <small>
+                          <time dateTime={entry.completedAt}>{formatTestDate(entry.completedAt)}</time>
+                          <span aria-hidden="true"> · </span>{formatTime(entry.durationSeconds)}
+                        </small>
+                      </span>
+                      <span className={`mini-verdict mini-${entry.verdict.toLowerCase()}`}>{verdictLabels[entry.verdict]}</span>
+                      <strong className="leader-score">{entry.score}/{entry.baseMaxScore}</strong>
+                      <span className="leader-metric">{entry.accuracy}%<small>точность</small></span>
+                      <span className="leader-metric">{entry.wrongCount}<small>ошибок</small></span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </>
+          )}
+        </div>
       </section>
     </div>
   );

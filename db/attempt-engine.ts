@@ -4,6 +4,11 @@ import {
   completedTelegramMessage,
   progressTelegramMessage,
 } from '@/lib/telegram-messages.ts';
+import { selectRemedialQuestion } from '@/lib/question-selection.ts';
+import {
+  summarizeAttemptStatistics,
+  type AttemptStatisticBucket,
+} from '@/lib/attempt-statistics.ts';
 import { TEST_CONFIG } from '@/lib/test-config.ts';
 import { telegramNotificationPolicy } from './telegram-outbox';
 import {
@@ -26,6 +31,7 @@ function dedupeKey(question: { id: number; dedupe_key: string }) {
 
 async function chooseReplacementQuestion(
   difficulty: Difficulty,
+  topic: string,
   asked: number[],
   pending: number[],
 ) {
@@ -34,13 +40,17 @@ async function chooseReplacementQuestion(
   const excludedQuestions = await loadQuestions(excluded);
   const excludedDedupeKeys = new Set(excludedQuestions.map(dedupeKey));
   const candidates = await database()
-    .prepare(`SELECT id, dedupe_key FROM questions
+    .prepare(`SELECT id, difficulty, topic, dedupe_key FROM questions
       WHERE active = 1 AND difficulty = ? ORDER BY RANDOM()`)
     .bind(difficulty)
-    .all<{ id: number; dedupe_key: string }>();
-  return candidates.results.find((candidate) => (
-    !excludedIds.has(candidate.id) && !excludedDedupeKeys.has(dedupeKey(candidate))
-  ));
+    .all<{ id: number; difficulty: Difficulty; topic: string; dedupe_key: string }>();
+  return selectRemedialQuestion(
+    candidates.results,
+    difficulty,
+    topic,
+    excludedIds,
+    excludedDedupeKeys,
+  );
 }
 
 async function alreadyProcessed(attemptId: string, questionId: number) {
@@ -81,6 +91,41 @@ async function existingTopicErrors(attemptId: string) {
   return new Map(rows.results.map((row) => [row.topic, row.count]));
 }
 
+async function existingAnswerStatistics(attemptId: string) {
+  const rows = await database()
+    .prepare(`SELECT questions.difficulty, questions.topic,
+      COUNT(*) AS answered_count,
+      COALESCE(SUM(answers.is_correct), 0) AS correct_count,
+      COALESCE(SUM(answers.timed_out), 0) AS timeout_count,
+      COALESCE(SUM(answers.elapsed_seconds), 0) AS elapsed_seconds,
+      COALESCE(SUM(CASE
+        WHEN answers.selected_index IS NOT NULL OR answers.elapsed_seconds > 0 THEN 1
+        ELSE 0
+      END), 0) AS measured_count
+      FROM answers JOIN questions ON questions.id = answers.question_id
+      WHERE answers.attempt_id = ?
+      GROUP BY questions.difficulty, questions.topic`)
+    .bind(attemptId)
+    .all<{
+      difficulty: Difficulty;
+      topic: string;
+      answered_count: number;
+      correct_count: number;
+      timeout_count: number;
+      elapsed_seconds: number;
+      measured_count: number;
+    }>();
+  return rows.results.map((row): AttemptStatisticBucket => ({
+    difficulty: row.difficulty,
+    topic: row.topic,
+    answeredCount: row.answered_count,
+    correctCount: row.correct_count,
+    timeoutCount: row.timeout_count,
+    elapsedSeconds: row.elapsed_seconds,
+    measuredCount: row.measured_count,
+  }));
+}
+
 function addTopicError(errors: Map<string, number>, topic: string) {
   errors.set(topic, (errors.get(topic) ?? 0) + 1);
 }
@@ -115,6 +160,7 @@ export async function processAttemptAnswer(
   }
 
   const timedOut = questionExpired || totalExpired;
+  const elapsedSeconds = questionElapsedSeconds(attempt, now);
   const permutation = await choicePermutation(attempt.id, question.id, choices.length);
   const originalIndex = selectedChoice === null ? null : permutation[selectedChoice];
   const correct = !timedOut && originalIndex === question.correct_index;
@@ -123,7 +169,12 @@ export async function processAttemptAnswer(
   const currentPosition = Math.max(1, asked.indexOf(question.id) + 1);
 
   if (!correct && !totalExpired) {
-    const replacement = await chooseReplacementQuestion(question.difficulty, asked, pending);
+    const replacement = await chooseReplacementQuestion(
+      question.difficulty,
+      question.topic,
+      asked,
+      pending,
+    );
     if (replacement) pending.push(replacement.id);
   }
 
@@ -158,14 +209,38 @@ export async function processAttemptAnswer(
   if (completed) {
     for (const skipped of skippedQuestions) addTopicError(topicErrors, skipped.topic);
   }
+  const completionStats = completed
+    ? summarizeAttemptStatistics([
+        ...await existingAnswerStatistics(attempt.id),
+        {
+          difficulty: question.difficulty,
+          topic: question.topic,
+          answeredCount: 1,
+          correctCount: correct ? 1 : 0,
+          timeoutCount: timedOut ? 1 : 0,
+          elapsedSeconds,
+          measuredCount: selectedChoice !== null || elapsedSeconds > 0 ? 1 : 0,
+        },
+        ...skippedQuestions.map((skipped): AttemptStatisticBucket => ({
+          difficulty: skipped.difficulty,
+          topic: skipped.topic,
+          answeredCount: 1,
+          correctCount: 0,
+          timeoutCount: 1,
+          elapsedSeconds: 0,
+          measuredCount: 0,
+        })),
+      ])
+    : null;
 
   const db = database();
   const statements: D1PreparedStatement[] = [
     db
       .prepare(
         `INSERT OR IGNORE INTO answers (
-          attempt_id, question_id, selected_index, is_correct, answered_at
-        ) SELECT ?, ?, ?, ?, ? FROM attempts
+          attempt_id, question_id, selected_index, is_correct, answered_at,
+          elapsed_seconds, timed_out
+        ) SELECT ?, ?, ?, ?, ?, ?, ? FROM attempts
           WHERE id = ? AND status = 'active' AND current_question_id = ?`,
       )
       .bind(
@@ -174,6 +249,8 @@ export async function processAttemptAnswer(
         selectedChoice,
         correct ? 1 : 0,
         now,
+        elapsedSeconds,
+        timedOut ? 1 : 0,
         attempt.id,
         question.id,
       ),
@@ -183,8 +260,9 @@ export async function processAttemptAnswer(
     statements.push(
       db
         .prepare(`INSERT OR IGNORE INTO answers (
-          attempt_id, question_id, selected_index, is_correct, answered_at
-        ) SELECT ?, ?, NULL, 0, ? FROM attempts
+          attempt_id, question_id, selected_index, is_correct, answered_at,
+          elapsed_seconds, timed_out
+        ) SELECT ?, ?, NULL, 0, ?, 0, 1 FROM attempts
           WHERE id = ? AND status = 'active' AND current_question_id = ?`)
         .bind(attempt.id, skipped.id, now, attempt.id, question.id),
     );
@@ -301,11 +379,13 @@ export async function processAttemptAnswer(
         difficulty: question.difficulty,
         weight: question.weight,
         prompt: question.prompt,
+        contextType: question.context_type ?? undefined,
+        context: question.context_text ?? undefined,
         selectedAnswer: originalIndex === null ? null : choices[originalIndex],
         correctAnswer: choices[question.correct_index],
         correct,
         timedOut,
-        questionElapsedSeconds: questionElapsedSeconds(attempt, now),
+        questionElapsedSeconds: elapsedSeconds,
       });
       statements.push(
         db.prepare(`INSERT INTO telegram_outbox (
@@ -340,6 +420,8 @@ export async function processAttemptAnswer(
         difficulty: skipped.difficulty,
         weight: skipped.weight,
         prompt: skipped.prompt,
+        contextType: skipped.context_type ?? undefined,
+        context: skipped.context_text ?? undefined,
         selectedAnswer: null,
         correctAnswer: skippedChoices[skipped.correct_index],
         correct: false,
@@ -369,7 +451,9 @@ export async function processAttemptAnswer(
       eventTime += 1;
     }
 
-    if (completed && verdict && completedAt !== null && durationSeconds !== null) {
+    if (
+      completed && verdict && completedAt !== null && durationSeconds !== null && completionStats
+    ) {
       const completedEventId = `completed-${attempt.id}`;
       const summaryMessage = completedTelegramMessage({
         attemptId: attempt.id,
@@ -384,8 +468,11 @@ export async function processAttemptAnswer(
         wrongCount,
         answeredCount,
         accuracy,
+        timeoutCount: completionStats.timeoutCount,
         durationSeconds,
+        averageAnswerSeconds: completionStats.averageAnswerSeconds,
         completedAt,
+        difficultyStats: completionStats.difficultyStats,
         topicErrors: [...topicErrors].map(([topic, count]) => ({ topic, count })),
       });
       statements.push(

@@ -6,8 +6,23 @@ import {
   OUTBOX_MAINTENANCE_NEXT_ATTEMPT_SQL,
   outboxClaimBindings,
   outboxMaintenanceBindings,
+  telegramDeliveryStateForError,
   TELEGRAM_GROUP_MIN_INTERVAL_MS,
 } from '../lib/telegram-outbox-policy.ts';
+
+assert.equal(
+  telegramDeliveryStateForError({ code: 'telegram_payload_invalid', retryable: false }),
+  'degraded',
+  'invalid local payload must not poison Telegram readiness',
+);
+assert.equal(
+  telegramDeliveryStateForError({ code: 'telegram_network', retryable: true }),
+  'degraded',
+);
+assert.equal(
+  telegramDeliveryStateForError({ code: 'telegram_401', retryable: false }),
+  'misconfigured',
+);
 
 const miniflare = new Miniflare({
   modules: true,
