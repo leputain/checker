@@ -20,6 +20,10 @@ const verdictIcons: Record<Verdict, string> = {
   FAIL: '🔴',
 };
 
+export function escapeTelegramHtml(value: string) {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function durationLabel(seconds: number) {
   const safe = Math.max(0, Math.round(seconds));
   return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
@@ -50,11 +54,43 @@ function shortId(value: string) {
   return value.replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase();
 }
 
-export function answerTelegramMessage(input: {
-  eventId: string;
+export function progressTelegramMessage(input: {
   attemptId: string;
   candidateName: string;
+  state: 'started' | 'active' | 'completed' | 'aborted';
+  answeredCount: number;
+  totalQuestions: number;
+  correctCount: number;
+  wrongCount: number;
+  score: number;
+  baseMaxScore: number;
+  totalRemainingSeconds: number;
+}) {
+  const headings = {
+    started: ['🧪', 'Тестирование начато'],
+    active: ['🧪', 'Тестирование идёт'],
+    completed: ['🏁', 'Тестирование завершено'],
+    aborted: ['⛔', 'Тестирование прервано'],
+  } as const;
+  const [icon, heading] = headings[input.state];
+  return [
+    `${icon} <b>${heading}</b>`,
+    '',
+    `👤 <b>${escapeTelegramHtml(input.candidateName)}</b>`,
+    `Прогресс: <b>${input.answeredCount} из ${input.totalQuestions}</b>`,
+    '',
+    `✅ ${input.correctCount}   ❌ ${input.wrongCount}`,
+    `Баллы: <b>${input.score} из ${input.baseMaxScore}</b>`,
+    `Осталось: <b>${durationLabel(input.totalRemainingSeconds)}</b>`,
+    '',
+    `<code>#${shortId(input.attemptId)}</code>`,
+  ].join('\n');
+}
+
+export function answerTelegramMessage(input: {
+  attemptId: string;
   position: number;
+  totalQuestions: number;
   difficulty: Difficulty;
   weight: number;
   prompt: string;
@@ -63,26 +99,23 @@ export function answerTelegramMessage(input: {
   correct: boolean;
   timedOut: boolean;
   questionElapsedSeconds: number;
-  totalRemainingSeconds: number;
 }) {
   const result = input.timedOut ? '⏱ Таймаут' : input.correct ? '✅ Верно' : '❌ Неверно';
   return [
-    `${result} · вопрос ${input.position}`,
-    `👤 ${input.candidateName}`,
+    `<b>${result} · вопрос ${input.position} из ${input.totalQuestions}</b>`,
     `${difficultyLabels[input.difficulty]} · ${pointsLabel(input.weight)}`,
     '',
-    `🧩 ${input.prompt}`,
+    escapeTelegramHtml(input.prompt),
     '',
-    `Ответ: ${input.selectedAnswer ?? 'не дан'}`,
-    `Эталон: ${input.correctAnswer}`,
+    `<b>Выбрано:</b> ${escapeTelegramHtml(input.selectedAnswer ?? 'ответ не дан')}`,
+    `<b>Правильно:</b> <tg-spoiler>${escapeTelegramHtml(input.correctAnswer)}</tg-spoiler>`,
     '',
-    `⏱ ${durationLabel(input.questionElapsedSeconds)} на вопрос · ${durationLabel(input.totalRemainingSeconds)} до конца`,
-    `ID: ${shortId(input.attemptId)} / ${shortId(input.eventId)}`,
+    `⏱ ${durationLabel(input.questionElapsedSeconds)}`,
+    `<code>#${shortId(input.attemptId)}</code>`,
   ].join('\n');
 }
 
 export function completedTelegramMessage(input: {
-  eventId: string;
   attemptId: string;
   candidateName: string;
   verdict: Verdict;
@@ -94,25 +127,37 @@ export function completedTelegramMessage(input: {
   answeredCount: number;
   accuracy: number;
   durationSeconds: number;
-  bankRevision: string | null;
   completedAt: number;
+  topicErrors: Array<{ topic: string; count: number }>;
 }) {
+  const sortedTopics = [...input.topicErrors]
+    .sort((left, right) => right.count - left.count || left.topic.localeCompare(right.topic, 'ru'));
+  const visibleTopics = sortedTopics.slice(0, 5);
+  const hiddenTopics = Math.max(0, sortedTopics.length - visibleTopics.length);
+  const topicLines = visibleTopics.length
+    ? [
+        '',
+        '<b>Слабые темы:</b>',
+        ...visibleTopics.map(({ topic, count }) => `• ${escapeTelegramHtml(topic)} — ${count}`),
+        ...(hiddenTopics ? [`• ещё тем: ${hiddenTopics}`] : []),
+      ]
+    : [];
+
   return [
-    '🏁 CANDIDATE CHECK · ИТОГ',
-    `👤 ${input.candidateName}`,
-    `${verdictIcons[input.verdict]} ${verdictLabels[input.verdict]}`,
+    `${verdictIcons[input.verdict]} <b>${escapeTelegramHtml(input.candidateName)}</b>`,
+    `<b>${verdictLabels[input.verdict]}</b>`,
     '',
-    `Результат: ${input.score} из ${input.baseMaxScore} · ${input.scorePercent}%`,
-    `Верно: ${input.correctCount} из ${input.answeredCount} · ошибок: ${input.wrongCount}`,
+    `<b>${input.score} / ${input.baseMaxScore} баллов · ${input.scorePercent}%</b>`,
+    `✅ ${input.correctCount} верных   ❌ ${input.wrongCount} ошибок`,
     `Точность: ${input.accuracy}% · время: ${durationLabel(input.durationSeconds)}`,
+    ...topicLines,
     '',
-    `Завершено: ${completedAtLabel(input.completedAt)}`,
-    `ID: ${shortId(input.attemptId)} / ${shortId(input.eventId)} · банк ${input.bankRevision?.slice(0, 8) ?? 'legacy'}`,
+    `Дата теста: ${completedAtLabel(input.completedAt)}`,
+    `<code>#${shortId(input.attemptId)}</code>`,
   ].join('\n');
 }
 
 export function abortedTelegramMessage(input: {
-  eventId: string;
   attemptId: string;
   candidateName: string;
   score: number;
@@ -123,14 +168,14 @@ export function abortedTelegramMessage(input: {
   abortedAt: number;
 }) {
   return [
-    '⛔ CANDIDATE CHECK · ТЕСТ ПРЕРВАН',
-    `👤 ${input.candidateName}`,
+    `⛔ <b>${escapeTelegramHtml(input.candidateName)}</b>`,
+    '<b>Тестирование прервано</b>',
     '',
-    `Пройдено: ${input.answeredCount} из ${input.minimumQuestions}`,
-    `Баллы на момент остановки: ${input.score} из ${input.baseMaxScore}`,
+    `Пройдено: <b>${input.answeredCount} из ${input.minimumQuestions}</b>`,
+    `Баллы: ${input.score} из ${input.baseMaxScore}`,
     `Время: ${durationLabel(input.durationSeconds)}`,
     '',
     `Прервано: ${completedAtLabel(input.abortedAt)}`,
-    `ID: ${shortId(input.attemptId)} / ${shortId(input.eventId)}`,
+    `<code>#${shortId(input.attemptId)}</code>`,
   ].join('\n');
 }

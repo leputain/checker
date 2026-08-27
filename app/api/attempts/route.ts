@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { telegramReadiness } from '@/db/telegram-outbox';
+import { telegramNotificationPolicy, telegramReadiness } from '@/db/telegram-outbox';
 import {
   attemptPayload,
   database,
@@ -10,6 +10,7 @@ import {
   sha256Hex,
 } from '@/db/runtime';
 import { selectUniqueQuestionPlan } from '@/lib/question-selection.ts';
+import { progressTelegramMessage } from '@/lib/telegram-messages.ts';
 import { BASE_QUESTION_COUNT, DIFFICULTIES, TEST_CONFIG } from '@/lib/test-config.ts';
 
 const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
@@ -90,7 +91,7 @@ export async function POST(request: Request) {
     const baseQuestionIds = selected.map((question) => question.id);
     const baseMaxScore = selected.reduce((sum, question) => sum + question.weight, 0);
     const [first, ...pending] = baseQuestionIds;
-    const insert = await db
+    const insertStatement = db
       .prepare(
         `INSERT INTO attempts (
           id, token_hash, start_key, candidate_name, public_alias, bank_revision,
@@ -116,8 +117,35 @@ export async function POST(request: Request) {
         JSON.stringify([first]),
         JSON.stringify(baseQuestionIds),
         baseMaxScore,
-      )
-      .run();
+      );
+    const statements: D1PreparedStatement[] = [insertStatement];
+    const notificationPolicy = telegramNotificationPolicy();
+    if (notificationPolicy.enabled && notificationPolicy.createProgressCard) {
+      const eventId = `started-${id}`;
+      const message = progressTelegramMessage({
+        attemptId: id,
+        candidateName: name,
+        state: 'started',
+        answeredCount: 0,
+        totalQuestions: baseQuestionIds.length,
+        correctCount: 0,
+        wrongCount: 0,
+        score: 0,
+        baseMaxScore,
+        totalRemainingSeconds: TEST_CONFIG.totalTimeSeconds,
+      });
+      statements.push(
+        db.prepare(`INSERT INTO telegram_outbox (
+          id, attempt_id, question_id, event_type, payload_text, delivery_method,
+          parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+        ) SELECT ?, id, NULL, 'started', ?, 'send', 'HTML', 1, 'pending', 0, ?, ?
+          FROM attempts WHERE id = ? AND status = 'active'
+          ON CONFLICT(id) DO NOTHING`)
+          .bind(eventId, message, now, now, id),
+      );
+    }
+    const results = await db.batch(statements);
+    const insert = results[0];
 
     const attempt = await findAttemptByStartKey(startKey);
     if (!attempt || attempt.token_hash !== tokenHash) {

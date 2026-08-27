@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { abortedTelegramMessage } from '@/lib/telegram-messages.ts';
-import { shouldQueueTelegramNotifications } from '@/db/telegram-outbox';
+import { abortedTelegramMessage, progressTelegramMessage } from '@/lib/telegram-messages.ts';
+import { telegramNotificationPolicy } from '@/db/telegram-outbox';
 import {
   attemptPayload,
   database,
@@ -39,6 +39,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
     const answeredCount = attempt.correct_count + attempt.wrong_count;
     const minimumQuestions = (JSON.parse(attempt.base_question_ids) as number[]).length;
+    const totalQuestions = new Set([
+      ...(JSON.parse(attempt.asked_question_ids) as number[]),
+      ...(JSON.parse(attempt.pending_question_ids) as number[]),
+    ]).size;
     const db = database();
     const statements: D1PreparedStatement[] = [
       db
@@ -48,10 +52,49 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         .bind(now, durationSeconds, attempt.id),
     ];
 
-    if (shouldQueueTelegramNotifications()) {
+    const notificationPolicy = telegramNotificationPolicy();
+    if (notificationPolicy.enabled) {
+      let eventTime = now;
+      if (notificationPolicy.createProgressCard) {
+        const progressMessage = progressTelegramMessage({
+          attemptId: attempt.id,
+          candidateName: attempt.candidate_name ?? attempt.public_alias,
+          state: 'aborted',
+          answeredCount,
+          totalQuestions: Math.max(minimumQuestions, totalQuestions),
+          correctCount: attempt.correct_count,
+          wrongCount: attempt.wrong_count,
+          score: attempt.score,
+          baseMaxScore: attempt.base_max_score,
+          totalRemainingSeconds: 0,
+        });
+        const startedEventId = `started-${attempt.id}`;
+        const progressEventId = `progress-aborted-${attempt.id}`;
+        statements.push(
+          db.prepare(`INSERT INTO telegram_outbox (
+            id, attempt_id, question_id, event_type, payload_text, delivery_method,
+            parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+          ) SELECT ?, id, NULL, 'started', ?, 'send', 'HTML', 1, 'pending', 0, ?, ?
+            FROM attempts WHERE id = ? AND status = 'aborted'
+            ON CONFLICT(id) DO NOTHING`)
+            .bind(startedEventId, progressMessage, Math.max(attempt.started_at, now - 1), Math.max(attempt.started_at, now - 1), attempt.id),
+          db.prepare(`UPDATE telegram_outbox SET status = 'dead', payload_text = '',
+            last_error_code = 'superseded'
+            WHERE attempt_id = ? AND event_type = 'progress' AND status = 'pending' AND id != ?
+              AND EXISTS (SELECT 1 FROM attempts WHERE id = ? AND status = 'aborted')`)
+            .bind(attempt.id, progressEventId, attempt.id),
+          db.prepare(`INSERT INTO telegram_outbox (
+            id, attempt_id, question_id, event_type, payload_text, delivery_method,
+            parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+          ) SELECT ?, id, NULL, 'progress', ?, 'edit_root', 'HTML', 1, 'pending', 0, ?, ?
+            FROM attempts WHERE id = ? AND status = 'aborted'
+            ON CONFLICT(id) DO NOTHING`)
+            .bind(progressEventId, progressMessage, now, eventTime, attempt.id),
+        );
+        eventTime += 1;
+      }
       const eventId = `aborted-${attempt.id}`;
       const message = abortedTelegramMessage({
-        eventId,
         attemptId: attempt.id,
         candidateName: attempt.candidate_name ?? attempt.public_alias,
         score: attempt.score,
@@ -63,12 +106,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       });
       statements.push(
         db
-          .prepare(`INSERT OR IGNORE INTO telegram_outbox (
-            id, attempt_id, question_id, event_type, payload_text, status,
-            attempt_count, next_attempt_at, created_at
-          ) SELECT ?, id, NULL, 'aborted', ?, 'pending', 0, ?, ?
-            FROM attempts WHERE id = ? AND status = 'aborted'`)
-          .bind(eventId, message, now, now, attempt.id),
+          .prepare(`INSERT INTO telegram_outbox (
+            id, attempt_id, question_id, event_type, payload_text, delivery_method,
+            parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+          ) SELECT ?, id, NULL, 'aborted', ?, 'send', 'HTML', 0, 'pending', 0, ?, ?
+            FROM attempts WHERE id = ? AND status = 'aborted'
+            ON CONFLICT(id) DO NOTHING`)
+          .bind(eventId, message, now, eventTime, attempt.id),
       );
     }
 

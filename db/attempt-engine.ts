@@ -1,7 +1,11 @@
 import { calculateAccuracy, calculateScore, calculateVerdict } from '@/lib/scoring.ts';
-import { answerTelegramMessage, completedTelegramMessage } from '@/lib/telegram-messages.ts';
+import {
+  answerTelegramMessage,
+  completedTelegramMessage,
+  progressTelegramMessage,
+} from '@/lib/telegram-messages.ts';
 import { TEST_CONFIG } from '@/lib/test-config.ts';
-import { shouldQueueTelegramNotifications } from './telegram-outbox';
+import { telegramNotificationPolicy } from './telegram-outbox';
 import {
   choicePermutation,
   database,
@@ -64,6 +68,21 @@ function questionElapsedSeconds(attempt: AttemptRow, now: number) {
   const deadline = Math.min(attempt.question_deadline_at, attempt.total_deadline_at);
   const allocated = Math.max(0, Math.ceil((deadline - startedAt) / 1_000));
   return Math.min(allocated, Math.max(0, Math.ceil((now - startedAt) / 1_000)));
+}
+
+async function existingTopicErrors(attemptId: string) {
+  const rows = await database()
+    .prepare(`SELECT questions.topic, COUNT(*) AS count
+      FROM answers JOIN questions ON questions.id = answers.question_id
+      WHERE answers.attempt_id = ? AND answers.is_correct = 0
+      GROUP BY questions.topic`)
+    .bind(attemptId)
+    .all<{ topic: string; count: number }>();
+  return new Map(rows.results.map((row) => [row.topic, row.count]));
+}
+
+function addTopicError(errors: Map<string, number>, topic: string) {
+  errors.set(topic, (errors.get(topic) ?? 0) + 1);
 }
 
 export async function processAttemptAnswer(
@@ -131,6 +150,14 @@ export async function processAttemptAnswer(
   const durationSeconds = completed
     ? Math.min(TEST_CONFIG.totalTimeSeconds, Math.ceil((now - attempt.started_at) / 1_000))
     : null;
+  const totalQuestions = answeredCount + (nextId === null ? 0 : pending.length + 1);
+  const totalRemainingSeconds = Math.max(0, Math.ceil((attempt.total_deadline_at - now) / 1_000));
+  const candidateName = attempt.candidate_name ?? attempt.public_alias;
+  const topicErrors = completed ? await existingTopicErrors(attempt.id) : new Map<string, number>();
+  if (completed && !correct) addTopicError(topicErrors, question.topic);
+  if (completed) {
+    for (const skipped of skippedQuestions) addTopicError(topicErrors, skipped.topic);
+  }
 
   const db = database();
   const statements: D1PreparedStatement[] = [
@@ -196,53 +223,120 @@ export async function processAttemptAnswer(
       ),
   );
 
-  if (shouldQueueTelegramNotifications()) {
-    const answerEventId = `answer-${attempt.id}-${question.id}`;
-    const answerMessage = answerTelegramMessage({
-      eventId: answerEventId,
-      attemptId: attempt.id,
-      candidateName: attempt.candidate_name ?? attempt.public_alias,
-      position: currentPosition,
-      difficulty: question.difficulty,
-      weight: question.weight,
-      prompt: question.prompt,
-      selectedAnswer: originalIndex === null ? null : choices[originalIndex],
-      correctAnswer: choices[question.correct_index],
-      correct,
-      timedOut,
-      questionElapsedSeconds: questionElapsedSeconds(attempt, now),
-      totalRemainingSeconds: Math.max(0, Math.ceil((attempt.total_deadline_at - now) / 1_000)),
-    });
-    statements.push(
-      db
-        .prepare(`INSERT OR IGNORE INTO telegram_outbox (
-          id, attempt_id, question_id, event_type, payload_text, status,
-          attempt_count, next_attempt_at, created_at
-        ) SELECT ?, ?, ?, 'answer', ?, 'pending', 0, ?, ?
+  const notificationPolicy = telegramNotificationPolicy();
+  if (notificationPolicy.enabled) {
+    let eventTime = now;
+    if (notificationPolicy.createProgressCard) {
+      const progressState = completed ? 'completed' : 'active';
+      const progressMessage = progressTelegramMessage({
+        attemptId: attempt.id,
+        candidateName,
+        state: progressState,
+        answeredCount,
+        totalQuestions,
+        correctCount,
+        wrongCount,
+        score,
+        baseMaxScore: attempt.base_max_score,
+        totalRemainingSeconds: completed ? 0 : totalRemainingSeconds,
+      });
+      const startedEventId = `started-${attempt.id}`;
+      statements.push(
+        db.prepare(`INSERT INTO telegram_outbox (
+          id, attempt_id, question_id, event_type, payload_text, delivery_method,
+          parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+        ) SELECT ?, id, NULL, 'started', ?, 'send', 'HTML', 1, 'pending', 0, ?, ?
+          FROM attempts WHERE id = ? AND EXISTS (
+            SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+          )
+          ON CONFLICT(id) DO NOTHING`)
+          .bind(
+            startedEventId,
+            progressMessage,
+            Math.max(attempt.started_at, now - 1),
+            Math.max(attempt.started_at, now - 1),
+            attempt.id,
+            attempt.id,
+            question.id,
+          ),
+      );
+
+      const progressEventId = `progress-${attempt.id}-${question.id}`;
+      statements.push(
+        db.prepare(`UPDATE telegram_outbox SET status = 'dead', payload_text = '',
+          last_error_code = 'superseded'
+          WHERE attempt_id = ? AND event_type = 'progress' AND status = 'pending' AND id != ?
+            AND EXISTS (
+              SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+            )`)
+          .bind(attempt.id, progressEventId, attempt.id, question.id),
+        db.prepare(`INSERT INTO telegram_outbox (
+          id, attempt_id, question_id, event_type, payload_text, delivery_method,
+          parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+        ) SELECT ?, ?, ?, 'progress', ?, 'edit_root', 'HTML', 1, 'pending', 0, ?, ?
           WHERE EXISTS (
             SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
-          )`)
-        .bind(
-          answerEventId,
-          attempt.id,
-          question.id,
-          answerMessage,
-          now,
-          now,
-          attempt.id,
-          question.id,
-        ),
-    );
+          )
+          ON CONFLICT(id) DO NOTHING`)
+          .bind(
+            progressEventId,
+            attempt.id,
+            question.id,
+            progressMessage,
+            now,
+            eventTime,
+            attempt.id,
+            question.id,
+          ),
+      );
+      eventTime += 1;
+    }
 
-    skippedQuestions.forEach((skipped, index) => {
+    if (notificationPolicy.sendAnswer(correct)) {
+      const answerEventId = `answer-${attempt.id}-${question.id}`;
+      const answerMessage = answerTelegramMessage({
+        attemptId: attempt.id,
+        position: currentPosition,
+        totalQuestions,
+        difficulty: question.difficulty,
+        weight: question.weight,
+        prompt: question.prompt,
+        selectedAnswer: originalIndex === null ? null : choices[originalIndex],
+        correctAnswer: choices[question.correct_index],
+        correct,
+        timedOut,
+        questionElapsedSeconds: questionElapsedSeconds(attempt, now),
+      });
+      statements.push(
+        db.prepare(`INSERT INTO telegram_outbox (
+          id, attempt_id, question_id, event_type, payload_text, delivery_method,
+          parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+        ) SELECT ?, ?, ?, 'answer', ?, 'reply_root', 'HTML', 1, 'pending', 0, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+          )
+          ON CONFLICT(id) DO NOTHING`)
+          .bind(
+            answerEventId,
+            attempt.id,
+            question.id,
+            answerMessage,
+            now,
+            eventTime,
+            attempt.id,
+            question.id,
+          ),
+      );
+      eventTime += 1;
+    }
+
+    for (const skipped of notificationPolicy.sendAnswer(false) ? skippedQuestions : []) {
       const skippedChoices = JSON.parse(skipped.choices_json) as string[];
       const eventId = `answer-${attempt.id}-${skipped.id}`;
-      const eventTime = now + index + 1;
       const message = answerTelegramMessage({
-        eventId,
         attemptId: attempt.id,
-        candidateName: attempt.candidate_name ?? attempt.public_alias,
         position: asked.indexOf(skipped.id) + 1,
+        totalQuestions,
         difficulty: skipped.difficulty,
         weight: skipped.weight,
         prompt: skipped.prompt,
@@ -251,17 +345,16 @@ export async function processAttemptAnswer(
         correct: false,
         timedOut: true,
         questionElapsedSeconds: 0,
-        totalRemainingSeconds: 0,
       });
       statements.push(
-        db
-          .prepare(`INSERT OR IGNORE INTO telegram_outbox (
-            id, attempt_id, question_id, event_type, payload_text, status,
-            attempt_count, next_attempt_at, created_at
-          ) SELECT ?, ?, ?, 'answer', ?, 'pending', 0, ?, ?
-            WHERE EXISTS (
-              SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
-            )`)
+        db.prepare(`INSERT INTO telegram_outbox (
+          id, attempt_id, question_id, event_type, payload_text, delivery_method,
+          parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+        ) SELECT ?, ?, ?, 'answer', ?, 'reply_root', 'HTML', 1, 'pending', 0, ?, ?
+          WHERE EXISTS (
+            SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+          )
+          ON CONFLICT(id) DO NOTHING`)
           .bind(
             eventId,
             attempt.id,
@@ -273,14 +366,14 @@ export async function processAttemptAnswer(
             skipped.id,
           ),
       );
-    });
+      eventTime += 1;
+    }
 
     if (completed && verdict && completedAt !== null && durationSeconds !== null) {
       const completedEventId = `completed-${attempt.id}`;
       const summaryMessage = completedTelegramMessage({
-        eventId: completedEventId,
         attemptId: attempt.id,
-        candidateName: attempt.candidate_name ?? attempt.public_alias,
+        candidateName,
         verdict,
         score,
         baseMaxScore: attempt.base_max_score,
@@ -292,25 +385,17 @@ export async function processAttemptAnswer(
         answeredCount,
         accuracy,
         durationSeconds,
-        bankRevision: attempt.bank_revision,
         completedAt,
+        topicErrors: [...topicErrors].map(([topic, count]) => ({ topic, count })),
       });
-      const completedEventTime = now + skippedQuestions.length + 1;
       statements.push(
-        db
-          .prepare(`INSERT OR IGNORE INTO telegram_outbox (
-            id, attempt_id, question_id, event_type, payload_text, status,
-            attempt_count, next_attempt_at, created_at
-          ) SELECT ?, ?, NULL, 'completed', ?, 'pending', 0, ?, ?
-            FROM attempts WHERE id = ? AND status = 'completed'`)
-          .bind(
-            completedEventId,
-            attempt.id,
-            summaryMessage,
-            now,
-            completedEventTime,
-            attempt.id,
-          ),
+        db.prepare(`INSERT INTO telegram_outbox (
+          id, attempt_id, question_id, event_type, payload_text, delivery_method,
+          parse_mode, silent, status, attempt_count, next_attempt_at, created_at
+        ) SELECT ?, ?, NULL, 'completed', ?, 'send', 'HTML', 0, 'pending', 0, ?, ?
+          FROM attempts WHERE id = ? AND status = 'completed'
+          ON CONFLICT(id) DO NOTHING`)
+          .bind(completedEventId, attempt.id, summaryMessage, now, eventTime, attempt.id),
       );
     }
   }

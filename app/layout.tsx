@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import type { CSSProperties } from 'react';
 import './globals.css';
 import { appPath } from '@/lib/app-path.ts';
+import { releaseAssetPath } from '@/lib/release.ts';
 
 const metadataBase = new URL('https://hub.themuha.cc/');
 
@@ -18,8 +19,8 @@ export const metadata: Metadata = {
   },
   formatDetection: { telephone: false },
   icons: {
-    icon: appPath('/assets/brand/checker-mascot-v1.png'),
-    apple: appPath('/assets/brand/checker-mascot-v1.png'),
+    icon: releaseAssetPath('/assets/brand/checker-mascot-v1.png'),
+    apple: releaseAssetPath('/assets/brand/checker-mascot-v1.png'),
   },
   openGraph: {
     type: 'website',
@@ -43,15 +44,15 @@ export const viewport: Viewport = {
 };
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const bodyStyle = {
-    '--candidate-background-image': `url("${appPath('/assets/brand/checker-background-v1.webp')}")`,
-    '--candidate-mascot-image': `url("${appPath('/assets/brand/checker-mascot-v1.webp')}")`,
+    '--candidate-background-image': `url("${releaseAssetPath('/assets/brand/checker-background-v1.webp')}")`,
+    '--candidate-mascot-image': `url("${releaseAssetPath('/assets/brand/checker-mascot-v1.webp')}")`,
   } as CSSProperties;
 
   return (
     <html lang="ru">
       <head>
-        <link rel="preload" as="image" href={appPath('/assets/brand/checker-background-v1.webp')} type="image/webp" />
-        <link rel="preload" as="image" href={appPath('/assets/brand/checker-mascot-v1.webp')} type="image/webp" />
+        <link rel="preload" as="image" href={releaseAssetPath('/assets/brand/checker-background-v1.webp')} type="image/webp" />
+        <link rel="preload" as="image" href={releaseAssetPath('/assets/brand/checker-mascot-v1.webp')} type="image/webp" />
       </head>
       <body style={bodyStyle}>{children}</body>
     </html>

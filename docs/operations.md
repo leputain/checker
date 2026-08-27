@@ -1,4 +1,4 @@
-# Candidate Check v0.5: локальный runbook
+# Candidate Check v0.5.1: локальный runbook
 
 ## Границы
 
@@ -30,9 +30,10 @@ Invoke-RestMethod http://localhost:3001/api/health/ready
 1. Создать backup текущей D1.
 2. Изменить `db/questions.json`.
 3. Для смысловой новой редакции назначить новый `id`; старую сделать `active: false`.
-4. Выполнить `npm run questions:validate`.
-5. Перезапустить dev-сервер.
-6. Проверить `/api/health/ready` и локальную `npm run questions:stats`.
+4. Альтернативным формулировкам одной концепции назначить одинаковый `dedupeKey`.
+5. Выполнить `npm run questions:validate`.
+6. Перезапустить dev-сервер.
+7. Проверить `/api/health/ready` и локальную `npm run questions:stats`.
 
 Если новый банк повреждён, не исправлять D1 вручную. Вернуть предыдущий JSON, перезапустить приложение и повторить readiness. Активные попытки используют уже сохранённые вопросы и не должны быть потеряны.
 
@@ -45,6 +46,8 @@ Invoke-RestMethod http://localhost:3001/api/health/ready
 5. При согласованном внешнем smoke выполнить `npm run telegram:test`.
 
 Не передавать token через аргументы CLI и не добавлять его в `.env` с префиксом `VITE_`.
+
+Режим Telegram-отчёта задаётся до запуска: `TELEGRAM_REPORT_MODE=progress_errors` по умолчанию, `summary` отправляет только итог, `all_answers` используется только для диагностики. После изменения режима перезапустить dev-сервер.
 
 Аварийный rollback Telegram:
 
@@ -113,6 +116,8 @@ npm run ops:restore -- --from backups/<имя>.sql --apply
 
 - рост `pending` — Telegram недоступен, cooldown группы или нет flush-трафика;
 - рост `dead` — неверный token/chat ID, бот удалён из группы или Telegram вернул постоянную ошибку;
+- `telegram_root_missing` — не удалось доставить корневую карточку, поэтому зависимое обновление или ответ безопасно пропущены;
+- `superseded` — промежуточное обновление прогресса заменено более свежим, это штатное состояние;
 - `attempt_count >= 10` — событие исчерпало retry budget;
 - readiness `telegram_misconfigured` — файл отсутствует, содержит неоднозначные значения или Worker не получил bindings.
 

@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import { appPath } from '@/lib/app-path.ts';
+import { APP_RELEASE, releaseAssetPath } from '@/lib/release.ts';
 import { BASE_MAX_SCORE, BASE_QUESTION_COUNT, TEST_CONFIG } from '@/lib/test-config.ts';
 
 type Difficulty = 'easy' | 'medium' | 'hard' | 'expert';
@@ -37,6 +38,7 @@ type Result = {
   answeredCount: number;
   accuracy: number;
   durationSeconds: number;
+  completedAt: string;
 };
 
 type AttemptPayload = {
@@ -117,6 +119,17 @@ const verdictCopy: Record<Verdict, string> = {
 function formatTime(seconds: number) {
   const safe = Math.max(0, seconds);
   return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+function formatTestDate(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return '—';
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(timestamp);
 }
 
 function randomToken() {
@@ -804,6 +817,10 @@ export default function Home() {
             <div><strong>{result.wrongCount}</strong><span>ошибок</span></div>
             <div><strong>{result.answeredCount}</strong><span>вопросов</span></div>
             <div><strong>{formatTime(result.durationSeconds)}</strong><span>время</span></div>
+            <div className="result-stat-date">
+              <strong><time dateTime={result.completedAt}>{formatTestDate(result.completedAt)}</time></strong>
+              <span>дата теста</span>
+            </div>
           </div>
           <div className="result-actions">
             <button
@@ -938,7 +955,7 @@ export default function Home() {
         aria-hidden={showLeaderboard || undefined}
         inert={showLeaderboard || undefined}
       >
-        <div className="brand"><span className="brand-mark" aria-hidden="true" /><span>Candidate Check</span></div>
+        <div className="brand"><span className="brand-mark" aria-hidden="true" /><span>Candidate Check</span><span className="release-tag">v{APP_RELEASE}</span></div>
         <div className="header-actions">
           <button
             ref={leaderboardButtonRef}
@@ -969,7 +986,14 @@ export default function Home() {
             <span><strong>{BASE_MAX_SCORE}</strong> баллов</span>
           </div>
         </div>
-        <div className="welcome-mascot" aria-hidden="true" />
+        {/* Nginx serves this versioned asset directly; image optimization would route it back through the Vinext runtime. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          className="welcome-mascot"
+          src={releaseAssetPath('/assets/brand/checker-mascot-v1.webp')}
+          alt=""
+          aria-hidden="true"
+        />
         <form className="start-card glass-card" onSubmit={startTest}>
           <p className="eyebrow">Начало теста</p>
           <h2>Введите имя</h2>
@@ -1247,7 +1271,13 @@ function Leaderboard({
             {entries.map((entry, index) => (
               <li className={entry.verdict === 'FAIL' ? 'leader-fail' : ''} key={`${entry.alias}-${entry.completedAt}`}>
                 <span className="rank">{String(index + 1).padStart(2, '0')}</span>
-                <span className="leader-name"><strong>{entry.alias}</strong><small>{formatTime(entry.durationSeconds)}</small></span>
+                <span className="leader-name">
+                  <strong>{entry.alias}</strong>
+                  <small>
+                    <time dateTime={entry.completedAt}>{formatTestDate(entry.completedAt)}</time>
+                    <span aria-hidden="true"> · </span>{formatTime(entry.durationSeconds)}
+                  </small>
+                </span>
                 <span className={`mini-verdict mini-${entry.verdict.toLowerCase()}`}>{verdictLabels[entry.verdict]}</span>
                 <strong className="leader-score">{entry.score}/{entry.baseMaxScore}</strong>
                 <span className="leader-metric">{entry.accuracy}%<small>точность</small></span>

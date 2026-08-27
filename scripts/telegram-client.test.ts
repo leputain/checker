@@ -4,7 +4,12 @@ import {
   abortedTelegramMessage,
   answerTelegramMessage,
   completedTelegramMessage,
+  progressTelegramMessage,
 } from '../lib/telegram-messages.ts';
+import {
+  normalizeTelegramReportMode,
+  telegramReportPolicy,
+} from '../lib/telegram-report-policy.ts';
 
 const credentials = {
   botToken: `${'1'.repeat(10)}:${'A'.repeat(35)}`,
@@ -18,117 +23,173 @@ function response(status: number, payload: unknown) {
   });
 }
 
+let capturedUrl = '';
+let capturedBody: Record<string, unknown> = {};
 const success = await sendTelegramMessage(
   credentials,
-  'Проверка',
-  async () => response(200, { ok: true, result: { message_id: 17 } }),
+  { text: '<b>Проверка</b>', parseMode: 'HTML', silent: true },
+  async (input, init) => {
+    capturedUrl = String(input);
+    capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return response(200, { ok: true, result: { message_id: 17 } });
+  },
 );
 assert.deepEqual(success, { ok: true, messageId: 17 });
+assert.match(capturedUrl, /\/sendMessage$/);
+assert.deepEqual(capturedBody, {
+  chat_id: credentials.chatId,
+  text: '<b>Проверка</b>',
+  parse_mode: 'HTML',
+  protect_content: true,
+  disable_notification: true,
+});
 
-const limited = await sendTelegramMessage(
+const reply = await sendTelegramMessage(
   credentials,
-  'Проверка',
-  async () => response(429, { ok: false, error_code: 429, parameters: { retry_after: 7 } }),
+  { text: 'Ошибка', deliveryMethod: 'reply_root', rootMessageId: 17, silent: true },
+  async (_input, init) => {
+    capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return response(200, { ok: true, result: { message_id: 18 } });
+  },
 );
-assert.deepEqual(limited, { ok: false, code: 'telegram_429', retryable: true, retryAfterMs: 7_000 });
+assert.deepEqual(reply, { ok: true, messageId: 18 });
+assert.deepEqual((capturedBody as Record<string, unknown>).reply_parameters, { message_id: 17 });
 
-const badRequest = await sendTelegramMessage(
+const edit = await sendTelegramMessage(
   credentials,
-  'Проверка',
-  async () => response(400, { ok: false, error_code: 400 }),
+  { text: 'Прогресс', deliveryMethod: 'edit_root', rootMessageId: 17, parseMode: 'HTML' },
+  async (input, init) => {
+    capturedUrl = String(input);
+    capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return response(200, { ok: true, result: { message_id: 17 } });
+  },
 );
-assert.deepEqual(badRequest, { ok: false, code: 'telegram_400', retryable: false });
+assert.deepEqual(edit, { ok: true, messageId: 17 });
+assert.match(capturedUrl, /\/editMessageText$/);
+assert.equal((capturedBody as Record<string, unknown>).message_id, 17);
+assert.equal('protect_content' in capturedBody, false);
 
-const unauthorized = await sendTelegramMessage(
+const unchangedEdit = await sendTelegramMessage(
   credentials,
-  'Проверка',
-  async () => response(401, { ok: false, error_code: 401 }),
+  { text: 'Прогресс', deliveryMethod: 'edit_root', rootMessageId: 17 },
+  async () => response(400, { ok: false, error_code: 400, description: 'Bad Request: message is not modified' }),
 );
-assert.deepEqual(unauthorized, { ok: false, code: 'telegram_401', retryable: false });
+assert.deepEqual(unchangedEdit, { ok: true, messageId: 17 });
 
-const forbidden = await sendTelegramMessage(
-  credentials,
-  'Проверка',
-  async () => response(403, { ok: false, error_code: 403 }),
+assert.deepEqual(
+  await sendTelegramMessage(credentials, { text: 'Ответ', deliveryMethod: 'reply_root' }),
+  { ok: false, code: 'telegram_root_missing', retryable: false },
 );
-assert.deepEqual(forbidden, { ok: false, code: 'telegram_403', retryable: false });
+assert.deepEqual(
+  await sendTelegramMessage(credentials, { text: 'X'.repeat(4_097) }),
+  { ok: false, code: 'telegram_payload_invalid', retryable: false },
+);
 
-const serverError = await sendTelegramMessage(
-  credentials,
-  'Проверка',
-  async () => response(503, { ok: false, error_code: 503 }),
-);
-assert.deepEqual(serverError, { ok: false, code: 'telegram_503', retryable: true });
+const cases = [
+  [429, { ok: false, error_code: 429, parameters: { retry_after: 7 } }, { ok: false, code: 'telegram_429', retryable: true, retryAfterMs: 7_000 }],
+  [400, { ok: false, error_code: 400 }, { ok: false, code: 'telegram_400', retryable: false }],
+  [401, { ok: false, error_code: 401 }, { ok: false, code: 'telegram_401', retryable: false }],
+  [403, { ok: false, error_code: 403 }, { ok: false, code: 'telegram_403', retryable: false }],
+  [503, { ok: false, error_code: 503 }, { ok: false, code: 'telegram_503', retryable: true }],
+] as const;
+for (const [status, payload, expected] of cases) {
+  const result = await sendTelegramMessage(
+    credentials,
+    { text: 'Проверка' },
+    async () => response(status, payload),
+  );
+  assert.deepEqual(result, expected);
+}
 
 const networkError = await sendTelegramMessage(
   credentials,
-  'Проверка',
+  { text: 'Проверка' },
   async () => { throw new Error('private transport detail'); },
 );
 assert.deepEqual(networkError, { ok: false, code: 'telegram_network', retryable: true });
 
 const timeoutError = await sendTelegramMessage(
   credentials,
-  'Проверка',
+  { text: 'Проверка' },
   async () => { throw new DOMException('Timed out', 'AbortError'); },
 );
 assert.deepEqual(timeoutError, { ok: false, code: 'telegram_timeout', retryable: true });
 
-const answerMessage = answerTelegramMessage({
-  eventId: 'answer-attempt-7',
+const progressMessage = progressTelegramMessage({
   attemptId: 'attempt-1',
-  candidateName: 'Анна Петрова',
-  position: 1,
+  candidateName: 'Анна <Петрова>',
+  state: 'active',
+  answeredCount: 7,
+  totalQuestions: 21,
+  correctCount: 5,
+  wrongCount: 2,
+  score: 9,
+  baseMaxScore: 50,
+  totalRemainingSeconds: 388,
+});
+assert.match(progressMessage, /Анна &lt;Петрова&gt;/);
+assert.match(progressMessage, /Прогресс: <b>7 из 21<\/b>/);
+assert.match(progressMessage, /Осталось: <b>06:28<\/b>/);
+
+const answerMessage = answerTelegramMessage({
+  attemptId: 'attempt-1',
+  position: 7,
+  totalQuestions: 21,
   difficulty: 'medium',
   weight: 2,
-  prompt: 'Что проверяет тест?',
-  selectedAnswer: 'Логику',
+  prompt: 'Что проверяет <тест>?',
+  selectedAnswer: 'Логику & синтаксис',
   correctAnswer: 'Логику',
-  correct: true,
+  correct: false,
   timedOut: false,
   questionElapsedSeconds: 12,
-  totalRemainingSeconds: 540,
 });
-assert.match(answerMessage, /Анна Петрова/);
-assert.match(answerMessage, /Эталон: Логику/);
-assert.match(answerMessage, /✅ Верно · вопрос 1/);
-assert.match(answerMessage, /00:12 на вопрос · 09:00 до конца/);
+assert.match(answerMessage, /❌ Неверно · вопрос 7 из 21/);
+assert.match(answerMessage, /Что проверяет &lt;тест&gt;?/);
+assert.match(answerMessage, /Логику &amp; синтаксис/);
+assert.match(answerMessage, /<tg-spoiler>Логику<\/tg-spoiler>/);
+assert.doesNotMatch(answerMessage, /Анна/);
 
 const completedMessage = completedTelegramMessage({
-  eventId: 'completed-attempt-1',
   attemptId: 'attempt-1',
   candidateName: 'Анна Петрова',
   verdict: 'PASS',
-  score: 14,
-  baseMaxScore: 14,
-  scorePercent: 100,
-  correctCount: 6,
-  wrongCount: 0,
-  answeredCount: 6,
-  accuracy: 100,
+  score: 43,
+  baseMaxScore: 50,
+  scorePercent: 86,
+  correctCount: 18,
+  wrongCount: 2,
+  answeredCount: 20,
+  accuracy: 90,
   durationSeconds: 120,
-  bankRevision: 'abcdef1234567890',
   completedAt: 1_700_000_000_000,
+  topicErrors: [{ topic: 'Linux & shell', count: 2 }],
 });
 assert.match(completedMessage, /Рекомендован/);
-assert.match(completedMessage, /Результат: 14 из 14 · 100%/);
-assert.match(completedMessage, /время: 02:00/);
-assert.match(completedMessage, /МСК/);
+assert.match(completedMessage, /43 \/ 50 баллов · 86%/);
+assert.match(completedMessage, /Слабые темы/);
+assert.match(completedMessage, /Linux &amp; shell — 2/);
+assert.match(completedMessage, /Дата теста: 15\.11\.2023 · 01:13 МСК/);
+assert.doesNotMatch(completedMessage, /банк|\/ COMPLETED-/i);
 
 const abortedMessage = abortedTelegramMessage({
-  eventId: 'aborted-attempt-1',
   attemptId: 'attempt-1',
   candidateName: 'Анна Петрова',
   score: 3,
-  baseMaxScore: 28,
+  baseMaxScore: 50,
   answeredCount: 4,
   minimumQuestions: 20,
   durationSeconds: 75,
   abortedAt: 1_700_000_000_000,
 });
-assert.match(abortedMessage, /ТЕСТ ПРЕРВАН/);
-assert.match(abortedMessage, /Пройдено: 4 из 20/);
-assert.match(abortedMessage, /Баллы на момент остановки: 3 из 28/);
-assert.match(abortedMessage, /Время: 01:15/);
+assert.match(abortedMessage, /Тестирование прервано/);
+assert.match(abortedMessage, /Пройдено: <b>4 из 20<\/b>/);
+
+assert.equal(normalizeTelegramReportMode(undefined), 'progress_errors');
+assert.equal(normalizeTelegramReportMode('ALL_ANSWERS'), 'all_answers');
+assert.equal(telegramReportPolicy('summary').createProgressCard, false);
+assert.equal(telegramReportPolicy('progress_errors').sendAnswer(true), false);
+assert.equal(telegramReportPolicy('progress_errors').sendAnswer(false), true);
+assert.equal(telegramReportPolicy('all_answers').sendAnswer(true), true);
 
 console.log('telegram client tests: PASS');

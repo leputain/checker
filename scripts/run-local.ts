@@ -12,6 +12,7 @@ if (command !== 'dev' && command !== 'start' && command !== 'preview') {
 const childEnvironment = { ...process.env };
 childEnvironment.TELEGRAM_ENABLED ??= '1';
 childEnvironment.TELEGRAM_REQUIRED ??= '1';
+childEnvironment.TELEGRAM_REPORT_MODE ??= 'progress_errors';
 
 if (childEnvironment.CANDIDATE_CHECK_SKIP_TELEGRAM_FILE !== '1') {
   delete childEnvironment.TELEGRAM_BOT_TOKEN;

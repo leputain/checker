@@ -5,7 +5,9 @@ try {
   const config = await loadTelegramConfig();
   const result = await sendTelegramMessage(
     { botToken: config.botToken, chatId: config.chatId },
-    `Candidate Check · проверка связи\nОбезличенное тестовое сообщение\n${new Date().toISOString()}`,
+    {
+      text: `Candidate Check · проверка связи\nОбезличенное тестовое сообщение\n${new Date().toISOString()}`,
+    },
   );
   if (!result.ok) throw new Error(result.code);
   console.log('Telegram test message: SENT');

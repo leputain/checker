@@ -102,6 +102,14 @@ test('полный flow сохраняется после reload и показы
     }
 
     await expect(page.getByRole('heading', { name: 'Результат готов.' })).toBeVisible();
+    const completed = queryLocalD1<{ completedAt: number }>(`
+      SELECT completed_at AS completedAt FROM attempts WHERE id = '${attemptId}'
+    `, E2E_STATE_PATH)[0];
+    expect(completed?.completedAt).toBeTruthy();
+    const completedAtIso = new Date(completed.completedAt).toISOString();
+    const resultDate = page.locator('.result-stat-date time');
+    await expect(resultDate).toHaveAttribute('datetime', completedAtIso);
+    await expect(resultDate).toHaveText(/^\d{2}\.\d{2}\.\d{4}$/);
     await expectNoHorizontalOverflow(page);
     const actionHeights = await page.locator('.result-actions button').evaluateAll((buttons) => (
       buttons.map((button) => Math.round(button.getBoundingClientRect().height))
@@ -112,6 +120,7 @@ test('полный flow сохраняется после reload и показы
     await leaderboardButton.click();
     const dialog = page.getByRole('dialog', { name: 'Таблица лидеров' });
     await expect(dialog).toBeVisible();
+    await expect(dialog.locator(`time[datetime="${completedAtIso}"]`)).toHaveText(/^\d{2}\.\d{2}\.\d{4}$/);
     await dialog.press('Shift+Tab');
     await expect(page.getByRole('button', { name: 'Закрыть' })).toBeFocused();
     await dialog.press('Escape');
@@ -294,6 +303,12 @@ test('истечение клиентского дедлайна отправл�
         AND event_type = 'answer'
     `, E2E_STATE_PATH)[0];
     expect(outbox.count).toBe(1);
+    const progress = queryLocalD1<{ count: number }>(`
+      SELECT COUNT(*) AS count FROM telegram_outbox
+      WHERE attempt_id = '${attemptId}' AND question_id = ${started.question.id}
+        AND event_type = 'progress' AND delivery_method = 'edit_root'
+    `, E2E_STATE_PATH)[0];
+    expect(progress.count).toBe(1);
     await page.waitForTimeout(1_200);
     expect(timeoutRequests).toBe(1);
   } finally {
@@ -358,7 +373,7 @@ test('HTTP 5xx не удаляет локальную очередь Telegram de
   }
 });
 
-test('идемпотентный API создаёт один ответ и одно outbox-событие', async ({ request }, testInfo) => {
+test('идемпотентный API создаёт один ответ и согласованный набор Telegram-событий', async ({ request }, testInfo) => {
   test.skip(testInfo.project.name.includes('landscape'), 'API/D1 integration не зависит от orientation.');
   const startKey = randomUUID();
   const token = randomBytes(32).toString('base64url');
@@ -404,15 +419,31 @@ test('идемпотентный API создаёт один ответ и од�
     });
     expect(duplicateAnswer.status()).toBe(200);
 
-    const counts = queryLocalD1<{ answers: number; outbox: number }>(`
+    const counts = queryLocalD1<{
+      answers: number;
+      isCorrect: number;
+      started: number;
+      progress: number;
+      answerEvent: number;
+    }>(`
       SELECT
         (SELECT COUNT(*) FROM answers
           WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}) AS answers,
+        (SELECT is_correct FROM answers
+          WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}) AS isCorrect,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND event_type = 'started') AS started,
         (SELECT COUNT(*) FROM telegram_outbox
           WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
-            AND event_type = 'answer') AS outbox
+            AND event_type = 'progress' AND delivery_method = 'edit_root') AS progress,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
+            AND event_type = 'answer' AND delivery_method = 'reply_root') AS answerEvent
     `, E2E_STATE_PATH)[0];
-    expect(counts).toEqual({ answers: 1, outbox: 1 });
+    expect(counts.answers).toBe(1);
+    expect(counts.started).toBe(1);
+    expect(counts.progress).toBe(1);
+    expect(counts.answerEvent).toBe(counts.isCorrect ? 0 : 1);
 
     for (let index = 0; index < 2; index += 1) {
       const flush = await request.post(`/api/attempts/${attemptId}/notifications/flush`, {
@@ -421,12 +452,17 @@ test('идемпотентный API создаёт один ответ и од�
       expect(flush.status()).toBe(202);
       expect((await flush.json()).pending).toBe(true);
     }
-    const afterFlush = queryLocalD1<{ outbox: number }>(`
-      SELECT COUNT(*) AS outbox FROM telegram_outbox
-      WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
-        AND event_type = 'answer'
+    const afterFlush = queryLocalD1<{ progress: number; answerEvent: number }>(`
+      SELECT
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
+            AND event_type = 'progress') AS progress,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
+            AND event_type = 'answer') AS answerEvent
     `, E2E_STATE_PATH)[0];
-    expect(afterFlush.outbox).toBe(1);
+    expect(afterFlush.progress).toBe(1);
+    expect(afterFlush.answerEvent).toBe(counts.isCorrect ? 0 : 1);
 
     const abortUrl = `/api/attempts/${attemptId}/abort`;
     for (let index = 0; index < 2; index += 1) {

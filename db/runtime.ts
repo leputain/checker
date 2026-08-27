@@ -5,6 +5,7 @@ import migration0002 from '../drizzle/0002_pink_wild_child.sql?raw';
 import migration0003 from '../drizzle/0003_thin_johnny_blaze.sql?raw';
 import migration0004 from '../drizzle/0004_overjoyed_vapor.sql?raw';
 import migration0005 from '../drizzle/0005_mighty_madame_masque.sql?raw';
+import migration0006 from '../drizzle/0006_numerous_jack_flag.sql?raw';
 import { calculateAccuracy, calculateVerdict, type Verdict } from '@/lib/scoring.ts';
 import { TEST_CONFIG, type Difficulty } from '@/lib/test-config.ts';
 import { summarizeQuestionBank, type QuestionDefinition } from '@/lib/question-bank-validation.ts';
@@ -12,7 +13,7 @@ import { loadQuestionBank } from './question-bank';
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export type QuestionRow = {
   id: number;
@@ -34,6 +35,7 @@ export type AttemptRow = {
   candidate_name: string | null;
   public_alias: string;
   bank_revision: string | null;
+  telegram_root_message_id: number | null;
   status: 'active' | 'completed' | 'aborted';
   started_at: number;
   total_deadline_at: number;
@@ -76,6 +78,7 @@ const MANAGED_MIGRATIONS = [
   { version: 2, name: 'telegram-and-bank-revisions-0003', sql: migration0003 },
   { version: 3, name: 'attempt-timing-0004', sql: migration0004 },
   { version: 4, name: 'question-deduplication-0005', sql: migration0005 },
+  { version: 5, name: 'telegram-reporting-0006', sql: migration0006 },
 ] as const;
 
 function migrationStatements(sql: string) {
@@ -359,6 +362,9 @@ export async function attemptPayload(attempt: AttemptRow) {
         answeredCount,
         accuracy,
         durationSeconds: attempt.duration_seconds ?? 0,
+        completedAt: new Date(
+          attempt.completed_at ?? attempt.started_at + (attempt.duration_seconds ?? 0) * 1_000,
+        ).toISOString(),
       },
     };
   }

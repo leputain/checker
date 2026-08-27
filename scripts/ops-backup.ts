@@ -40,7 +40,7 @@ export async function createBackup() {
   const manifest = {
     format: 1,
     createdAt: new Date().toISOString(),
-    appVersion: '0.5.0',
+    appVersion: '0.5.1',
     sha256: createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.length,
     counts,

@@ -1,5 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { sendTelegramMessage } from '@/lib/telegram-client.ts';
+import type { TelegramDeliveryMethod } from '@/lib/telegram-client.ts';
+import {
+  normalizeTelegramReportMode,
+  telegramReportPolicy,
+} from '@/lib/telegram-report-policy.ts';
 import { isTelegramRuntimeConfigReady } from '@/lib/telegram-runtime-config.ts';
 import {
   OUTBOX_CLAIM_SQL,
@@ -17,8 +22,11 @@ type OutboxRow = {
   id: string;
   attempt_id: string;
   question_id: number | null;
-  event_type: 'answer' | 'completed' | 'aborted';
+  event_type: 'started' | 'progress' | 'answer' | 'completed' | 'aborted';
   payload_text: string;
+  delivery_method: TelegramDeliveryMethod;
+  parse_mode: string | null;
+  silent: number;
   status: 'pending' | 'sending' | 'sent' | 'dead';
   attempt_count: number;
   next_attempt_at: number;
@@ -33,17 +41,24 @@ export function telegramRuntimeConfig() {
   const botToken = env.TELEGRAM_BOT_TOKEN?.trim() ?? '';
   const chatId = env.TELEGRAM_CHAT_ID?.trim() ?? '';
   const configStatus = env.TELEGRAM_CONFIG_STATUS?.trim().toLowerCase() ?? 'missing';
+  const reportMode = normalizeTelegramReportMode(env.TELEGRAM_REPORT_MODE);
   return {
     enabled,
     required,
     configured: isTelegramRuntimeConfigReady({ status: configStatus, botToken, chatId }),
     botToken,
     chatId,
+    reportMode,
   };
 }
 
-export function shouldQueueTelegramNotifications() {
-  return telegramRuntimeConfig().enabled;
+export function telegramNotificationPolicy() {
+  const config = telegramRuntimeConfig();
+  return {
+    enabled: config.enabled,
+    mode: config.reportMode,
+    ...telegramReportPolicy(config.reportMode),
+  };
 }
 
 async function configFingerprint(botToken: string, chatId: string) {
@@ -204,19 +219,48 @@ export async function flushAttemptNotifications(attemptId: string) {
   }
 
   const fingerprint = await configFingerprint(config.botToken, config.chatId);
+  const attemptDelivery = await database()
+    .prepare('SELECT telegram_root_message_id FROM attempts WHERE id = ?')
+    .bind(claim.row.attempt_id)
+    .first<{ telegram_root_message_id: number | null }>();
+  const rootMessageId = attemptDelivery?.telegram_root_message_id ?? null;
+  if (claim.row.delivery_method !== 'send' && rootMessageId === null) {
+    await database()
+      .prepare(`UPDATE telegram_outbox SET status = 'dead', payload_text = '',
+        last_error_code = 'telegram_root_missing', lease_token = NULL, lease_until = NULL
+        WHERE id = ? AND lease_token = ?`)
+      .bind(claim.row.id, claim.leaseToken)
+      .run();
+    await cleanupCompletedAttempt(attemptId);
+    return { delivered: false, ...(await pendingState(attemptId)) };
+  }
   const result = await sendTelegramMessage(
     { botToken: config.botToken, chatId: config.chatId },
-    claim.row.payload_text,
+    {
+      text: claim.row.payload_text,
+      deliveryMethod: claim.row.delivery_method,
+      parseMode: claim.row.parse_mode === 'HTML' ? 'HTML' : undefined,
+      silent: claim.row.silent === 1,
+      rootMessageId,
+    },
   );
 
   if (result.ok) {
-    await database()
-      .prepare(`UPDATE telegram_outbox SET status = 'sent', payload_text = '',
+    const db = database();
+    const statements: D1PreparedStatement[] = [
+      db.prepare(`UPDATE telegram_outbox SET status = 'sent', payload_text = '',
         telegram_message_id = ?, last_error_code = NULL, sent_at = ?,
         lease_token = NULL, lease_until = NULL
         WHERE id = ? AND lease_token = ?`)
-      .bind(result.messageId, Date.now(), claim.row.id, claim.leaseToken)
-      .run();
+        .bind(result.messageId, Date.now(), claim.row.id, claim.leaseToken),
+    ];
+    if (claim.row.event_type === 'started') {
+      statements.push(
+        db.prepare('UPDATE attempts SET telegram_root_message_id = ? WHERE id = ?')
+          .bind(result.messageId, claim.row.attempt_id),
+      );
+    }
+    await db.batch(statements);
     await recordDeliveryState(fingerprint, 'ready', null);
   } else if (result.retryable && claim.row.attempt_count < TELEGRAM_MAX_ATTEMPTS) {
     const nextAttemptAt = Date.now() + (result.retryAfterMs ?? retryDelay(claim.row.attempt_count));

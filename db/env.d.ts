@@ -5,6 +5,7 @@ declare namespace Cloudflare {
     TELEGRAM_CHAT_ID?: string;
     TELEGRAM_ENABLED?: string;
     TELEGRAM_REQUIRED?: string;
+    TELEGRAM_REPORT_MODE?: string;
     TELEGRAM_CONFIG_STATUS?: string;
     MAINTENANCE_TOKEN?: string;
   }
