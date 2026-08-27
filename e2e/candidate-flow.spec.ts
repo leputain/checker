@@ -86,7 +86,9 @@ test('полный flow сохраняется после reload и показы
       if (await radios.count() === 0) break;
       const previousQuestion = await page.getByRole('heading', { level: 1 }).textContent();
       const correctChoice = correctChoiceForAttempt(attemptId);
-      await page.locator('label.answer').filter({ hasText: correctChoice }).click();
+      await page.locator('label.answer').filter({
+        has: page.getByText(correctChoice, { exact: true }),
+      }).click();
       const submit = page.getByRole('button', { name: 'Ответить' });
       await expect(submit).toBeEnabled();
       await submit.click();
