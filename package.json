@@ -1,16 +1,32 @@
 {
   "name": "candidate-check",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vinext dev",
+    "dev": "node --experimental-strip-types scripts/run-local.ts dev",
     "build": "vinext build",
-    "start": "vinext start",
+    "start": "node --experimental-strip-types scripts/run-local.ts start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "questions:validate": "node --experimental-strip-types scripts/validate-question-bank.ts",
+    "questions:stats": "node --experimental-strip-types scripts/questions-stats.ts",
+    "telegram:test": "node --experimental-strip-types scripts/telegram-test-message.ts",
+    "secrets:check": "node --experimental-strip-types scripts/check-secrets.ts",
+    "secrets:artifacts": "node --experimental-strip-types scripts/check-build-secrets.ts",
+    "ops:backup": "node --experimental-strip-types scripts/ops-backup.ts",
+    "ops:backup:verify": "node --experimental-strip-types scripts/ops-backup-verify.ts",
+    "ops:restore": "node --experimental-strip-types scripts/ops-restore.ts",
+    "ops:retention": "node --experimental-strip-types scripts/ops-retention.ts",
+    "test": "npm run test:scoring && npm run test:bank && npm run test:telegram",
+    "test:scoring": "node --experimental-strip-types scripts/scoring.test.ts",
+    "test:bank": "node --experimental-strip-types scripts/question-bank.test.ts",
+    "test:telegram": "node --experimental-strip-types scripts/telegram-config.test.ts && node --experimental-strip-types scripts/telegram-client.test.ts && node --experimental-strip-types scripts/telegram-outbox-policy.test.ts",
+    "test:e2e": "playwright test",
+    "verify": "npm run secrets:check && npm run questions:validate && npm test && npm run typecheck && npm run lint && npm run build && npm run secrets:artifacts && npm run test:e2e && npm audit --omit=dev"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",
@@ -22,6 +38,7 @@
     "@cloudflare/vite-plugin": "1.37.1",
     "@cloudflare/workers-types": "4.20260515.1",
     "@openai/sites-vite-plugin": "^0.1.0 || ^0.2.0",
+    "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
@@ -31,6 +48,7 @@
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
     "eslint-config-next": "^16.3.3",
+    "miniflare": "4.20260515.0",
     "react-server-dom-webpack": "19.2.6",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
