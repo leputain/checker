@@ -1,18 +1,17 @@
 import { env } from 'cloudflare:workers';
-import questionBank from './questions.json';
+import migration0000 from '../drizzle/0000_sweet_morgan_stark.sql?raw';
+import migration0001 from '../drizzle/0001_furry_wallow.sql?raw';
+import migration0002 from '../drizzle/0002_pink_wild_child.sql?raw';
+import migration0003 from '../drizzle/0003_thin_johnny_blaze.sql?raw';
+import migration0004 from '../drizzle/0004_overjoyed_vapor.sql?raw';
+import { calculateAccuracy, calculateVerdict, type Verdict } from '@/lib/scoring.ts';
+import { TEST_CONFIG, type Difficulty } from '@/lib/test-config.ts';
+import { summarizeQuestionBank, type QuestionDefinition } from '@/lib/question-bank-validation.ts';
+import { loadQuestionBank } from './question-bank';
 
-export type Difficulty = 'easy' | 'medium' | 'hard' | 'expert';
-export type Verdict = 'PASS' | 'REVIEW' | 'FAIL';
+export type { Difficulty, Verdict };
 
-type SeedQuestion = {
-  id: number;
-  difficulty: Difficulty;
-  topic: string;
-  prompt: string;
-  choices: string[];
-  correctIndex: number;
-  active: boolean;
-};
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export type QuestionRow = {
   id: number;
@@ -22,15 +21,21 @@ export type QuestionRow = {
   choices_json: string;
   correct_index: number;
   weight: number;
+  active: number;
+  content_hash: string | null;
 };
 
 export type AttemptRow = {
   id: string;
   token_hash: string;
+  start_key: string | null;
+  candidate_name: string | null;
   public_alias: string;
+  bank_revision: string | null;
   status: 'active' | 'completed';
   started_at: number;
   total_deadline_at: number;
+  current_question_started_at: number;
   question_deadline_at: number;
   current_question_id: number | null;
   pending_question_ids: string;
@@ -45,140 +50,108 @@ export type AttemptRow = {
   duration_seconds: number | null;
 };
 
-const weights: Record<Difficulty, number> = {
-  easy: 1,
-  medium: 2,
-  hard: 3,
-  expert: 5,
-};
+export class QuestionBankConflictError extends Error {
+  constructor(questionId: number) {
+    super(`Question id ${questionId} already exists with different immutable content.`);
+    this.name = 'QuestionBankConflictError';
+  }
+}
 
-let initialized: Promise<void> | null = null;
+let schemaInitialization: Promise<void> | null = null;
+let bankInitialization: Promise<string> | null = null;
 
 export function database() {
   if (!env.DB) throw new Error('SQLite binding DB is unavailable');
   return env.DB;
 }
 
-async function addMissingColumns() {
+const MANAGED_MIGRATIONS = [
+  {
+    version: 1,
+    name: 'baseline-0000-0002',
+    sql: [migration0000, migration0001, migration0002].join('\n--> statement-breakpoint\n'),
+  },
+  { version: 2, name: 'telegram-and-bank-revisions-0003', sql: migration0003 },
+  { version: 3, name: 'attempt-timing-0004', sql: migration0004 },
+] as const;
+
+function migrationStatements(sql: string) {
+  return sql
+    .split('--> statement-breakpoint')
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
+async function adoptLegacyBaselineIfNeeded() {
   const db = database();
-  const questionColumns = await db.prepare('PRAGMA table_info(questions)').all<{ name: string }>();
-  if (!questionColumns.results.some((column) => column.name === 'topic')) {
-    await db.prepare("ALTER TABLE questions ADD COLUMN topic TEXT NOT NULL DEFAULT 'general'").run();
-  }
+  const applied = await db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').first<{ count: number }>();
+  if ((applied?.count ?? 0) > 0) return;
+  const attemptsTable = await db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attempts'")
+    .first<{ name: string }>();
+  if (!attemptsTable) return;
 
   const attemptColumns = await db.prepare('PRAGMA table_info(attempts)').all<{ name: string }>();
-  const existing = new Set(attemptColumns.results.map((column) => column.name));
-  const migrations = [
-    ['base_question_ids', "ALTER TABLE attempts ADD COLUMN base_question_ids TEXT NOT NULL DEFAULT '[]'"],
-    ['base_max_score', 'ALTER TABLE attempts ADD COLUMN base_max_score INTEGER NOT NULL DEFAULT 0'],
-    ['verdict', 'ALTER TABLE attempts ADD COLUMN verdict TEXT'],
-  ] as const;
-  for (const [column, sql] of migrations) {
-    if (!existing.has(column)) await db.prepare(sql).run();
-  }
+  const questionColumns = await db.prepare('PRAGMA table_info(questions)').all<{ name: string }>();
+  const attemptNames = new Set(attemptColumns.results.map((column) => column.name));
+  const questionNames = new Set(questionColumns.results.map((column) => column.name));
+  const supported = ['base_question_ids', 'base_max_score', 'verdict'].every((name) => (
+    attemptNames.has(name)
+  )) && questionNames.has('topic');
+  if (!supported) throw new Error('unsupported_legacy_schema');
+
+  await db
+    .prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (1, ?, ?)')
+    .bind('adopted-legacy-baseline-0000-0002', Date.now())
+    .run();
 }
 
-async function syncQuestionBank() {
+async function applyManagedMigration(version: number, name: string, sql: string) {
   const db = database();
-  const questions = questionBank as SeedQuestion[];
-  await db.batch(
-    questions.map((question) =>
-      db
-        .prepare(
-          `INSERT INTO questions (id, difficulty, topic, prompt, choices_json, correct_index, weight, active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET difficulty = excluded.difficulty, topic = excluded.topic,
-             prompt = excluded.prompt, choices_json = excluded.choices_json,
-             correct_index = excluded.correct_index, weight = excluded.weight, active = excluded.active`,
-        )
-        .bind(
-          question.id,
-          question.difficulty,
-          question.topic,
-          question.prompt,
-          JSON.stringify(question.choices),
-          question.correctIndex,
-          weights[question.difficulty],
-          question.active ? 1 : 0,
-        ),
-    ),
+  const statements = migrationStatements(sql).map((statement) => db.prepare(statement));
+  statements.push(
+    db
+      .prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
+      .bind(version, name, Date.now()),
   );
+  await db.batch(statements);
 }
 
-async function migrateLegacyAttempts() {
-  const db = database();
-  const legacy = await db
-    .prepare(
-      `SELECT id, asked_question_ids, pending_question_ids, score, correct_count, wrong_count
-       FROM attempts WHERE base_max_score = 0`,
-    )
-    .all<{
-      id: string;
-      asked_question_ids: string;
-      pending_question_ids: string;
-      score: number;
-      correct_count: number;
-      wrong_count: number;
-    }>();
-
-  for (const attempt of legacy.results) {
-    const ordered = [
-      ...(JSON.parse(attempt.asked_question_ids) as number[]),
-      ...(JSON.parse(attempt.pending_question_ids) as number[]),
-    ];
-    const baseQuestionIds = [...new Set(ordered)].slice(0, 6);
-    if (baseQuestionIds.length === 0) continue;
-    const placeholders = baseQuestionIds.map(() => '?').join(',');
-    const total = await db
-      .prepare(`SELECT COALESCE(SUM(weight), 0) AS value FROM questions WHERE id IN (${placeholders})`)
-      .bind(...baseQuestionIds)
-      .first<{ value: number }>();
-    const baseMaxScore = total?.value ?? 0;
-    if (baseMaxScore === 0) continue;
-    const score = Math.min(attempt.score, baseMaxScore);
-    const answeredCount = attempt.correct_count + attempt.wrong_count;
-    const accuracy = answeredCount
-      ? Math.round((attempt.correct_count / answeredCount) * 100)
-      : 0;
-    await db
-      .prepare(
-        `UPDATE attempts SET base_question_ids = ?, base_max_score = ?, score = ?, verdict = ?
-         WHERE id = ? AND base_max_score = 0`,
-      )
-      .bind(
-        JSON.stringify(baseQuestionIds),
-        baseMaxScore,
-        score,
-        calculateVerdict(score, baseMaxScore, accuracy),
-        attempt.id,
-      )
-      .run();
-  }
-}
-
-export function ensureDatabase() {
-  if (initialized) return initialized;
-  initialized = (async () => {
+export function ensureSchema() {
+  if (schemaInitialization) return schemaInitialization;
+  schemaInitialization = (async () => {
     const db = database();
-    await db.batch([
-      db.prepare(`CREATE TABLE IF NOT EXISTS questions (id INTEGER PRIMARY KEY, difficulty TEXT NOT NULL CHECK (difficulty IN ('easy','medium','hard','expert')), topic TEXT NOT NULL DEFAULT 'general', prompt TEXT NOT NULL, choices_json TEXT NOT NULL, correct_index INTEGER NOT NULL, weight INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1)`),
-      db.prepare(`CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, public_alias TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', started_at INTEGER NOT NULL, total_deadline_at INTEGER NOT NULL, question_deadline_at INTEGER NOT NULL, current_question_id INTEGER, pending_question_ids TEXT NOT NULL, asked_question_ids TEXT NOT NULL, base_question_ids TEXT NOT NULL DEFAULT '[]', base_max_score INTEGER NOT NULL DEFAULT 0, score INTEGER NOT NULL DEFAULT 0, correct_count INTEGER NOT NULL DEFAULT 0, wrong_count INTEGER NOT NULL DEFAULT 0, verdict TEXT, completed_at INTEGER, duration_seconds INTEGER)`),
-      db.prepare(`CREATE TABLE IF NOT EXISTS answers (id INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL, question_id INTEGER NOT NULL, selected_index INTEGER, is_correct INTEGER NOT NULL, answered_at INTEGER NOT NULL, UNIQUE(attempt_id, question_id))`),
-    ]);
-    await addMissingColumns();
-    await db.batch([
-      db.prepare('DROP INDEX IF EXISTS idx_attempts_leaderboard'),
-      db.prepare('CREATE INDEX idx_attempts_leaderboard ON attempts(status, score DESC, wrong_count ASC, duration_seconds ASC)'),
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_questions_pool ON questions(active, difficulty)'),
-      db.prepare('CREATE INDEX IF NOT EXISTS idx_answers_question_id ON answers(question_id)'),
-    ]);
-    await syncQuestionBank();
-    await migrateLegacyAttempts();
+    await db
+      .prepare(`CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at INTEGER NOT NULL
+      )`)
+      .run();
+    await adoptLegacyBaselineIfNeeded();
+    const applied = await db
+      .prepare('SELECT version FROM schema_migrations')
+      .all<{ version: number }>();
+    const versions = new Set(applied.results.map((row) => row.version));
+    for (const migration of MANAGED_MIGRATIONS) {
+      if (versions.has(migration.version)) continue;
+      await applyManagedMigration(migration.version, migration.name, migration.sql);
+      versions.add(migration.version);
+    }
+    await db.prepare('PRAGMA optimize').run();
   })().catch((error) => {
-    initialized = null;
+    schemaInitialization = null;
+    console.error('schema_initialization_failed');
     throw error;
   });
-  return initialized;
+  return schemaInitialization;
+}
+
+export async function currentSchemaVersion() {
+  const row = await database()
+    .prepare('SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations')
+    .first<{ version: number }>();
+  return row?.version ?? 0;
 }
 
 export async function sha256(value: string) {
@@ -191,19 +164,118 @@ export async function sha256Hex(value: string) {
   return Array.from(await sha256(value), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+function canonicalQuestion(question: QuestionDefinition) {
+  return {
+    id: question.id,
+    difficulty: question.difficulty,
+    topic: question.topic,
+    prompt: question.prompt,
+    choices: question.choices,
+    correctIndex: question.correctIndex,
+    weight: TEST_CONFIG.weights[question.difficulty],
+  };
+}
+
+async function questionContentHash(question: QuestionDefinition) {
+  return sha256Hex(JSON.stringify(canonicalQuestion(question)));
+}
+
+export async function questionBankRevision(questions = loadQuestionBank()) {
+  const canonical = [...questions]
+    .sort((left, right) => left.id - right.id)
+    .map((question) => ({ ...canonicalQuestion(question), active: question.active }));
+  return sha256Hex(JSON.stringify(canonical));
+}
+
+function rowMatchesQuestion(row: QuestionRow, question: QuestionDefinition) {
+  return (
+    row.difficulty === question.difficulty &&
+    row.topic === question.topic &&
+    row.prompt === question.prompt &&
+    row.choices_json === JSON.stringify(question.choices) &&
+    row.correct_index === question.correctIndex &&
+    row.weight === TEST_CONFIG.weights[question.difficulty]
+  );
+}
+
+export function ensureQuestionBankReady() {
+  if (bankInitialization) return bankInitialization;
+  bankInitialization = (async () => {
+    await ensureSchema();
+    const db = database();
+    const questions = loadQuestionBank();
+    const revision = await questionBankRevision(questions);
+
+    const stored = await db.prepare('SELECT * FROM questions').all<QuestionRow>();
+    const byId = new Map(stored.results.map((question) => [question.id, question]));
+    const hashes = new Map<number, string>();
+    for (const question of questions) {
+      const hash = await questionContentHash(question);
+      hashes.set(question.id, hash);
+      const existing = byId.get(question.id);
+      if (existing && !rowMatchesQuestion(existing, question)) {
+        throw new QuestionBankConflictError(question.id);
+      }
+    }
+
+    const summary = summarizeQuestionBank(questions);
+    const statements: D1PreparedStatement[] = [db.prepare('UPDATE questions SET active = 0')];
+    for (const question of questions) {
+      const hash = hashes.get(question.id)!;
+      if (byId.has(question.id)) {
+        statements.push(
+          db
+            .prepare('UPDATE questions SET active = ?, content_hash = ? WHERE id = ?')
+            .bind(question.active ? 1 : 0, hash, question.id),
+        );
+      } else {
+        statements.push(
+          db
+            .prepare(`INSERT INTO questions (
+              id, difficulty, topic, prompt, choices_json, correct_index, weight, active, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+            .bind(
+              question.id,
+              question.difficulty,
+              question.topic,
+              question.prompt,
+              JSON.stringify(question.choices),
+              question.correctIndex,
+              TEST_CONFIG.weights[question.difficulty],
+              question.active ? 1 : 0,
+              hash,
+            ),
+        );
+      }
+    }
+    statements.push(
+      db
+        .prepare(`INSERT OR IGNORE INTO question_bank_revisions (
+          hash, applied_at, total_count, active_count, pools_json
+        ) VALUES (?, ?, ?, ?, ?)`)
+        .bind(
+          revision,
+          Date.now(),
+          summary.total,
+          summary.active,
+          JSON.stringify(summary.pools),
+        ),
+    );
+    await db.batch(statements);
+    return revision;
+  })().catch((error) => {
+    bankInitialization = null;
+    throw error;
+  });
+  return bankInitialization;
+}
+
 export function publicAlias(name: string) {
   const words = name.trim().replace(/\s+/g, ' ').split(' ');
   const first = words[0].slice(0, 30);
   return words.length > 1
     ? `${first} ${words.at(-1)![0].toLocaleUpperCase('ru-RU')}.`
     : `${first[0].toLocaleUpperCase('ru-RU')}***`;
-}
-
-export function calculateVerdict(score: number, baseMaxScore: number, accuracy: number): Verdict {
-  const scorePercent = baseMaxScore > 0 ? (score / baseMaxScore) * 100 : 0;
-  if (scorePercent >= 70 && accuracy >= 70) return 'PASS';
-  if (scorePercent >= 50 || accuracy >= 60) return 'REVIEW';
-  return 'FAIL';
 }
 
 export async function choicePermutation(attemptId: string, questionId: number, length: number) {
@@ -224,9 +296,17 @@ export async function findAttempt(id: string) {
   return database().prepare('SELECT * FROM attempts WHERE id = ?').bind(id).first<AttemptRow>();
 }
 
+export async function findAttemptByStartKey(startKey: string) {
+  return database()
+    .prepare('SELECT * FROM attempts WHERE start_key = ?')
+    .bind(startKey)
+    .first<AttemptRow>();
+}
+
 export async function findQuestion(id: number) {
   return database()
-    .prepare('SELECT id, difficulty, topic, prompt, choices_json, correct_index, weight FROM questions WHERE id = ? AND active = 1')
+    .prepare(`SELECT id, difficulty, topic, prompt, choices_json, correct_index,
+      weight, active, content_hash FROM questions WHERE id = ?`)
     .bind(id)
     .first<QuestionRow>();
 }
@@ -237,22 +317,25 @@ export async function verifyAttempt(id: string, token: string) {
   return attempt;
 }
 
-export async function attemptPayload(attempt: AttemptRow, token = '') {
+export async function attemptPayload(attempt: AttemptRow) {
+  const serverNowMs = Date.now();
   const answeredCount = attempt.correct_count + attempt.wrong_count;
-  const accuracy = answeredCount ? Math.round((attempt.correct_count / answeredCount) * 100) : 0;
+  const accuracy = calculateAccuracy(attempt.correct_count, attempt.wrong_count);
 
   if (attempt.status === 'completed' || attempt.current_question_id === null) {
     const verdict = attempt.verdict ?? calculateVerdict(attempt.score, attempt.base_max_score, accuracy);
     return {
       attemptId: attempt.id,
-      token,
       alias: attempt.public_alias,
       status: 'completed' as const,
+      serverNowMs,
       result: {
         verdict,
         score: attempt.score,
         baseMaxScore: attempt.base_max_score,
-        scorePercent: attempt.base_max_score ? Math.round((attempt.score / attempt.base_max_score) * 100) : 0,
+        scorePercent: attempt.base_max_score
+          ? Math.round((attempt.score / attempt.base_max_score) * 100)
+          : 0,
         correctCount: attempt.correct_count,
         wrongCount: attempt.wrong_count,
         answeredCount,
@@ -269,15 +352,14 @@ export async function attemptPayload(attempt: AttemptRow, token = '') {
 
   return {
     attemptId: attempt.id,
-    token,
     alias: attempt.public_alias,
     status: 'active' as const,
+    serverNowMs,
     question: {
       id: question.id,
       prompt: question.prompt,
       choices: permutation.map((index) => choices[index]),
       difficulty: question.difficulty,
-      topic: question.topic,
       weight: question.weight,
       position: JSON.parse(attempt.asked_question_ids).length,
       minimumQuestions: JSON.parse(attempt.base_question_ids).length,

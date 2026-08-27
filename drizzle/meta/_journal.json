@@ -22,6 +22,20 @@
       "when": 1787821142525,
       "tag": "0002_pink_wild_child",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787830170930,
+      "tag": "0003_thin_johnny_blaze",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787832670262,
+      "tag": "0004_overjoyed_vapor",
+      "breakpoints": true
     }
   ]
 }

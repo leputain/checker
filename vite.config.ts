@@ -11,10 +11,19 @@ const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === 'seatbelt';
+const localStatePath = process.env.CANDIDATE_CHECK_STATE_PATH ?? '.wrangler/state';
 
 const localBindingConfig = {
   main: 'vinext/server/app-router-entry',
   compatibility_flags: ['nodejs_compat'],
+  secrets: {
+    required: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'MAINTENANCE_TOKEN'],
+  },
+  vars: {
+    TELEGRAM_ENABLED: process.env.TELEGRAM_ENABLED ?? '1',
+    TELEGRAM_REQUIRED: process.env.TELEGRAM_REQUIRED ?? '1',
+    TELEGRAM_CONFIG_STATUS: process.env.TELEGRAM_CONFIG_STATUS ?? 'missing',
+  },
   d1_databases: d1
     ? [
         {
@@ -55,6 +64,7 @@ export default defineConfig(async () => {
       cloudflare({
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },
         config: localBindingConfig,
+        persistState: { path: localStatePath },
       }),
     ],
   };

@@ -1,0 +1,41 @@
+import { env } from 'cloudflare:workers';
+import { maintainTelegramOutbox } from '@/db/telegram-outbox';
+import { ensureSchema, sha256Hex } from '@/db/runtime';
+
+const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
+
+function bearerToken(request: Request) {
+  const authorization = request.headers.get('authorization') ?? '';
+  return authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+}
+
+async function isAuthorized(request: Request) {
+  const suppliedToken = bearerToken(request);
+  const expectedToken = env.MAINTENANCE_TOKEN ?? '';
+  if (!suppliedToken || !expectedToken) return false;
+
+  const [suppliedHash, expectedHash] = await Promise.all([
+    sha256Hex(suppliedToken),
+    sha256Hex(expectedToken),
+  ]);
+  let difference = suppliedHash.length ^ expectedHash.length;
+  for (let index = 0; index < Math.max(suppliedHash.length, expectedHash.length); index += 1) {
+    difference |= suppliedHash.charCodeAt(index) ^ expectedHash.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
+export async function POST(request: Request) {
+  if (!(await isAuthorized(request))) {
+    return new Response(null, { status: 404, headers: NO_STORE });
+  }
+
+  try {
+    await ensureSchema();
+    await maintainTelegramOutbox();
+    return new Response(null, { status: 204, headers: NO_STORE });
+  } catch {
+    console.error('maintenance_failed');
+    return new Response(null, { status: 503, headers: NO_STORE });
+  }
+}
