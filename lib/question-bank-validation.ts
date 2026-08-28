@@ -72,7 +72,11 @@ function promptsLikelyDuplicate(left: string, right: string) {
   return intersection >= 3 && union > 0 && intersection / union >= 0.58;
 }
 
-export function validateQuestionBank(raw: unknown, source: string): QuestionDefinition[] {
+export function validateQuestionBank(
+  raw: unknown,
+  source: string,
+  options: { enforceOperationalReadiness?: boolean } = {},
+): QuestionDefinition[] {
   if (!Array.isArray(raw)) {
     throw new QuestionBankValidationError(source, ['корневое значение должно быть JSON-массивом']);
   }
@@ -240,30 +244,32 @@ export function validateQuestionBank(raw: unknown, source: string): QuestionDefi
       }
     }
 
-    for (const difficulty of DIFFICULTIES) {
-      const activeCount = new Set(questions
-        .filter((question) => question.active && question.difficulty === difficulty)
-        .map((question) => question.dedupeKey)).size;
-      const requiredWithReserve = TEST_CONFIG.plan[difficulty] + 1;
-      if (activeCount < requiredWithReserve) {
+    if (options.enforceOperationalReadiness !== false) {
+      for (const difficulty of DIFFICULTIES) {
+        const activeCount = new Set(questions
+          .filter((question) => question.active && question.difficulty === difficulty)
+          .map((question) => question.dedupeKey)).size;
+        const requiredWithReserve = TEST_CONFIG.plan[difficulty] + 1;
+        if (activeCount < requiredWithReserve) {
+          issues.push(
+            `Уникальных активных ${difficulty}: ${activeCount}; требуется минимум ${requiredWithReserve} `
+            + '(стартовая квота и хотя бы один remedial-вопрос)',
+          );
+        }
+      }
+      if (!selectUniqueQuestionPlan(
+        questions.filter((question) => question.active).map((question) => ({
+          id: question.id,
+          difficulty: question.difficulty,
+          dedupe_key: question.dedupeKey,
+        })),
+        TEST_CONFIG.plan,
+        1,
+      )) {
         issues.push(
-          `Уникальных активных ${difficulty}: ${activeCount}; требуется минимум ${requiredWithReserve} `
-          + '(стартовая квота и хотя бы один remedial-вопрос)',
+          'Невозможно собрать стартовый тест и remedial-резерв без повторения смысловых групп между уровнями сложности',
         );
       }
-    }
-    if (!selectUniqueQuestionPlan(
-      questions.filter((question) => question.active).map((question) => ({
-        id: question.id,
-        difficulty: question.difficulty,
-        dedupe_key: question.dedupeKey,
-      })),
-      TEST_CONFIG.plan,
-      1,
-    )) {
-      issues.push(
-        'Невозможно собрать стартовый тест и remedial-резерв без повторения смысловых групп между уровнями сложности',
-      );
     }
   }
 

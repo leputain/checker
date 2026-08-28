@@ -268,5 +268,25 @@
     "choices": ["Изолировать узел от сети и передать инцидент на реагирование", "Удалить все журналы", "Опубликовать учётные данные"],
     "correctIndex": 0,
     "active": true
+  },
+  {
+    "id": 31,
+    "difficulty": "hard",
+    "topic": "database",
+    "prompt": "Как optimistic locking обычно обнаруживает конкурирующее изменение одной записи?",
+    "choices": ["Сравнивает версию записи в условии UPDATE", "Блокирует всю базу при чтении", "Удаляет конфликтующую транзакцию до записи"],
+    "correctIndex": 0,
+    "active": true,
+    "dedupeKey": "database:optimistic-lock-version"
+  },
+  {
+    "id": 32,
+    "difficulty": "hard",
+    "topic": "architecture",
+    "prompt": "Что происходит, когда circuit breaker открывается после серии сбоев зависимого сервиса?",
+    "choices": ["Новые вызовы временно отклоняются без обращения к зависимости", "Все запросы бесконечно повторяются", "Зависимость автоматически получает права администратора"],
+    "correctIndex": 0,
+    "active": true,
+    "dedupeKey": "architecture:circuit-breaker-open"
   }
 ]

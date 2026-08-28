@@ -200,6 +200,10 @@ export const analyticsRefreshState = sqliteTable('analytics_refresh_state', {
   builtGeneration: integer('built_generation').notNull().default(0),
   updatedAt: integer('updated_at').notNull(),
   builtAt: integer('built_at'),
+  refreshToken: text('refresh_token'),
+  refreshGeneration: integer('refresh_generation'),
+  refreshAttemptedAt: integer('refresh_attempted_at'),
+  refreshLeaseUntil: integer('refresh_lease_until'),
 });
 
 export const analyticsReportAggregates = sqliteTable(

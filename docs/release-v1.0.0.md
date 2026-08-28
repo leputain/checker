@@ -29,6 +29,12 @@
 
 Миграции не откатываются разрушительно. Analytics, calibration, export и balanced selection отключаются соответствующими runtime flags. Candidate flow и уже сохранённые facts продолжают работать.
 
+## Release gate
+
+Для `main` рекомендуется branch protection с обязательным GitHub status check `verify`. Публикация commit и релиз считаются завершёнными только после зелёного удалённого check; локальный `npm run verify` остаётся обязательной предварительной проверкой, но не заменяет результат CI.
+
+На контрольном security-прогоне 2026-08-28 `npm audit --omit=dev` не обнаружил production vulnerabilities. Advisories полного `npm audit` относятся к build/test toolchain и требуют отдельного совместимого обновления с полным regression gate; `npm audit fix --force` не применяется.
+
 ## Предлагаемое сообщение коммита
 
 ```text

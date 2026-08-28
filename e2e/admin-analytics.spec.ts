@@ -444,7 +444,7 @@ test('admin analytics показывает пагинацию, детали, д�
   await expect(page.getByRole('tabpanel').getByRole('heading', { name: 'Общая картина' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Сравнение ревизий' })).toBeVisible();
   await expect(page.getByRole('cell', { name: '+12' }).first()).toBeVisible();
-  await expect(page.getByText('Fallback / нет shadow', { exact: true })).toBeVisible();
+  await expect(page.getByText('Fallback / без shadow', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Темы', exact: true }).click();
   await expect(page.getByText('Сети', { exact: true })).toBeVisible();

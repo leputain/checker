@@ -1,7 +1,9 @@
 import { env } from 'cloudflare:workers';
 import { maintainTelegramOutbox } from '@/db/telegram-outbox';
 import { maintainRuntimeRetention } from '@/db/runtime-retention';
-import { ensureSchema, sha256Hex } from '@/db/runtime';
+import { database, ensureSchema, sha256Hex } from '@/db/runtime';
+import { maintainAnalyticsAggregates } from '@/lib/analytics-aggregate-store.ts';
+import { readFeatureFlags } from '@/lib/feature-flags.ts';
 
 const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
 
@@ -35,6 +37,16 @@ export async function POST(request: Request) {
     await ensureSchema();
     await maintainTelegramOutbox();
     await maintainRuntimeRetention();
+    if (readFeatureFlags(env).analytics) {
+      try {
+        const analytics = await maintainAnalyticsAggregates(database());
+        if (analytics.status === 'failed') console.error('analytics_auto_refresh_failed');
+      } catch {
+        // Analytics is an optional background projection. A broken/stale
+        // projection must not make the operational maintenance cycle fail.
+        console.error('analytics_auto_refresh_failed');
+      }
+    }
     return new Response(null, { status: 204, headers: NO_STORE });
   } catch {
     console.error('maintenance_failed');

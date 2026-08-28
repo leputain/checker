@@ -175,6 +175,13 @@ assert.throws(
   () => validateQuestionBank(insufficient, 'insufficient.json'),
   /Уникальных активных expert: 1; требуется минимум 2/,
 );
+assert.equal(
+  validateQuestionBank(insufficient, 'insufficient-diagnostics.json', {
+    enforceOperationalReadiness: false,
+  }).length,
+  insufficient.length,
+  'diagnostics mode must preserve structurally valid NOT READY banks for reporting',
+);
 
 const oversized = minimumBank();
 oversized[0].prompt = 'П'.repeat(281);

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
+import { MAINTENANCE_REQUEST_TIMEOUT_MS } from '../lib/analytics-refresh-policy.ts';
 import { loadAdminRuntimeConfig } from './admin-config.ts';
 import { enforceBackupRetentionBestEffort } from './backup-retention.ts';
 import { registerRuntimeLock } from './runtime-lock.ts';
@@ -107,7 +108,13 @@ function scheduleMaintenance(delay: number) {
 async function runMaintenance() {
   if (maintenanceStopped) return;
   maintenanceRequest = new AbortController();
-  const timeout = setTimeout(() => maintenanceRequest?.abort(), 8_000);
+  // Aggregate rebuilds run only in this background request and benchmark at
+  // roughly 13–16 seconds. The timeout covers that workload but remains below
+  // the persisted lease, so a cancelled request cannot be replaced immediately.
+  const timeout = setTimeout(
+    () => maintenanceRequest?.abort(),
+    MAINTENANCE_REQUEST_TIMEOUT_MS,
+  );
   timeout.unref();
   try {
     const response = await fetch(maintenanceUrl, {

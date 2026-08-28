@@ -15,6 +15,7 @@ import migration0012 from '../drizzle/0012_silent_union_jack.sql?raw';
 import migration0013 from '../drizzle/0013_productive_darkstar.sql?raw';
 import migration0014 from '../drizzle/0014_supreme_domino.sql?raw';
 import migration0015 from '../drizzle/0015_mighty_adam_destine.sql?raw';
+import migration0016 from '../drizzle/0016_free_khan.sql?raw';
 import {
   BASE_MAX_SCORE,
   calculateAccuracy,
@@ -49,7 +50,7 @@ import { loadQuestionBank } from './question-bank';
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 14;
+export const CURRENT_SCHEMA_VERSION = 15;
 
 export type QuestionRow = {
   id: number;
@@ -136,6 +137,7 @@ const MANAGED_MIGRATIONS = [
   { version: 12, name: 'analytics-derived-aggregates-0013', sql: migration0013 },
   { version: 13, name: 'analytics-candidate-dimensions-0014', sql: migration0014 },
   { version: 14, name: 'runtime-and-readiness-indexes-0015', sql: migration0015 },
+  { version: 15, name: 'analytics-refresh-lease-0016', sql: migration0016 },
 ] as const;
 
 async function ensureCurrentTestConfigVersion() {

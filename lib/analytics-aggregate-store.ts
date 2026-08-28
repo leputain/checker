@@ -1,4 +1,10 @@
 import { ANALYTICS_FACTS_VERSION } from './test-config.ts';
+import {
+  ANALYTICS_AUTO_REFRESH_COOLDOWN_MS,
+  ANALYTICS_AUTO_REFRESH_DEBOUNCE_MS,
+  ANALYTICS_REFRESH_LEASE_MS,
+  analyticsAutoRefreshEligibility,
+} from './analytics-refresh-policy.ts';
 
 const PRESENTED_ORIGINS_SQL = "'submitted','question_timeout','total_timeout_presented'";
 const RESOLVED_ORIGINS_SQL = `${PRESENTED_ORIGINS_SQL},'total_timeout_unshown'`;
@@ -202,16 +208,21 @@ export type AnalyticsAggregateState = {
   builtGeneration: number;
   updatedAt: number;
   builtAt: number | null;
+  refreshAttemptedAt: number | null;
+  refreshLeaseUntil: number | null;
   ready: boolean;
 };
 
 export async function analyticsAggregateState(db: D1Database): Promise<AnalyticsAggregateState> {
-  const row = await db.prepare(`SELECT generation, built_generation, updated_at, built_at
+  const row = await db.prepare(`SELECT generation, built_generation, updated_at, built_at,
+      refresh_attempted_at, refresh_lease_until
     FROM analytics_refresh_state WHERE id = 1`).first<{
       generation: number;
       built_generation: number;
       updated_at: number;
       built_at: number | null;
+      refresh_attempted_at: number | null;
+      refresh_lease_until: number | null;
     }>();
   if (!row) throw new Error('analytics_refresh_state_missing');
   return {
@@ -219,29 +230,150 @@ export async function analyticsAggregateState(db: D1Database): Promise<Analytics
     builtGeneration: row.built_generation,
     updatedAt: row.updated_at,
     builtAt: row.built_at,
+    refreshAttemptedAt: row.refresh_attempted_at,
+    refreshLeaseUntil: row.refresh_lease_until,
     ready: row.generation === row.built_generation,
   };
 }
 
-export async function rebuildAnalyticsAggregates(db: D1Database, now = Date.now()) {
+export type AnalyticsRefreshClaim = {
+  token: string;
+  generation: number;
+  startedAt: number;
+  leaseUntil: number;
+};
+
+export class AnalyticsRefreshBusyError extends Error {
+  constructor() {
+    super('analytics_aggregate_refresh_in_progress');
+    this.name = 'AnalyticsRefreshBusyError';
+  }
+}
+
+export class AnalyticsRefreshGenerationChangedError extends Error {
+  constructor() {
+    super('analytics_aggregate_generation_changed');
+    this.name = 'AnalyticsRefreshGenerationChangedError';
+  }
+}
+
+type RefreshClaimOptions = {
+  now: number;
+  mode: 'auto' | 'manual';
+  debounceMs?: number;
+  cooldownMs?: number;
+  leaseMs?: number;
+};
+
+/** @internal Shared by the maintenance path and generation-race integration tests. */
+export async function claimAnalyticsAggregateRefresh(
+  db: D1Database,
+  options: RefreshClaimOptions,
+): Promise<AnalyticsRefreshClaim | null> {
+  const debounceMs = options.debounceMs ?? ANALYTICS_AUTO_REFRESH_DEBOUNCE_MS;
+  const cooldownMs = options.cooldownMs ?? ANALYTICS_AUTO_REFRESH_COOLDOWN_MS;
+  const leaseMs = options.leaseMs ?? ANALYTICS_REFRESH_LEASE_MS;
+  const token = crypto.randomUUID();
+  const leaseUntil = options.now + leaseMs;
+  const modePredicate = options.mode === 'auto'
+    ? `AND generation <> built_generation
+      AND updated_at <= ?
+      AND COALESCE(refresh_attempted_at, 0) <= ?`
+    : '';
+  const bindings: unknown[] = [
+    token,
+    options.now,
+    leaseUntil,
+    options.now,
+  ];
+  if (options.mode === 'auto') {
+    bindings.push(options.now - debounceMs, options.now - cooldownMs);
+  }
+  const row = await db.prepare(`UPDATE analytics_refresh_state
+      SET refresh_token = ?, refresh_generation = generation,
+        refresh_attempted_at = ?, refresh_lease_until = ?
+      WHERE id = 1
+        AND (refresh_token IS NULL OR refresh_lease_until IS NULL OR refresh_lease_until <= ?)
+        ${modePredicate}
+      RETURNING generation`)
+    .bind(...bindings)
+    .first<{ generation: number }>();
+  return row
+    ? { token, generation: row.generation, startedAt: options.now, leaseUntil }
+    : null;
+}
+
+async function releaseAnalyticsRefreshClaim(db: D1Database, claim: AnalyticsRefreshClaim) {
+  await db.prepare(`UPDATE analytics_refresh_state
+      SET refresh_token = NULL, refresh_generation = NULL, refresh_lease_until = NULL
+      WHERE id = 1 AND refresh_token = ?`)
+    .bind(claim.token)
+    .run();
+}
+
+function refreshClaimGuard(db: D1Database, claim: AnalyticsRefreshClaim) {
+  // A failed optimistic guard deliberately violates the singleton primary key.
+  // Because D1 batch is transactional, this aborts before a stale worker can
+  // replace the last complete persisted snapshot.
+  return db.prepare(`INSERT INTO analytics_refresh_state (
+      id, generation, built_generation, updated_at
+    )
+    SELECT 1, 0, 0, 0
+    WHERE NOT EXISTS (
+      SELECT 1 FROM analytics_refresh_state
+      WHERE id = 1 AND generation = ? AND refresh_generation = ? AND refresh_token = ?
+    )`).bind(claim.generation, claim.generation, claim.token);
+}
+
+/** @internal The caller must own the persisted refresh claim. */
+export async function rebuildClaimedAnalyticsAggregates(
+  db: D1Database,
+  claim: AnalyticsRefreshClaim,
+  now = Date.now(),
+) {
   const startedAt = performance.now();
-  await db.batch([
-    db.prepare('DELETE FROM analytics_candidate_aggregates'),
-    db.prepare('DELETE FROM analytics_candidate_dimensions'),
-    db.prepare('DELETE FROM analytics_daily_question_aggregates'),
-    db.prepare('DELETE FROM analytics_daily_choice_aggregates'),
-    db.prepare('DELETE FROM analytics_daily_timing_aggregates'),
-    db.prepare(INSERT_CANDIDATES_SQL),
-    db.prepare(INSERT_CANDIDATE_DIMENSIONS_SQL),
-    db.prepare(INSERT_QUESTIONS_SQL),
-    db.prepare(INSERT_CHOICES_SQL),
-    db.prepare(INSERT_TIMINGS_SQL),
-    db.prepare(`UPDATE analytics_refresh_state
-      SET built_generation = generation, built_at = ? WHERE id = 1`).bind(now),
-    db.prepare('DELETE FROM analytics_report_aggregates'),
-  ]);
+  try {
+    await db.batch([
+      refreshClaimGuard(db, claim),
+      db.prepare('DELETE FROM analytics_candidate_aggregates'),
+      db.prepare('DELETE FROM analytics_candidate_dimensions'),
+      db.prepare('DELETE FROM analytics_daily_question_aggregates'),
+      db.prepare('DELETE FROM analytics_daily_choice_aggregates'),
+      db.prepare('DELETE FROM analytics_daily_timing_aggregates'),
+      db.prepare(INSERT_CANDIDATES_SQL),
+      db.prepare(INSERT_CANDIDATE_DIMENSIONS_SQL),
+      db.prepare(INSERT_QUESTIONS_SQL),
+      db.prepare(INSERT_CHOICES_SQL),
+      db.prepare(INSERT_TIMINGS_SQL),
+      refreshClaimGuard(db, claim),
+      db.prepare(`UPDATE analytics_refresh_state
+        SET built_generation = ?, built_at = ?, refresh_token = NULL,
+          refresh_generation = NULL, refresh_lease_until = NULL
+        WHERE id = 1 AND generation = ? AND refresh_generation = ? AND refresh_token = ?`)
+        .bind(claim.generation, now, claim.generation, claim.generation, claim.token),
+      db.prepare('DELETE FROM analytics_report_aggregates'),
+    ]);
+  } catch (error) {
+    const state = await db.prepare(`SELECT generation, refresh_generation, refresh_token
+      FROM analytics_refresh_state WHERE id = 1`).first<{
+        generation: number;
+        refresh_generation: number | null;
+        refresh_token: string | null;
+      }>();
+    if (
+      !state ||
+      state.generation !== claim.generation ||
+      state.refresh_generation !== claim.generation ||
+      state.refresh_token !== claim.token
+    ) {
+      throw new AnalyticsRefreshGenerationChangedError();
+    }
+    throw error;
+  }
   const state = await analyticsAggregateState(db);
-  if (!state.ready) throw new Error('analytics_aggregate_generation_changed');
+  if (!state.ready || state.builtGeneration !== claim.generation) {
+    throw new AnalyticsRefreshGenerationChangedError();
+  }
   const [candidates, dimensions, questions, choices, timings] = await Promise.all([
     db.prepare('SELECT COUNT(*) AS count FROM analytics_candidate_aggregates')
       .first<{ count: number }>(),
@@ -265,4 +397,104 @@ export async function rebuildAnalyticsAggregates(db: D1Database, now = Date.now(
       timings: timings?.count ?? 0,
     },
   };
+}
+
+export async function rebuildAnalyticsAggregates(db: D1Database, now = Date.now()) {
+  const claim = await claimAnalyticsAggregateRefresh(db, { mode: 'manual', now });
+  if (!claim) throw new AnalyticsRefreshBusyError();
+  try {
+    return await rebuildClaimedAnalyticsAggregates(db, claim, now);
+  } finally {
+    await releaseAnalyticsRefreshClaim(db, claim);
+  }
+}
+
+export type AnalyticsAutoRefreshResult =
+  | { status: 'fresh'; generation: number }
+  | { status: 'deferred'; generation: number; nextEligibleAt: number }
+  | { status: 'busy'; generation: number; nextEligibleAt: number }
+  | { status: 'rebuilt'; generation: number; durationMs: number }
+  | { status: 'failed'; generation: number; nextEligibleAt: number };
+
+export async function maintainAnalyticsAggregates(
+  db: D1Database,
+  options: {
+    now?: number;
+    debounceMs?: number;
+    cooldownMs?: number;
+    leaseMs?: number;
+  } = {},
+): Promise<AnalyticsAutoRefreshResult> {
+  const now = options.now ?? Date.now();
+  const debounceMs = options.debounceMs ?? ANALYTICS_AUTO_REFRESH_DEBOUNCE_MS;
+  const cooldownMs = options.cooldownMs ?? ANALYTICS_AUTO_REFRESH_COOLDOWN_MS;
+  let state = await analyticsAggregateState(db);
+  let eligibility = analyticsAutoRefreshEligibility({
+    ...state,
+    now,
+    debounceMs,
+    cooldownMs,
+  });
+  if (!eligibility.eligible) {
+    if (eligibility.reason === 'fresh') {
+      return { status: 'fresh', generation: state.generation };
+    }
+    return {
+      status: 'deferred',
+      generation: state.generation,
+      nextEligibleAt: eligibility.nextEligibleAt,
+    };
+  }
+
+  const claim = await claimAnalyticsAggregateRefresh(db, {
+    mode: 'auto',
+    now,
+    debounceMs,
+    cooldownMs,
+    leaseMs: options.leaseMs,
+  });
+  if (!claim) {
+    state = await analyticsAggregateState(db);
+    eligibility = analyticsAutoRefreshEligibility({
+      ...state,
+      now,
+      debounceMs,
+      cooldownMs,
+    });
+    if (!eligibility.eligible) {
+      if (eligibility.reason === 'fresh') {
+        return { status: 'fresh', generation: state.generation };
+      }
+      return {
+        status: 'deferred',
+        generation: state.generation,
+        nextEligibleAt: eligibility.nextEligibleAt,
+      };
+    }
+    return {
+      status: 'busy',
+      generation: state.generation,
+      nextEligibleAt: Math.max(state.refreshLeaseUntil ?? now, now),
+    };
+  }
+
+  try {
+    const rebuilt = await rebuildClaimedAnalyticsAggregates(db, claim, now);
+    return {
+      status: 'rebuilt',
+      generation: rebuilt.generation,
+      durationMs: rebuilt.durationMs,
+    };
+  } catch {
+    await releaseAnalyticsRefreshClaim(db, claim);
+    state = await analyticsAggregateState(db);
+    return {
+      status: 'failed',
+      generation: state.generation,
+      nextEligibleAt: Math.max(
+        state.updatedAt + debounceMs,
+        (state.refreshAttemptedAt ?? now) + cooldownMs,
+      ),
+    };
+  }
 }

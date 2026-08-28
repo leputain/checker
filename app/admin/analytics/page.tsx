@@ -814,11 +814,12 @@ function OverviewPanel({
               <span>последние 30 дней</span>
             </div>
             <div className={styles.kpiGrid}>
-              <MetricCard label="Сопоставимая выборка" value={String(recent.selectionComparison.sampleSize)} note={`${recent.selectionComparison.eligibleAttempts} legacy-планов`} />
-              <MetricCard label="Фактическое покрытие" value={recent.selectionComparison.actualCoverage === null ? '—' : String(recent.selectionComparison.actualCoverage)} note="только парные наблюдения" />
-              <MetricCard label="Shadow-покрытие" value={recent.selectionComparison.shadowCoverage === null ? '—' : String(recent.selectionComparison.shadowCoverage)} note="без влияния на тест" />
+              <MetricCard label="Legacy-попытки" value={String(recent.selectionComparison.eligibleAttempts)} note="selection v1 с Coverage Score" />
+              <MetricCard label="Shadow-сопоставимые" value={String(recent.selectionComparison.sampleSize)} note="есть actual и shadow" />
+              <MetricCard label="Среднее actual-покрытие" value={recent.selectionComparison.actualCoverage === null ? '—' : String(recent.selectionComparison.actualCoverage)} note="только парные наблюдения" />
+              <MetricCard label="Среднее shadow-покрытие" value={recent.selectionComparison.shadowCoverage === null ? '—' : String(recent.selectionComparison.shadowCoverage)} note="без влияния на тест" />
               <MetricCard label="Дельта shadow" value={signed(recent.selectionComparison.delta)} note="shadow − actual" />
-              <MetricCard label="Fallback / нет shadow" value={percentage(recent.selectionComparison.fallbackOrNullRate)} note={`${recent.selectionComparison.fallbackOrNullCount} попыток`} />
+              <MetricCard label="Fallback / без shadow" value={String(recent.selectionComparison.fallbackOrNullCount)} note={percentage(recent.selectionComparison.fallbackOrNullRate)} />
             </div>
           </section>
 

@@ -493,6 +493,36 @@ assert.deepEqual(overview.last30Days.selectionComparison, {
   fallbackOrNullRate: 50,
 });
 
+const mixedSelectionOverview = buildOverview(
+  serviceQuery,
+  serviceAttempts,
+  serviceFacts,
+  [
+    ...overviewRows,
+    {
+      ...attempt('overview-balanced-v2', { score: 100, verdict: 'PASS' }),
+      candidateKey: 'candidate-balanced',
+      status: 'completed',
+      eventAt: now - 500,
+      selectionVersion: 2,
+      selectionStrategy: 'balanced-coverage-v2',
+      coverageScore: 99,
+      shadowCoverageScore: 1,
+    },
+  ],
+  now,
+);
+assert.equal(
+  mixedSelectionOverview.last30Days.completedAttempts,
+  3,
+  'balanced-v2 attempts remain visible in general overview metrics',
+);
+assert.deepEqual(
+  mixedSelectionOverview.last30Days.selectionComparison,
+  overview.last30Days.selectionComparison,
+  'balanced-v2 attempts must not enter the legacy-v1 shadow comparison',
+);
+
 const miniflare = new Miniflare({
   modules: true,
   script: 'export default { fetch() { return new Response("ok") } }',
@@ -545,6 +575,7 @@ try {
     '0012_silent_union_jack.sql',
     '0013_productive_darkstar.sql',
     '0014_supreme_domino.sql',
+    '0016_free_khan.sql',
   ]) {
     const aggregateMigration = await readFile(
       new URL(`../drizzle/${migrationName}`, import.meta.url),
