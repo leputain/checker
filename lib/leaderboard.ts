@@ -1,4 +1,4 @@
-import type { Verdict } from './scoring.ts';
+import { BASE_MAX_SCORE, type Verdict } from './scoring.ts';
 
 export type LeaderboardPeriod = 'today' | 'all';
 
@@ -16,6 +16,17 @@ export type RankedLeaderboardEntry = {
 export type CandidateLeaderboardEntry = RankedLeaderboardEntry & {
   candidateKey: string;
 };
+
+export const LEADERBOARD_ATTEMPTS_SQL = `SELECT id, candidate_key, public_alias, verdict,
+    score, base_max_score, correct_count, wrong_count, duration_seconds, completed_at
+  FROM attempts
+  WHERE status = 'completed'
+    AND base_max_score = ?
+    AND scoring_version = ?
+    AND test_config_id = ?
+    AND test_profile_id = ?
+    AND bank_revision = ?
+    AND (? IS NULL OR (completed_at >= ? AND completed_at < ?))`;
 
 const MOSCOW_TIME_ZONE = 'Europe/Moscow';
 const dateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -101,6 +112,7 @@ export function selectBestLeaderboardEntries(
 ) {
   const bestByCandidate = new Map<string, CandidateLeaderboardEntry>();
   for (const entry of entries) {
+    if (entry.baseMaxScore !== BASE_MAX_SCORE) continue;
     const current = bestByCandidate.get(entry.candidateKey);
     if (!current || compareLeaderboardEntries(entry, current) < 0) {
       bestByCandidate.set(entry.candidateKey, entry);

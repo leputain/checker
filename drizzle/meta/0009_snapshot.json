@@ -1,0 +1,1029 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "fb7f7194-0920-4ff6-9aa9-4037bea3093b",
+  "prevId": "47e3e84f-bcd2-435f-a2f2-b3a1687c58d4",
+  "tables": {
+    "answers": {
+      "name": "answers",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "question_id": {
+          "name": "question_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "selected_index": {
+          "name": "selected_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "is_correct": {
+          "name": "is_correct",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "answered_at": {
+          "name": "answered_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "elapsed_seconds": {
+          "name": "elapsed_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "timed_out": {
+          "name": "timed_out",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "fact_version": {
+          "name": "fact_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "answer_origin": {
+          "name": "answer_origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'unknown'"
+        },
+        "canonical_selected_index": {
+          "name": "canonical_selected_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "awarded_score": {
+          "name": "awarded_score",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_answers_attempt_question": {
+          "name": "idx_answers_attempt_question",
+          "columns": [
+            "attempt_id",
+            "question_id"
+          ],
+          "isUnique": true
+        },
+        "idx_answers_question_id": {
+          "name": "idx_answers_question_id",
+          "columns": [
+            "question_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "attempt_questions": {
+      "name": "attempt_questions",
+      "columns": {
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "question_id": {
+          "name": "question_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "question_kind": {
+          "name": "question_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ordinal": {
+          "name": "ordinal",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source_question_id": {
+          "name": "source_question_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "score_value": {
+          "name": "score_value",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "assigned_at": {
+          "name": "assigned_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "presented_at": {
+          "name": "presented_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_attempt_questions_attempt_ordinal": {
+          "name": "idx_attempt_questions_attempt_ordinal",
+          "columns": [
+            "attempt_id",
+            "ordinal"
+          ],
+          "isUnique": true
+        },
+        "idx_attempt_questions_question_presentation": {
+          "name": "idx_attempt_questions_question_presentation",
+          "columns": [
+            "question_id",
+            "presented_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "attempt_questions_attempt_id_attempts_id_fk": {
+          "name": "attempt_questions_attempt_id_attempts_id_fk",
+          "tableFrom": "attempt_questions",
+          "tableTo": "attempts",
+          "columnsFrom": [
+            "attempt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "attempt_questions_question_id_questions_id_fk": {
+          "name": "attempt_questions_question_id_questions_id_fk",
+          "tableFrom": "attempt_questions",
+          "tableTo": "questions",
+          "columnsFrom": [
+            "question_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "attempt_questions_source_question_id_questions_id_fk": {
+          "name": "attempt_questions_source_question_id_questions_id_fk",
+          "tableFrom": "attempt_questions",
+          "tableTo": "questions",
+          "columnsFrom": [
+            "source_question_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "attempt_questions_attempt_id_question_id_pk": {
+          "columns": [
+            "attempt_id",
+            "question_id"
+          ],
+          "name": "attempt_questions_attempt_id_question_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "attempts": {
+      "name": "attempts",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "start_key": {
+          "name": "start_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "candidate_name": {
+          "name": "candidate_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "candidate_key": {
+          "name": "candidate_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        },
+        "public_alias": {
+          "name": "public_alias",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bank_revision": {
+          "name": "bank_revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "scoring_version": {
+          "name": "scoring_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "app_version": {
+          "name": "app_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'legacy-unknown'"
+        },
+        "test_config_id": {
+          "name": "test_config_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'legacy-unknown'"
+        },
+        "test_profile_id": {
+          "name": "test_profile_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'legacy-unknown'"
+        },
+        "analytics_facts_version": {
+          "name": "analytics_facts_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "telegram_root_message_id": {
+          "name": "telegram_root_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'active'"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total_deadline_at": {
+          "name": "total_deadline_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "current_question_started_at": {
+          "name": "current_question_started_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "question_deadline_at": {
+          "name": "question_deadline_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "current_question_id": {
+          "name": "current_question_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pending_question_ids": {
+          "name": "pending_question_ids",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "asked_question_ids": {
+          "name": "asked_question_ids",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "base_question_ids": {
+          "name": "base_question_ids",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'[]'"
+        },
+        "base_max_score": {
+          "name": "base_max_score",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "score": {
+          "name": "score",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "correct_count": {
+          "name": "correct_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "wrong_count": {
+          "name": "wrong_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "verdict": {
+          "name": "verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "duration_seconds": {
+          "name": "duration_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_attempts_leaderboard": {
+          "name": "idx_attempts_leaderboard",
+          "columns": [
+            "status",
+            "score",
+            "wrong_count",
+            "duration_seconds"
+          ],
+          "isUnique": false
+        },
+        "idx_attempts_start_key": {
+          "name": "idx_attempts_start_key",
+          "columns": [
+            "start_key"
+          ],
+          "isUnique": true
+        },
+        "idx_attempts_analytics_cohort": {
+          "name": "idx_attempts_analytics_cohort",
+          "columns": [
+            "status",
+            "scoring_version",
+            "test_config_id",
+            "test_profile_id",
+            "completed_at"
+          ],
+          "isUnique": false
+        },
+        "idx_attempts_analytics_latest": {
+          "name": "idx_attempts_analytics_latest",
+          "columns": [
+            "analytics_facts_version",
+            "status",
+            "scoring_version",
+            "test_config_id",
+            "test_profile_id",
+            "bank_revision",
+            "candidate_key",
+            "completed_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "question_bank_revision_items": {
+      "name": "question_bank_revision_items",
+      "columns": {
+        "revision_hash": {
+          "name": "revision_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "question_id": {
+          "name": "question_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "active": {
+          "name": "active",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "question_bank_revision_items_revision_hash_question_bank_revisions_hash_fk": {
+          "name": "question_bank_revision_items_revision_hash_question_bank_revisions_hash_fk",
+          "tableFrom": "question_bank_revision_items",
+          "tableTo": "question_bank_revisions",
+          "columnsFrom": [
+            "revision_hash"
+          ],
+          "columnsTo": [
+            "hash"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "question_bank_revision_items_question_id_questions_id_fk": {
+          "name": "question_bank_revision_items_question_id_questions_id_fk",
+          "tableFrom": "question_bank_revision_items",
+          "tableTo": "questions",
+          "columnsFrom": [
+            "question_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "question_bank_revision_items_revision_hash_question_id_pk": {
+          "columns": [
+            "revision_hash",
+            "question_id"
+          ],
+          "name": "question_bank_revision_items_revision_hash_question_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "question_bank_revisions": {
+      "name": "question_bank_revisions",
+      "columns": {
+        "hash": {
+          "name": "hash",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "applied_at": {
+          "name": "applied_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total_count": {
+          "name": "total_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "active_count": {
+          "name": "active_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "pools_json": {
+          "name": "pools_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "questions": {
+      "name": "questions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "difficulty": {
+          "name": "difficulty",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "topic": {
+          "name": "topic",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'general'"
+        },
+        "prompt": {
+          "name": "prompt",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "context_type": {
+          "name": "context_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "context_text": {
+          "name": "context_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "choices_json": {
+          "name": "choices_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "correct_index": {
+          "name": "correct_index",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "weight": {
+          "name": "weight",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "active": {
+          "name": "active",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "content_hash": {
+          "name": "content_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "dedupe_key": {
+          "name": "dedupe_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "''"
+        }
+      },
+      "indexes": {
+        "idx_questions_pool": {
+          "name": "idx_questions_pool",
+          "columns": [
+            "active",
+            "difficulty"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "schema_migrations": {
+      "name": "schema_migrations",
+      "columns": {
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "applied_at": {
+          "name": "applied_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "telegram_delivery_state": {
+      "name": "telegram_delivery_state",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "config_fingerprint": {
+          "name": "config_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "error_code": {
+          "name": "error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "telegram_outbox": {
+      "name": "telegram_outbox",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "attempt_id": {
+          "name": "attempt_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "question_id": {
+          "name": "question_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "event_type": {
+          "name": "event_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload_text": {
+          "name": "payload_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "delivery_method": {
+          "name": "delivery_method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'send'"
+        },
+        "parse_mode": {
+          "name": "parse_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "silent": {
+          "name": "silent",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'pending'"
+        },
+        "attempt_count": {
+          "name": "attempt_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "next_attempt_at": {
+          "name": "next_attempt_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "lease_token": {
+          "name": "lease_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "telegram_message_id": {
+          "name": "telegram_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_error_code": {
+          "name": "last_error_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sent_at": {
+          "name": "sent_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idx_telegram_outbox_attempt_event": {
+          "name": "idx_telegram_outbox_attempt_event",
+          "columns": [
+            "attempt_id",
+            "question_id",
+            "event_type"
+          ],
+          "isUnique": true
+        },
+        "idx_telegram_outbox_pending": {
+          "name": "idx_telegram_outbox_pending",
+          "columns": [
+            "status",
+            "next_attempt_at",
+            "created_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "telegram_outbox_attempt_id_attempts_id_fk": {
+          "name": "telegram_outbox_attempt_id_attempts_id_fk",
+          "tableFrom": "telegram_outbox",
+          "tableTo": "attempts",
+          "columnsFrom": [
+            "attempt_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "test_config_versions": {
+      "name": "test_config_versions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scoring_version": {
+          "name": "scoring_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "config_json": {
+          "name": "config_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

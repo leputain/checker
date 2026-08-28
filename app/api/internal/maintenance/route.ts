@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { maintainTelegramOutbox } from '@/db/telegram-outbox';
+import { maintainRuntimeRetention } from '@/db/runtime-retention';
 import { ensureSchema, sha256Hex } from '@/db/runtime';
 
 const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
@@ -33,6 +34,7 @@ export async function POST(request: Request) {
   try {
     await ensureSchema();
     await maintainTelegramOutbox();
+    await maintainRuntimeRetention();
     return new Response(null, { status: 204, headers: NO_STORE });
   } catch {
     console.error('maintenance_failed');

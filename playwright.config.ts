@@ -32,6 +32,7 @@ export default defineConfig({
       ...process.env,
       CANDIDATE_CHECK_STATE_PATH: '.wrangler/e2e',
       CANDIDATE_CHECK_SKIP_TELEGRAM_FILE: '1',
+      CANDIDATE_CHECK_ADMIN_PIN_FILE: '.data/e2e-admin-pin.txt',
       TELEGRAM_BOT_TOKEN: '',
       TELEGRAM_CHAT_ID: '',
       TELEGRAM_CONFIG_STATUS: 'missing',

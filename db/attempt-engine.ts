@@ -1,4 +1,9 @@
-import { calculateAccuracy, calculateScore, calculateVerdict } from '@/lib/scoring.ts';
+import {
+  calculateAccuracy,
+  calculateScore,
+  calculateVerdict,
+  questionScoreValue,
+} from '@/lib/scoring.ts';
 import {
   answerTelegramMessage,
   completedTelegramMessage,
@@ -6,10 +11,20 @@ import {
 } from '@/lib/telegram-messages.ts';
 import { selectRemedialQuestion } from '@/lib/question-selection.ts';
 import {
+  buildCandidateInsights,
+  type CandidateInsightFact,
+} from '@/lib/candidate-insights.ts';
+import {
   summarizeAttemptStatistics,
   type AttemptStatisticBucket,
 } from '@/lib/attempt-statistics.ts';
 import { TEST_CONFIG } from '@/lib/test-config.ts';
+import {
+  classifyQuestion,
+  countAdditionalQuestions,
+  isUnsupportedActiveAttempt,
+  shouldCreateAdditionalQuestion,
+} from '@/lib/attempt-policy.ts';
 import { telegramNotificationPolicy } from './telegram-outbox';
 import {
   choicePermutation,
@@ -40,10 +55,16 @@ async function chooseReplacementQuestion(
   const excludedQuestions = await loadQuestions(excluded);
   const excludedDedupeKeys = new Set(excludedQuestions.map(dedupeKey));
   const candidates = await database()
-    .prepare(`SELECT id, difficulty, topic, dedupe_key FROM questions
+    .prepare(`SELECT id, difficulty, topic, dedupe_key, weight FROM questions
       WHERE active = 1 AND difficulty = ? ORDER BY RANDOM()`)
     .bind(difficulty)
-    .all<{ id: number; difficulty: Difficulty; topic: string; dedupe_key: string }>();
+    .all<{
+      id: number;
+      difficulty: Difficulty;
+      topic: string;
+      dedupe_key: string;
+      weight: number;
+    }>();
   return selectRemedialQuestion(
     candidates.results,
     difficulty,
@@ -80,54 +101,110 @@ function questionElapsedSeconds(attempt: AttemptRow, now: number) {
   return Math.min(allocated, Math.max(0, Math.ceil((now - startedAt) / 1_000)));
 }
 
-async function existingTopicErrors(attemptId: string) {
+async function existingAnswerStatistics(
+  attemptId: string,
+  baseQuestionIds: ReadonlySet<number>,
+  analyticsFactsVersion: number,
+) {
   const rows = await database()
-    .prepare(`SELECT questions.topic, COUNT(*) AS count
+    .prepare(`SELECT answers.question_id, questions.difficulty, questions.topic,
+      answers.is_correct, answers.timed_out, answers.elapsed_seconds, answers.selected_index,
+      answers.fact_version, answers.answer_origin
       FROM answers JOIN questions ON questions.id = answers.question_id
-      WHERE answers.attempt_id = ? AND answers.is_correct = 0
-      GROUP BY questions.topic`)
-    .bind(attemptId)
-    .all<{ topic: string; count: number }>();
-  return new Map(rows.results.map((row) => [row.topic, row.count]));
-}
-
-async function existingAnswerStatistics(attemptId: string) {
-  const rows = await database()
-    .prepare(`SELECT questions.difficulty, questions.topic,
-      COUNT(*) AS answered_count,
-      COALESCE(SUM(answers.is_correct), 0) AS correct_count,
-      COALESCE(SUM(answers.timed_out), 0) AS timeout_count,
-      COALESCE(SUM(answers.elapsed_seconds), 0) AS elapsed_seconds,
-      COALESCE(SUM(CASE
-        WHEN answers.selected_index IS NOT NULL OR answers.elapsed_seconds > 0 THEN 1
-        ELSE 0
-      END), 0) AS measured_count
-      FROM answers JOIN questions ON questions.id = answers.question_id
-      WHERE answers.attempt_id = ?
-      GROUP BY questions.difficulty, questions.topic`)
+      WHERE answers.attempt_id = ?`)
     .bind(attemptId)
     .all<{
+      question_id: number;
       difficulty: Difficulty;
       topic: string;
-      answered_count: number;
-      correct_count: number;
-      timeout_count: number;
+      is_correct: number;
+      timed_out: number;
       elapsed_seconds: number;
-      measured_count: number;
+      selected_index: number | null;
+      fact_version: number;
+      answer_origin: string;
     }>();
   return rows.results.map((row): AttemptStatisticBucket => ({
+    questionKind: classifyQuestion(row.question_id, baseQuestionIds),
     difficulty: row.difficulty,
     topic: row.topic,
-    answeredCount: row.answered_count,
-    correctCount: row.correct_count,
-    timeoutCount: row.timeout_count,
+    answeredCount: 1,
+    correctCount: row.is_correct,
+    timeoutCount: row.timed_out,
     elapsedSeconds: row.elapsed_seconds,
-    measuredCount: row.measured_count,
+    measuredCount: analyticsFactsVersion > 0
+      && row.fact_version === analyticsFactsVersion
+      ? row.answer_origin === 'submitted' ? 1 : 0
+      : row.selected_index !== null || row.elapsed_seconds > 0 ? 1 : 0,
   }));
 }
 
-function addTopicError(errors: Map<string, number>, topic: string) {
-  errors.set(topic, (errors.get(topic) ?? 0) + 1);
+type CompletionOutcome = {
+  correct: boolean;
+  timedOut: boolean;
+  answerOrigin: string;
+  awardedScore: number;
+  elapsedSeconds: number;
+};
+
+async function completionInsightFacts(
+  attemptId: string,
+  outcomes: ReadonlyMap<number, CompletionOutcome>,
+) {
+  const rows = await database().prepare(`SELECT
+      attempt_questions.question_id,
+      attempt_questions.question_kind,
+      attempt_questions.score_value,
+      attempt_questions.presented_at,
+      questions.topic,
+      questions.dedupe_key,
+      answers.id AS answer_id,
+      answers.is_correct,
+      answers.timed_out,
+      answers.answer_origin,
+      answers.awarded_score,
+      answers.elapsed_seconds
+    FROM attempt_questions
+    JOIN questions ON questions.id = attempt_questions.question_id
+    LEFT JOIN answers
+      ON answers.attempt_id = attempt_questions.attempt_id
+      AND answers.question_id = attempt_questions.question_id
+    WHERE attempt_questions.attempt_id = ?
+    ORDER BY attempt_questions.ordinal`)
+    .bind(attemptId)
+    .all<{
+      question_id: number;
+      question_kind: 'base' | 'additional';
+      score_value: number;
+      presented_at: number | null;
+      topic: string;
+      dedupe_key: string;
+      answer_id: number | null;
+      is_correct: number | null;
+      timed_out: number | null;
+      answer_origin: string | null;
+      awarded_score: number | null;
+      elapsed_seconds: number | null;
+    }>();
+  return rows.results.map((row): CandidateInsightFact => {
+    const outcome = outcomes.get(row.question_id);
+    const resolved = outcome !== undefined || row.answer_id !== null;
+    return {
+      questionId: row.question_id,
+      questionKind: row.question_kind,
+      topic: row.topic,
+      dedupeKey: row.dedupe_key,
+      scoreValue: row.score_value,
+      assigned: true,
+      presented: row.presented_at !== null,
+      resolved,
+      correct: outcome?.correct ?? row.is_correct === 1,
+      timedOut: outcome?.timedOut ?? row.timed_out === 1,
+      answerOrigin: outcome?.answerOrigin ?? row.answer_origin,
+      awardedScore: outcome?.awardedScore ?? row.awarded_score ?? 0,
+      elapsedSeconds: outcome?.elapsedSeconds ?? row.elapsed_seconds,
+    };
+  });
 }
 
 export async function processAttemptAnswer(
@@ -137,6 +214,9 @@ export async function processAttemptAnswer(
   now = Date.now(),
 ) {
   if (attempt.status !== 'active' || attempt.current_question_id === null) return attempt;
+  if (isUnsupportedActiveAttempt(attempt)) throw new AttemptQuestionConflictError(
+    'Версия активной попытки больше не поддерживается.',
+  );
 
   if (attempt.current_question_id !== questionId) {
     if (await alreadyProcessed(attempt.id, questionId)) return (await findAttempt(attempt.id))!;
@@ -166,19 +246,51 @@ export async function processAttemptAnswer(
   const correct = !timedOut && originalIndex === question.correct_index;
   const pending = JSON.parse(attempt.pending_question_ids) as number[];
   const asked = JSON.parse(attempt.asked_question_ids) as number[];
+  const baseQuestionIds = new Set(JSON.parse(attempt.base_question_ids) as number[]);
+  const ledgerQuestion = await database().prepare(`SELECT question_kind, ordinal, score_value
+    FROM attempt_questions WHERE attempt_id = ? AND question_id = ?`)
+    .bind(attempt.id, question.id)
+    .first<{ question_kind: 'base' | 'additional'; ordinal: number; score_value: number }>();
+  const questionKind = ledgerQuestion?.question_kind
+    ?? classifyQuestion(question.id, baseQuestionIds);
   const currentPosition = Math.max(1, asked.indexOf(question.id) + 1);
+  const additionalNumber = questionKind === 'additional'
+    ? asked.filter((askedQuestionId) => !baseQuestionIds.has(askedQuestionId)).length
+    : undefined;
 
-  if (!correct && !totalExpired) {
+  let scheduledAdditional: {
+    questionId: number;
+    sourceQuestionId: number;
+    ordinal: number;
+    scoreValue: number;
+  } | null = null;
+  if (shouldCreateAdditionalQuestion({
+    questionKind,
+    correct,
+    totalExpired,
+    additionalQuestionCount: countAdditionalQuestions(baseQuestionIds, asked, pending),
+  })) {
     const replacement = await chooseReplacementQuestion(
       question.difficulty,
       question.topic,
       asked,
       pending,
     );
-    if (replacement) pending.push(replacement.id);
+    if (replacement) {
+      pending.push(replacement.id);
+      scheduledAdditional = {
+        questionId: replacement.id,
+        sourceQuestionId: question.id,
+        ordinal: baseQuestionIds.size
+          + countAdditionalQuestions(baseQuestionIds, asked, pending),
+        scoreValue: questionScoreValue(replacement.weight, 'additional'),
+      };
+    }
   }
 
-  const skippedQuestions = totalExpired ? await loadQuestions([...pending]) : [];
+  const skippedQuestions = totalExpired
+    ? await loadQuestions(pending.filter((questionId) => baseQuestionIds.has(questionId)))
+    : [];
   let nextId: number | null = null;
   if (totalExpired) {
     for (const skipped of skippedQuestions) {
@@ -191,12 +303,15 @@ export async function processAttemptAnswer(
   }
 
   const completed = nextId === null;
-  const score = calculateScore(attempt.score, question.weight, attempt.base_max_score, correct);
+  const scoreValue = ledgerQuestion?.score_value
+    ?? questionScoreValue(question.weight, questionKind);
+  const score = calculateScore(attempt.score, scoreValue, attempt.base_max_score, correct);
+  const awardedScore = score - attempt.score;
   const correctCount = attempt.correct_count + (correct ? 1 : 0);
   const wrongCount = attempt.wrong_count + (correct ? 0 : 1) + skippedQuestions.length;
   const answeredCount = correctCount + wrongCount;
   const accuracy = calculateAccuracy(correctCount, wrongCount);
-  const verdict = completed ? calculateVerdict(score, attempt.base_max_score, accuracy) : null;
+  const verdict = completed ? calculateVerdict(score, accuracy) : null;
   const completedAt = completed ? now : null;
   const durationSeconds = completed
     ? Math.min(TEST_CONFIG.totalTimeSeconds, Math.ceil((now - attempt.started_at) / 1_000))
@@ -204,24 +319,25 @@ export async function processAttemptAnswer(
   const totalQuestions = answeredCount + (nextId === null ? 0 : pending.length + 1);
   const totalRemainingSeconds = Math.max(0, Math.ceil((attempt.total_deadline_at - now) / 1_000));
   const candidateName = attempt.candidate_name ?? attempt.public_alias;
-  const topicErrors = completed ? await existingTopicErrors(attempt.id) : new Map<string, number>();
-  if (completed && !correct) addTopicError(topicErrors, question.topic);
-  if (completed) {
-    for (const skipped of skippedQuestions) addTopicError(topicErrors, skipped.topic);
-  }
   const completionStats = completed
     ? summarizeAttemptStatistics([
-        ...await existingAnswerStatistics(attempt.id),
+        ...await existingAnswerStatistics(
+          attempt.id,
+          baseQuestionIds,
+          attempt.analytics_facts_version,
+        ),
         {
+          questionKind,
           difficulty: question.difficulty,
           topic: question.topic,
           answeredCount: 1,
           correctCount: correct ? 1 : 0,
           timeoutCount: timedOut ? 1 : 0,
           elapsedSeconds,
-          measuredCount: selectedChoice !== null || elapsedSeconds > 0 ? 1 : 0,
+          measuredCount: !timedOut && selectedChoice !== null ? 1 : 0,
         },
         ...skippedQuestions.map((skipped): AttemptStatisticBucket => ({
+          questionKind: 'base',
           difficulty: skipped.difficulty,
           topic: skipped.topic,
           answeredCount: 1,
@@ -232,16 +348,53 @@ export async function processAttemptAnswer(
         })),
       ])
     : null;
+  const interviewerProfile = completed
+    ? buildCandidateInsights(await completionInsightFacts(
+        attempt.id,
+        new Map<number, CompletionOutcome>([
+          [question.id, {
+            correct,
+            timedOut,
+            answerOrigin: totalExpired
+              ? 'total_timeout_presented'
+              : questionExpired
+                ? 'question_timeout'
+                : 'submitted',
+            awardedScore,
+            elapsedSeconds,
+          }],
+          ...skippedQuestions.map((skipped): [number, CompletionOutcome] => [skipped.id, {
+            correct: false,
+            timedOut: true,
+            answerOrigin: 'total_timeout_unshown',
+            awardedScore: 0,
+            elapsedSeconds: 0,
+          }]),
+        ]),
+      )).telegramProfile
+    : null;
 
   const db = database();
+  const claimMarker = -(crypto.getRandomValues(new Uint32Array(1))[0] + 1);
   const statements: D1PreparedStatement[] = [
+    db.prepare(`UPDATE attempts SET current_question_started_at = ?
+      WHERE id = ? AND status = 'active' AND current_question_id = ?
+        AND current_question_started_at = ?`)
+      .bind(
+        claimMarker,
+        attempt.id,
+        question.id,
+        attempt.current_question_started_at,
+      ),
     db
       .prepare(
         `INSERT OR IGNORE INTO answers (
           attempt_id, question_id, selected_index, is_correct, answered_at,
-          elapsed_seconds, timed_out
-        ) SELECT ?, ?, ?, ?, ?, ?, ? FROM attempts
-          WHERE id = ? AND status = 'active' AND current_question_id = ?`,
+          elapsed_seconds, timed_out, fact_version, answer_origin,
+          canonical_selected_index, awarded_score
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM attempts
+          WHERE id = ? AND status = 'active' AND current_question_id = ?
+            AND current_question_started_at = ?`,
       )
       .bind(
         attempt.id,
@@ -251,55 +404,127 @@ export async function processAttemptAnswer(
         now,
         elapsedSeconds,
         timedOut ? 1 : 0,
+        attempt.analytics_facts_version,
+        totalExpired
+          ? 'total_timeout_presented'
+          : questionExpired
+            ? 'question_timeout'
+            : 'submitted',
+        originalIndex,
+        awardedScore,
         attempt.id,
         question.id,
+        claimMarker,
       ),
   ];
+
+  if (scheduledAdditional) {
+    statements.push(
+      db.prepare(`INSERT INTO attempt_questions (
+        attempt_id, question_id, question_kind, ordinal, source_question_id,
+        score_value, assigned_at, presented_at
+      ) SELECT id, ?, 'additional', ?, ?, ?, ?, NULL
+        FROM attempts
+        WHERE id = ? AND status = 'active' AND current_question_id = ?
+          AND current_question_started_at = ?
+        AND EXISTS (
+          SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+        )
+        ON CONFLICT(attempt_id, question_id) DO NOTHING`)
+        .bind(
+          scheduledAdditional.questionId,
+          scheduledAdditional.ordinal,
+          scheduledAdditional.sourceQuestionId,
+          scheduledAdditional.scoreValue,
+          now,
+          attempt.id,
+          question.id,
+          claimMarker,
+          attempt.id,
+          question.id,
+        ),
+    );
+  }
 
   for (const skipped of skippedQuestions) {
     statements.push(
       db
         .prepare(`INSERT OR IGNORE INTO answers (
           attempt_id, question_id, selected_index, is_correct, answered_at,
-          elapsed_seconds, timed_out
-        ) SELECT ?, ?, NULL, 0, ?, 0, 1 FROM attempts
-          WHERE id = ? AND status = 'active' AND current_question_id = ?`)
-        .bind(attempt.id, skipped.id, now, attempt.id, question.id),
+          elapsed_seconds, timed_out, fact_version, answer_origin,
+          canonical_selected_index, awarded_score
+        ) SELECT ?, ?, NULL, 0, ?, 0, 1, ?, 'total_timeout_unshown', NULL, 0
+          FROM attempts
+          WHERE id = ? AND status = 'active' AND current_question_id = ?
+            AND current_question_started_at = ?`)
+        .bind(
+          attempt.id,
+          skipped.id,
+          now,
+          attempt.analytics_facts_version,
+          attempt.id,
+          question.id,
+          claimMarker,
+        ),
     );
   }
 
-  const attemptUpdateIndex = statements.length;
-  statements.push(
-    db
-      .prepare(
-        `UPDATE attempts SET status = ?, current_question_id = ?, pending_question_ids = ?,
-          asked_question_ids = ?, score = ?, correct_count = ?, wrong_count = ?,
-          current_question_started_at = ?, question_deadline_at = ?, verdict = ?,
-          completed_at = ?, duration_seconds = ?
-         WHERE id = ? AND current_question_id = ? AND status = 'active'
-           AND EXISTS (SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?)`,
-      )
-      .bind(
-        completed ? 'completed' : 'active',
-        nextId,
-        JSON.stringify(pending),
-        JSON.stringify(asked),
-        score,
-        correctCount,
-        wrongCount,
-        now,
-        nextId
-          ? Math.min(now + TEST_CONFIG.questionTimeSeconds * 1_000, attempt.total_deadline_at)
-          : now,
-        verdict,
-        completedAt,
-        durationSeconds,
-        attempt.id,
-        question.id,
-        attempt.id,
-        question.id,
-      ),
-  );
+  const attemptUpdateStatement = db
+    .prepare(
+      `UPDATE attempts SET status = ?, current_question_id = ?, pending_question_ids = ?,
+        asked_question_ids = ?, score = ?, correct_count = ?, wrong_count = ?,
+        current_question_started_at = ?, question_deadline_at = ?, verdict = ?,
+        completed_at = ?, duration_seconds = ?
+       WHERE id = ? AND current_question_id = ? AND status = 'active'
+         AND current_question_started_at = ?
+         AND EXISTS (SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?)`,
+    )
+    .bind(
+      completed ? 'completed' : 'active',
+      nextId,
+      JSON.stringify(pending),
+      JSON.stringify(asked),
+      score,
+      correctCount,
+      wrongCount,
+      now,
+      nextId
+        ? Math.min(now + TEST_CONFIG.questionTimeSeconds * 1_000, attempt.total_deadline_at)
+        : now,
+      verdict,
+      completedAt,
+      durationSeconds,
+      attempt.id,
+      question.id,
+      claimMarker,
+      attempt.id,
+      question.id,
+    );
+  if (nextId !== null) {
+    statements.push(
+      db.prepare(`UPDATE attempt_questions
+        SET presented_at = COALESCE(presented_at, ?)
+        WHERE attempt_id = ? AND question_id = ?
+          AND EXISTS (
+            SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+          )
+          AND EXISTS (
+            SELECT 1 FROM attempts
+            WHERE id = ? AND status = 'active' AND current_question_id = ?
+              AND current_question_started_at = ?
+          )`)
+        .bind(
+          now,
+          attempt.id,
+          nextId,
+          attempt.id,
+          question.id,
+          attempt.id,
+          question.id,
+          claimMarker,
+        ),
+    );
+  }
 
   const notificationPolicy = telegramNotificationPolicy();
   if (notificationPolicy.enabled) {
@@ -324,7 +549,9 @@ export async function processAttemptAnswer(
           id, attempt_id, question_id, event_type, payload_text, delivery_method,
           parse_mode, silent, status, attempt_count, next_attempt_at, created_at
         ) SELECT ?, id, NULL, 'started', ?, 'send', 'HTML', 1, 'pending', 0, ?, ?
-          FROM attempts WHERE id = ? AND EXISTS (
+          FROM attempts WHERE id = ? AND status = 'active'
+            AND current_question_id = ? AND current_question_started_at = ?
+            AND EXISTS (
             SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
           )
           ON CONFLICT(id) DO NOTHING`)
@@ -334,6 +561,8 @@ export async function processAttemptAnswer(
             Math.max(attempt.started_at, now - 1),
             Math.max(attempt.started_at, now - 1),
             attempt.id,
+            question.id,
+            claimMarker,
             attempt.id,
             question.id,
           ),
@@ -346,14 +575,31 @@ export async function processAttemptAnswer(
           WHERE attempt_id = ? AND event_type = 'progress' AND status = 'pending' AND id != ?
             AND EXISTS (
               SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+            )
+            AND EXISTS (
+              SELECT 1 FROM attempts
+              WHERE id = ? AND status = 'active' AND current_question_id = ?
+                AND current_question_started_at = ?
             )`)
-          .bind(attempt.id, progressEventId, attempt.id, question.id),
+          .bind(
+            attempt.id,
+            progressEventId,
+            attempt.id,
+            question.id,
+            attempt.id,
+            question.id,
+            claimMarker,
+          ),
         db.prepare(`INSERT INTO telegram_outbox (
           id, attempt_id, question_id, event_type, payload_text, delivery_method,
           parse_mode, silent, status, attempt_count, next_attempt_at, created_at
         ) SELECT ?, ?, ?, 'progress', ?, 'edit_root', 'HTML', 1, 'pending', 0, ?, ?
           WHERE EXISTS (
             SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+          ) AND EXISTS (
+            SELECT 1 FROM attempts
+            WHERE id = ? AND status = 'active' AND current_question_id = ?
+              AND current_question_started_at = ?
           )
           ON CONFLICT(id) DO NOTHING`)
           .bind(
@@ -365,6 +611,9 @@ export async function processAttemptAnswer(
             eventTime,
             attempt.id,
             question.id,
+            attempt.id,
+            question.id,
+            claimMarker,
           ),
       );
       eventTime += 1;
@@ -377,7 +626,9 @@ export async function processAttemptAnswer(
         position: currentPosition,
         totalQuestions,
         difficulty: question.difficulty,
-        weight: question.weight,
+        questionKind,
+        scoreValue,
+        ...(additionalNumber === undefined ? {} : { additionalNumber }),
         prompt: question.prompt,
         contextType: question.context_type ?? undefined,
         context: question.context_text ?? undefined,
@@ -394,6 +645,10 @@ export async function processAttemptAnswer(
         ) SELECT ?, ?, ?, 'answer', ?, 'reply_root', 'HTML', 1, 'pending', 0, ?, ?
           WHERE EXISTS (
             SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+          ) AND EXISTS (
+            SELECT 1 FROM attempts
+            WHERE id = ? AND status = 'active' AND current_question_id = ?
+              AND current_question_started_at = ?
           )
           ON CONFLICT(id) DO NOTHING`)
           .bind(
@@ -405,6 +660,9 @@ export async function processAttemptAnswer(
             eventTime,
             attempt.id,
             question.id,
+            attempt.id,
+            question.id,
+            claimMarker,
           ),
       );
       eventTime += 1;
@@ -418,7 +676,8 @@ export async function processAttemptAnswer(
         position: asked.indexOf(skipped.id) + 1,
         totalQuestions,
         difficulty: skipped.difficulty,
-        weight: skipped.weight,
+        questionKind: 'base',
+        scoreValue: questionScoreValue(skipped.weight, 'base'),
         prompt: skipped.prompt,
         contextType: skipped.context_type ?? undefined,
         context: skipped.context_text ?? undefined,
@@ -435,6 +694,10 @@ export async function processAttemptAnswer(
         ) SELECT ?, ?, ?, 'answer', ?, 'reply_root', 'HTML', 1, 'pending', 0, ?, ?
           WHERE EXISTS (
             SELECT 1 FROM answers WHERE attempt_id = ? AND question_id = ?
+          ) AND EXISTS (
+            SELECT 1 FROM attempts
+            WHERE id = ? AND status = 'active' AND current_question_id = ?
+              AND current_question_started_at = ?
           )
           ON CONFLICT(id) DO NOTHING`)
           .bind(
@@ -446,6 +709,9 @@ export async function processAttemptAnswer(
             eventTime,
             attempt.id,
             skipped.id,
+            attempt.id,
+            question.id,
+            claimMarker,
           ),
       );
       eventTime += 1;
@@ -461,32 +727,44 @@ export async function processAttemptAnswer(
         verdict,
         score,
         baseMaxScore: attempt.base_max_score,
-        scorePercent: attempt.base_max_score
-          ? Math.round((score / attempt.base_max_score) * 100)
-          : 0,
-        correctCount,
-        wrongCount,
-        answeredCount,
         accuracy,
         timeoutCount: completionStats.timeoutCount,
         durationSeconds,
         averageAnswerSeconds: completionStats.averageAnswerSeconds,
         completedAt,
-        difficultyStats: completionStats.difficultyStats,
-        topicErrors: [...topicErrors].map(([topic, count]) => ({ topic, count })),
+        baseAnsweredCount: completionStats.baseAnsweredCount,
+        baseCorrectCount: completionStats.baseCorrectCount,
+        additionalAnsweredCount: completionStats.additionalAnsweredCount,
+        additionalCorrectCount: completionStats.additionalCorrectCount,
+        interviewerProfile: interviewerProfile ?? undefined,
       });
       statements.push(
         db.prepare(`INSERT INTO telegram_outbox (
           id, attempt_id, question_id, event_type, payload_text, delivery_method,
           parse_mode, silent, status, attempt_count, next_attempt_at, created_at
         ) SELECT ?, ?, NULL, 'completed', ?, 'send', 'HTML', 0, 'pending', 0, ?, ?
-          FROM attempts WHERE id = ? AND status = 'completed'
+          WHERE EXISTS (
+            SELECT 1 FROM attempts
+            WHERE id = ? AND status = 'active' AND current_question_id = ?
+              AND current_question_started_at = ?
+          )
           ON CONFLICT(id) DO NOTHING`)
-          .bind(completedEventId, attempt.id, summaryMessage, now, eventTime, attempt.id),
+          .bind(
+            completedEventId,
+            attempt.id,
+            summaryMessage,
+            now,
+            eventTime,
+            attempt.id,
+            question.id,
+            claimMarker,
+          ),
       );
     }
   }
 
+  const attemptUpdateIndex = statements.length;
+  statements.push(attemptUpdateStatement);
   const results = await db.batch(statements);
   if ((results[attemptUpdateIndex].meta.changes ?? 0) === 0) return (await findAttempt(attempt.id))!;
   return (await findAttempt(attempt.id))!;

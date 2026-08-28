@@ -13,12 +13,26 @@ const localBindingConfig = {
   main: 'vinext/server/app-router-entry',
   compatibility_flags: ['nodejs_compat'],
   secrets: {
-    required: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'MAINTENANCE_TOKEN'],
+    required: [
+      'TELEGRAM_BOT_TOKEN',
+      'TELEGRAM_CHAT_ID',
+      'MAINTENANCE_TOKEN',
+      'ADMIN_PIN_HASH',
+      'ADMIN_PIN_SALT',
+      'ADMIN_SESSION_SECRET',
+    ],
   },
   vars: {
     TELEGRAM_ENABLED: process.env.TELEGRAM_ENABLED ?? '1',
     TELEGRAM_REQUIRED: process.env.TELEGRAM_REQUIRED ?? '1',
     TELEGRAM_CONFIG_STATUS: process.env.TELEGRAM_CONFIG_STATUS ?? 'missing',
+    ADMIN_CONFIG_STATUS: process.env.ADMIN_CONFIG_STATUS ?? 'missing',
+    ADMIN_PIN_ITERATIONS: process.env.ADMIN_PIN_ITERATIONS ?? '210000',
+    ANALYTICS_ENABLED: process.env.ANALYTICS_ENABLED ?? '1',
+    BALANCED_SELECTION_ENABLED: process.env.BALANCED_SELECTION_ENABLED ?? '0',
+    BALANCED_SELECTION_SHADOW: process.env.BALANCED_SELECTION_SHADOW ?? '1',
+    CALIBRATION_ENABLED: process.env.CALIBRATION_ENABLED ?? '1',
+    ANALYTICS_EXPORT_ENABLED: process.env.ANALYTICS_EXPORT_ENABLED ?? '1',
   },
   d1_databases: [
     {

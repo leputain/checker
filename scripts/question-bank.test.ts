@@ -109,6 +109,17 @@ assert.equal(
   13,
   'fallback must preserve id/dedupe exclusions',
 );
+assert.equal(
+  selectRemedialQuestion(
+    remedialCandidates,
+    'medium',
+    'Сети',
+    new Set([11, 13]),
+    new Set(['linux-a']),
+  ),
+  undefined,
+  'an exhausted remedial pool must return no question instead of breaking the attempt',
+);
 
 const deduplicatedPool = minimumBank();
 deduplicatedPool[0].dedupeKey = 'shared-concept';

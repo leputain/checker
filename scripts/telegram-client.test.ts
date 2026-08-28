@@ -127,20 +127,22 @@ const progressMessage = progressTelegramMessage({
   totalQuestions: 21,
   correctCount: 5,
   wrongCount: 2,
-  score: 9,
-  baseMaxScore: 50,
+  score: 64,
+  baseMaxScore: 100,
   totalRemainingSeconds: 388,
 });
 assert.match(progressMessage, /Анна &lt;Петрова&gt;/);
 assert.match(progressMessage, /Прогресс: <b>7 из 21<\/b>/);
+assert.match(progressMessage, /Баллы: <b>64 из 100<\/b>/);
 assert.match(progressMessage, /Осталось: <b>06:28<\/b>/);
 
 const answerMessage = answerTelegramMessage({
   attemptId: 'attempt-1',
   position: 7,
   totalQuestions: 21,
-  difficulty: 'medium',
-  weight: 2,
+  difficulty: 'hard',
+  questionKind: 'base',
+  scoreValue: 6,
   prompt: 'Что проверяет <тест>?',
   contextType: 'log',
   context: 'sshd: Failed password & retry',
@@ -151,6 +153,7 @@ const answerMessage = answerTelegramMessage({
   questionElapsedSeconds: 12,
 });
 assert.match(answerMessage, /❌ Неверно · вопрос 7 из 21/);
+assert.match(answerMessage, /Сложный · 6 баллов/);
 assert.match(answerMessage, /Что проверяет &lt;тест&gt;?/);
 assert.match(answerMessage, /<b>Фрагмент журнала:<\/b>/);
 assert.match(answerMessage, /<pre>sshd: Failed password &amp; retry<\/pre>/);
@@ -159,12 +162,31 @@ assert.match(answerMessage, /<b>Правильно:<\/b> Логику/);
 assert.doesNotMatch(answerMessage, /tg-spoiler/);
 assert.doesNotMatch(answerMessage, /Анна/);
 
+const additionalAnswerMessage = answerTelegramMessage({
+  attemptId: 'attempt-1',
+  position: 21,
+  totalQuestions: 21,
+  difficulty: 'hard',
+  questionKind: 'additional',
+  scoreValue: 3,
+  additionalNumber: 1,
+  prompt: 'Дополнительная проверка',
+  selectedAnswer: 'Неверный ответ',
+  correctAnswer: 'Верный ответ',
+  correct: false,
+  timedOut: false,
+  questionElapsedSeconds: 8,
+});
+assert.match(additionalAnswerMessage, /❌ Неверно · вопрос 21 из 21/);
+assert.match(additionalAnswerMessage, /Дополнительный №1 · Сложный · 3 балла/);
+
 const boundaryAnswerMessage = answerTelegramMessage({
   attemptId: 'boundary-attempt-12345678',
   position: 20,
   totalQuestions: 20,
   difficulty: 'expert',
-  weight: 10,
+  questionKind: 'base',
+  scoreValue: 20,
   prompt: '<&>'.repeat(500),
   contextType: 'config',
   context: '&'.repeat(2_000),
@@ -192,37 +214,31 @@ const completedMessage = completedTelegramMessage({
   attemptId: 'attempt-1',
   candidateName: 'Анна Петрова',
   verdict: 'PASS',
-  score: 43,
-  baseMaxScore: 50,
-  scorePercent: 86,
-  correctCount: 18,
-  wrongCount: 2,
-  answeredCount: 20,
-  accuracy: 90,
+  score: 84,
+  baseMaxScore: 100,
+  accuracy: 91,
   timeoutCount: 1,
   durationSeconds: 120,
   averageAnswerSeconds: 6,
   completedAt: 1_700_000_000_000,
-  difficultyStats: [
-    { difficulty: 'hard', correctCount: 4, answeredCount: 5, accuracy: 80 },
-    { difficulty: 'easy', correctCount: 5, answeredCount: 5, accuracy: 100 },
-    { difficulty: 'expert', correctCount: 0, answeredCount: 0, accuracy: 0 },
-    { difficulty: 'medium', correctCount: 9, answeredCount: 10, accuracy: 90 },
-  ],
-  topicErrors: [{ topic: 'Linux & shell', count: 2 }],
+  baseAnsweredCount: 20,
+  baseCorrectCount: 18,
+  additionalAnsweredCount: 2,
+  additionalCorrectCount: 2,
+  interviewerProfile: {
+    strongTopics: ['Сети', 'Windows & AD', 'Сети', 'Лишняя сильная тема'],
+    checkAreas: ['Linux <sudo>', 'SIEM', 'Windows & AD', 'DLP'],
+  },
 });
 assert.match(completedMessage, /Рекомендован/);
-assert.match(completedMessage, /43 \/ 50 баллов · 86%/);
-assert.match(completedMessage, /✅ Верно: 18 · ❌ Ошибок: 2 · из них таймаутов: 1/);
-assert.match(completedMessage, /Точность: 90%/);
+assert.match(completedMessage, /84 \/ 100 баллов/);
+assert.match(completedMessage, /Основные: 18 \/ 20/);
+assert.match(completedMessage, /Дополнительные: 2 \/ 2/);
+assert.match(completedMessage, /Точность: 91% · таймаутов: 1/);
 assert.match(completedMessage, /Время: 02:00 · среднее на ответ: 00:06/);
-assert.match(completedMessage, /По сложности/);
-assert.match(completedMessage, /Базовый: 5\/5 · 100%/);
-assert.match(completedMessage, /Средний: 9\/10 · 90%/);
-assert.match(completedMessage, /Сложный: 4\/5 · 80%/);
-assert.doesNotMatch(completedMessage, /Экспертный:/);
-assert.match(completedMessage, /Слабые темы/);
-assert.match(completedMessage, /Linux &amp; shell — 2/);
+assert.match(completedMessage, /<b>Профиль для интервью<\/b>/);
+assert.match(completedMessage, /Сильные темы: Сети · Windows &amp; AD · Лишняя сильная тема/);
+assert.match(completedMessage, /Проверить: Linux &lt;sudo&gt; · SIEM · DLP/);
 assert.match(completedMessage, /Дата теста: 15\.11\.2023 · 01:13 МСК/);
 assert.match(completedMessage, /<code>#ATTEMPT1<\/code>/);
 assert.doesNotMatch(completedMessage, /банк|\/ COMPLETED-/i);
@@ -232,40 +248,49 @@ const boundaryCompletedMessage = completedTelegramMessage({
   attemptId: 'boundary-summary-87654321',
   candidateName: '<&>'.repeat(100),
   verdict: 'REVIEW',
-  score: 25,
-  baseMaxScore: 50,
-  scorePercent: 50,
-  correctCount: 10,
-  wrongCount: 10,
-  answeredCount: 20,
+  score: 50,
+  baseMaxScore: 100,
   accuracy: 50,
   timeoutCount: 3,
   durationSeconds: 600,
   averageAnswerSeconds: 30,
   completedAt: 1_700_000_000_000,
-  difficultyStats: [
-    { difficulty: 'easy', correctCount: 3, answeredCount: 5, accuracy: 60 },
-    { difficulty: 'medium', correctCount: 4, answeredCount: 7, accuracy: 57 },
-    { difficulty: 'hard', correctCount: 3, answeredCount: 7, accuracy: 43 },
-    { difficulty: 'expert', correctCount: 0, answeredCount: 1, accuracy: 0 },
-  ],
-  topicErrors: Array.from({ length: 10 }, (_, index) => ({
-    topic: `${index}-${'<&>'.repeat(2_000)}`,
-    count: 10 - index,
-  })),
+  baseAnsweredCount: 20,
+  baseCorrectCount: 10,
+  additionalAnsweredCount: 0,
+  additionalCorrectCount: 0,
 });
 assert.ok(
   telegramVisibleTextLength(boundaryCompletedMessage, 'HTML') <= TELEGRAM_MESSAGE_VISIBLE_LIMIT,
 );
-assert.match(boundaryCompletedMessage, /…/);
-assert.match(boundaryCompletedMessage, /ещё тем: 5/);
+assert.match(boundaryCompletedMessage, /К просмотру/);
+assert.match(boundaryCompletedMessage, /Дополнительные: не задавались/);
+assert.doesNotMatch(boundaryCompletedMessage, /Профиль для интервью/);
 assert.match(boundaryCompletedMessage, /<code>#87654321<\/code>$/);
+
+const failedMessage = completedTelegramMessage({
+  attemptId: 'failed-attempt-11223344',
+  candidateName: 'Тестовый кандидат',
+  verdict: 'FAIL',
+  score: 49,
+  baseMaxScore: 100,
+  accuracy: 50,
+  timeoutCount: 0,
+  durationSeconds: 300,
+  averageAnswerSeconds: 15,
+  completedAt: 1_700_000_000_000,
+  baseAnsweredCount: 20,
+  baseCorrectCount: 10,
+  additionalAnsweredCount: 0,
+  additionalCorrectCount: 0,
+});
+assert.match(failedMessage, /Не рекомендован/);
 
 const abortedMessage = abortedTelegramMessage({
   attemptId: 'attempt-1',
   candidateName: 'Анна Петрова',
   score: 3,
-  baseMaxScore: 50,
+  baseMaxScore: 100,
   answeredCount: 4,
   minimumQuestions: 20,
   durationSeconds: 75,

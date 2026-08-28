@@ -16,7 +16,12 @@ const candidates = [
   ...untracked.map((file) => ({ file, source: 'worktree' as const })),
 ];
 
-const forbiddenNames = [/^tg_token\.txt$/i, /^\.dev\.vars/i, /^\.env(?:\.|$)/i];
+const forbiddenNames = [
+  /^tg_token\.txt$/i,
+  /^admin_pin\.txt$/i,
+  /^\.dev\.vars/i,
+  /^\.env(?:\.|$)/i,
+];
 const rules = [
   { name: 'telegram_bot_token', pattern: /\d{8,12}:[A-Za-z0-9_-]{20,64}/ },
   { name: 'private_key', pattern: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },

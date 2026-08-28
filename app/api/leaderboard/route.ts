@@ -1,7 +1,17 @@
 import { NextResponse } from 'next/server';
-import { database, ensureSchema, type Verdict } from '@/db/runtime';
-import { calculateAccuracy, calculateVerdict } from '@/lib/scoring.ts';
+import { env } from 'cloudflare:workers';
+import { database, ensureQuestionBankReady, type Verdict } from '@/db/runtime';
+import { BASE_MAX_SCORE, calculateAccuracy, calculateVerdict } from '@/lib/scoring.ts';
 import {
+  BALANCED_TEST_CONFIG_ID,
+  BALANCED_TEST_PROFILE_ID,
+  SCORING_VERSION,
+  TEST_CONFIG_ID,
+  TEST_PROFILE_ID,
+} from '@/lib/test-config.ts';
+import { readFeatureFlags } from '@/lib/feature-flags.ts';
+import {
+  LEADERBOARD_ATTEMPTS_SQL,
   moscowDayBounds,
   selectBestLeaderboardEntries,
   type LeaderboardPeriod,
@@ -11,8 +21,9 @@ const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
 
 export async function GET(request: Request) {
   try {
-    await ensureSchema();
-    const requestedPeriod = new URL(request.url).searchParams.get('period');
+    const bankRevision = await ensureQuestionBankReady();
+    const searchParams = new URL(request.url).searchParams;
+    const requestedPeriod = searchParams.get('period');
     if (requestedPeriod !== null && requestedPeriod !== 'today' && requestedPeriod !== 'all') {
       return NextResponse.json(
         { error: 'Некорректный период рейтинга.' },
@@ -20,16 +31,32 @@ export async function GET(request: Request) {
       );
     }
     const period: LeaderboardPeriod = requestedPeriod ?? 'all';
+    const defaultProfile = readFeatureFlags(env).balancedSelection
+      ? BALANCED_TEST_PROFILE_ID
+      : TEST_PROFILE_ID;
+    const requestedProfile = searchParams.get('profile') ?? defaultProfile;
+    if (requestedProfile !== TEST_PROFILE_ID && requestedProfile !== BALANCED_TEST_PROFILE_ID) {
+      return NextResponse.json(
+        { error: 'Некорректный профиль рейтинга.' },
+        { status: 400, headers: NO_STORE },
+      );
+    }
+    const testConfigId = requestedProfile === BALANCED_TEST_PROFILE_ID
+      ? BALANCED_TEST_CONFIG_ID
+      : TEST_CONFIG_ID;
     const today = period === 'today' ? moscowDayBounds() : null;
-    const statement = database().prepare(
-      `SELECT id, candidate_key, public_alias, verdict, score, base_max_score,
-        correct_count, wrong_count, duration_seconds, completed_at
-       FROM attempts
-       WHERE status = 'completed'
-         AND (? IS NULL OR (completed_at >= ? AND completed_at < ?))`,
-    );
+    const statement = database().prepare(LEADERBOARD_ATTEMPTS_SQL);
     const rows = await statement
-      .bind(today?.startMs ?? null, today?.startMs ?? 0, today?.endMs ?? 0)
+      .bind(
+        BASE_MAX_SCORE,
+        SCORING_VERSION,
+        testConfigId,
+        requestedProfile,
+        bankRevision,
+        today?.startMs ?? null,
+        today?.startMs ?? 0,
+        today?.endMs ?? 0,
+      )
       .all<{
         id: string;
         candidate_key: string;
@@ -48,7 +75,7 @@ export async function GET(request: Request) {
         return {
           candidateKey: row.candidate_key || `legacy:${row.id}`,
           alias: row.public_alias,
-          verdict: row.verdict ?? calculateVerdict(row.score, row.base_max_score, accuracy),
+          verdict: row.verdict ?? calculateVerdict(row.score, accuracy),
           score: row.score,
           baseMaxScore: row.base_max_score,
           accuracy,
@@ -61,6 +88,12 @@ export async function GET(request: Request) {
     return NextResponse.json({
       entries: selectBestLeaderboardEntries(entries),
       period,
+      cohort: {
+        scoringVersion: SCORING_VERSION,
+        testConfigId,
+        testProfileId: requestedProfile,
+        bankRevision,
+      },
     }, { headers: NO_STORE });
   } catch (error) {
     console.error('leaderboard_failed', error);

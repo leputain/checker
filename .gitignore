@@ -31,6 +31,7 @@ yarn-error.log*
 # local environment
 .env*
 /tg_token.txt
+/admin_pin.txt
 /.dev.vars*
 /db/questions.json
 /ib_admin_questions_130.json

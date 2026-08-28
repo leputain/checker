@@ -1,5 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { parseAdminPin } from './admin-config.ts';
 import { loadTelegramConfig } from './telegram-config.ts';
 
 const roots = ['dist', '.vinext', '.next'].map((root) => path.resolve(root));
@@ -12,6 +13,12 @@ try {
   exactValues.push(telegram.botToken, telegram.chatId);
 } catch {
   // Generic token detection still runs when local Telegram is intentionally disabled.
+}
+
+try {
+  exactValues.push(parseAdminPin(await readFile(path.resolve('admin_pin.txt'), 'utf8')));
+} catch {
+  // Admin is optional; artifact scanning continues with generic rules.
 }
 
 async function scanDirectory(directory: string): Promise<void> {
@@ -35,7 +42,7 @@ async function scanDirectory(directory: string): Promise<void> {
     const buffer = await readFile(target);
     const relative = path.relative(process.cwd(), target).replaceAll('\\', '/');
     if (exactValues.some((value) => value.length > 0 && buffer.includes(value))) {
-      findings.push(`${relative}:exact_telegram_binding`);
+      findings.push(`${relative}:exact_secret_binding`);
       continue;
     }
     if (!buffer.includes(0) && botTokenPattern.test(buffer.toString('utf8'))) {

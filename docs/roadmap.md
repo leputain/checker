@@ -1,59 +1,60 @@
-# Candidate Check: план после v0.6
+# Candidate Check Analytics: статус v1.0 и следующий цикл
 
-## Текущее состояние
+## Что завершено
 
-Известно:
+- `v0.7.1`: immutable model identity, `attempt_questions`, exact answer facts, revision membership, полный base/additional breakdown и cohort-aware leaderboard.
+- `v0.8.0`: локальный admin PIN, HttpOnly-сессия, rate limit, CSRF и первая страница качества вопросов.
+- `v0.9.0`: профиль кандидата по темам, base-only классификация и воспроизводимые рекомендации интервьюеру.
+- `v0.10.0`: overview, кандидаты, темы, сложности, score histogram и trends.
+- `v0.11.0`: профиль `general-balanced-v2`, frequency/recency-aware выборка, Coverage Score, shadow mode и безопасный fallback.
+- `v0.12.0`: distractor distribution, point-biserial discrimination, Question Quality Score и immutable review history.
+- `v0.13.0`: когортные фильтры и сравнение ревизий банка.
+- `v0.14.0`: агрегированные CSV/JSON и печатный admin-отчёт кандидата без answer keys.
+- `v1.0.0`: migration/backup/restore/retention проверки, synthetic benchmark, `EXPLAIN`, WebKit iPad E2E и единый quality gate.
 
-- v0.6 реализует server-authoritative тест, пробный вопрос, идемпотентный старт/ответ и восстановление на iPad;
-- интерфейс использует карточки ответов, отдельные таймеры вопроса и теста, технические контексты и профиль результата;
-- remedial-вопросы сначала выбираются из той же темы, а рейтинг поддерживает периоды «Сегодня» и «Все»;
-- Telegram подключён через server-side bindings и D1 outbox, без зависимости candidate flow от доступности внешнего API;
-- локальный maintenance consumer доставляет outbox и очищает ПДн без открытого Safari;
-- банк валидируется отдельно от схемы, ревизия фиксируется SHA-256, существующий ID вопроса неизменяем;
-- PWA manifest, Wake Lock, offline-индикатор, safe-area и доступные таймеры готовы;
-- локальные backup/verify/restore и retention-команды готовы;
-- приложение остаётся single-device локальным инструментом без административной аутентификации.
+Analytics cutover начинается только для `ANALYTICS_FACTS_VERSION=1`. Legacy-попытки остаются читаемыми, но не backfill-ятся приблизительными фактами и не участвуют в аналитических API.
 
-Гипотеза: текущего набора функций достаточно для пилота на одном iPad. Проверить это можно только на реальном банке и серии пробных интервью.
+## Feature flags и rollout
 
-## P0 — пилот и калибровка
+| Флаг | Default | Назначение |
+|---|---:|---|
+| `ANALYTICS_ENABLED` | `1` | Admin analytics API/UI |
+| `CALIBRATION_ENABLED` | `1` | quality/discrimination расчёты |
+| `ANALYTICS_EXPORT_ENABLED` | `1` | агрегированные CSV/JSON |
+| `BALANCED_SELECTION_SHADOW` | `1` | расчёт shadow Coverage Score без влияния на тест |
+| `BALANCED_SELECTION_ENABLED` | `0` | включение `general-balanced-v2` после пилота |
 
-- провести 10–20 тестовых прохождений на реальном iPad;
-- проверить читаемость длинных вопросов в portrait/landscape и при открытой клавиатуре;
-- убедиться, что бот имеет доступ только к нужной закрытой группе;
-- проверить ручной Telegram smoke через `npm run telegram:test`;
-- выполнить backup, verify и учебный restore на копии состояния;
-- согласовать владельца результатов и правило доступа к группе.
+Rollback не разрушает данные: соответствующий флаг выключается, миграции и exact facts сохраняются. Автоматическое изменение difficulty, verdict или `active` по статистике запрещено.
 
-Критерии завершения:
+## Следующий практический цикл
 
-- нет потерянных или двойных ответов;
-- на каждый принятый ответ в outbox ровно одно событие;
-- offline/reconnect и background/foreground не сбрасывают таймер;
-- Telegram outage не блокирует переходы и завершение;
-- backup восстанавливается с `PRAGMA quick_check = ok` и совпадающими счётчиками.
+### P0 — пилот
 
-## P1 — усиление автоматизации регрессии
+- накопить минимум 30 предъявлений на ключевой вопрос в закрытом пилоте;
+- сравнить shadow Coverage Score и тематическое покрытие с legacy selector;
+- проверить Telegram-профиль интервьюера на реальных, но разрешённых данных;
+- выполнять и проверять backup перед каждым обновлением банка.
 
-- добавить полноценный integration transport stub для переходов outbox по 200, 429, timeout, 5xx, 400/401/403;
-- покрыть отдельной регрессией lost start response поверх уже проверенной идемпотентности;
-- сохранить визуальные baseline для start/question/result и reduced-motion режима.
+### P1 — после накопления выборки
 
-Уже покрыты WebKit iPad portrait/landscape, reload, clock skew, background/foreground, offline/reconnect, длинный вопрос, серверный timeout, double answer, D1 answer/outbox и сохранение browser delivery queue при 5xx.
+- на `n≥50` провести первый review quality status;
+- на `n≥100` проверить discrimination и качество дистракторов;
+- решения `disable_requested` реализовывать только новой ревизией банка и новым question ID при смысловой правке;
+- включить balanced selector только после сравнения распределений и зелёного E2E.
 
-## P2 — управляемая локальная эксплуатация
+### P2 — эксплуатация
 
-- добавить расписание локального backup и retention через Windows Task Scheduler;
-- формализовать ротацию bot token и тест после ротации;
-- добавить локальные агрегированные метрики outbox без имени, вопроса и ответов;
-- реализовать команду безопасного requeue для `dead` событий после исправления конфигурации;
-- добавить короткий admin workflow обновления банка с preview diff по ID/revision.
+- следить за размером D1 при бессрочном хранении completed facts;
+- повторять synthetic benchmark после существенного роста банка или изменения SQL;
+- сохранять persisted daily aggregates: direct baseline на `10 000 / 300 000` уже превысил
+  лимит 500 мс (`847,9` мс для overview и `3 590` мс для question-list);
+- расписание backup в Windows Task Scheduler оформлять отдельно от runtime приложения.
 
-## Риски и откат
+## Сохраняемые границы
 
-- Telegram остаётся копией персональных данных и правильных ответов. Откат: `TELEGRAM_ENABLED=0`, тестирование продолжает работать.
-- Демонстрационный банк уже опубликован в Git history и не подходит для реального отбора; пилот требует нового непубликовавшегося банка с новыми ID.
-- At-least-once допускает редкий дубль при неопределённом сетевом исходе. Event ID нужен для ручного распознавания.
-- Повторное использование ID после смысловой правки ломает историческую воспроизводимость. Валидатор/runtime блокируют такой банк для новых попыток.
-- Полноценного offline-теста нет: интерфейс умеет пережить краткий разрыв, но старт нового теста без сети невозможен.
-- Перед любым restore или retention apply обязателен проверенный backup и остановка приложения.
+- только локальная разработка; deployment и внешняя инфраструктура не входят в текущий контур;
+- SQLite/D1 остаётся единственным хранилищем;
+- admin UI не показывает полное имя, answer key, raw selected answer или Telegram payload;
+- кандидату не показываются сильные/слабые темы и рекомендации интервьюеру;
+- Telegram остаётся копией ПДн и правильных ответов, поэтому группа должна быть закрытой;
+- Service Worker, полноценный offline, SSO/RBAC, ATS, proctoring и AI-оценка не входят в v1.0.

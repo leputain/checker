@@ -1,8 +1,19 @@
+import { randomUUID } from 'node:crypto';
 import { access, mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Miniflare } from 'miniflare';
 import { createBackup } from './ops-backup.ts';
-import { verifyBackup } from './ops-backup-verify.ts';
-import { executeLocalD1File, queryLocalD1 } from './local-d1.ts';
+import { assertLocalDatabaseIntegrity, verifyBackup } from './ops-backup-verify.ts';
+import { executeLocalD1File } from './local-d1.ts';
+import {
+  readLocalD1DatabaseId,
+  resolveOpsContext,
+  type OpsContext,
+  type OpsContextOptions,
+} from './ops-context.ts';
+import { acquireDestructiveOperationGuard } from './runtime-lock.ts';
+import { applyRuntimeRetention } from '../lib/runtime-retention.ts';
 
 function argument(name: string) {
   const index = process.argv.indexOf(name);
@@ -17,50 +28,84 @@ function assertInside(root: string, target: string) {
   }
 }
 
-async function serverIsRunning() {
+export type RestoreOptions = OpsContextOptions & {
+  sourcePath: string;
+  checkServer?: boolean;
+  nowMs?: number;
+};
+
+async function enforceRestoredPrivacy(
+  context: OpsContext,
+  statePath: string,
+  nowMs: number,
+) {
+  const databaseId = await readLocalD1DatabaseId(context);
+  const miniflare = new Miniflare({
+    modules: true,
+    script: 'export default { fetch() { return new Response("ok") } }',
+    d1Databases: { DB: databaseId },
+    d1Persist: path.join(statePath, 'v3', 'd1'),
+  });
   try {
-    const response = await fetch('http://localhost:3001/api/health/live', {
-      signal: AbortSignal.timeout(1_000),
-    });
-    return response.ok;
-  } catch {
-    return false;
+    await applyRuntimeRetention(await miniflare.getD1Database('DB'), nowMs);
+  } finally {
+    await miniflare.dispose();
   }
 }
 
-const source = argument('--from');
-const apply = process.argv.includes('--apply');
-if (!source || !apply) {
-  console.error('Использование: npm run ops:restore -- --from <backup.sql> --apply');
-  process.exitCode = 2;
-} else {
-  if (await serverIsRunning()) throw new Error('Stop the application before restore.');
-  const sourcePath = path.resolve(source);
-  await verifyBackup(sourcePath);
-  const preRestore = await createBackup();
-  await verifyBackup(preRestore.sqlPath);
-
-  const workspaceRoot = path.resolve('.');
-  const statePath = path.resolve('.wrangler', 'state');
-  const rollbackPath = path.resolve(
-    'backups',
-    `rollback-state-${new Date().toISOString().replaceAll(':', '-')}`,
-  );
-  assertInside(workspaceRoot, statePath);
-  assertInside(workspaceRoot, rollbackPath);
-  await access(statePath);
-  await mkdir(path.dirname(rollbackPath), { recursive: true });
-  await rename(statePath, rollbackPath);
-  await mkdir(statePath, { recursive: true });
+export async function restoreBackup(options: RestoreOptions) {
+  const context = resolveOpsContext(options);
+  const runtimeGuard = await acquireDestructiveOperationGuard({
+    workspaceRoot: context.workspaceRoot,
+    probeFallbackPorts: options.checkServer !== false,
+  });
   try {
-    executeLocalD1File(sourcePath, statePath);
-    const check = queryLocalD1<{ quick_check: string }>('PRAGMA quick_check', statePath)[0];
-    if (check?.quick_check !== 'ok') throw new Error('Restored database failed quick_check.');
-    console.log(`Restore complete. Rollback state: ${path.relative(workspaceRoot, rollbackPath)}`);
-  } catch (error) {
-    assertInside(workspaceRoot, statePath);
-    await rm(statePath, { recursive: true, force: true });
-    await rename(rollbackPath, statePath);
-    throw error;
+    const sourcePath = path.resolve(options.sourcePath);
+    await verifyBackup(sourcePath, context);
+    const preRestore = await createBackup(context);
+    await verifyBackup(preRestore.sqlPath, context);
+
+    const statePath = context.persistPath;
+    const rollbackPath = path.join(
+      context.workspaceRoot,
+      'backups',
+      `rollback-state-${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`,
+    );
+    assertInside(context.workspaceRoot, statePath);
+    assertInside(context.workspaceRoot, rollbackPath);
+    await access(statePath);
+    await mkdir(path.dirname(rollbackPath), { recursive: true });
+    await rename(statePath, rollbackPath);
+    await mkdir(statePath, { recursive: true });
+    try {
+      executeLocalD1File(sourcePath, statePath, context.localD1);
+      await enforceRestoredPrivacy(context, statePath, options.nowMs ?? Date.now());
+      assertLocalDatabaseIntegrity(statePath, context.localD1);
+      console.log(
+        `Restore complete. Rollback state: ${path.relative(context.workspaceRoot, rollbackPath)}`,
+      );
+      return { preRestore, rollbackPath };
+    } catch (error) {
+      assertInside(context.workspaceRoot, statePath);
+      await rm(statePath, { recursive: true, force: true });
+      await rename(rollbackPath, statePath);
+      throw error;
+    }
+  } finally {
+    await runtimeGuard.release();
+  }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  const source = argument('--from');
+  const apply = process.argv.includes('--apply');
+  if (!source || !apply) {
+    console.error('Использование: npm run ops:restore -- --from <backup.sql> --apply');
+    process.exitCode = 2;
+  } else {
+    restoreBackup({ sourcePath: source }).catch(() => {
+      console.error('Restore failed. Original local state was preserved when possible.');
+      process.exitCode = 1;
+    });
   }
 }

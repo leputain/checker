@@ -8,15 +8,48 @@ import migration0005 from '../drizzle/0005_mighty_madame_masque.sql?raw';
 import migration0006 from '../drizzle/0006_numerous_jack_flag.sql?raw';
 import migration0007 from '../drizzle/0007_youthful_nekra.sql?raw';
 import migration0008 from '../drizzle/0008_lowly_mentor.sql?raw';
-import { calculateAccuracy, calculateVerdict, type Verdict } from '@/lib/scoring.ts';
-import { TEST_CONFIG, type Difficulty } from '@/lib/test-config.ts';
-import { summarizeAttemptStatistics } from '@/lib/attempt-statistics.ts';
+import migration0009 from '../drizzle/0009_productive_galactus.sql?raw';
+import migration0010 from '../drizzle/0010_milky_bruce_banner.sql?raw';
+import migration0011 from '../drizzle/0011_slimy_machine_man.sql?raw';
+import migration0012 from '../drizzle/0012_silent_union_jack.sql?raw';
+import migration0013 from '../drizzle/0013_productive_darkstar.sql?raw';
+import migration0014 from '../drizzle/0014_supreme_domino.sql?raw';
+import migration0015 from '../drizzle/0015_mighty_adam_destine.sql?raw';
+import {
+  BASE_MAX_SCORE,
+  calculateAccuracy,
+  calculateVerdict,
+  questionScoreValue,
+  type Verdict,
+} from '@/lib/scoring.ts';
+import {
+  ANALYTICS_FACTS_VERSION,
+  BALANCED_TEST_CONFIG_ID,
+  BALANCED_TEST_CONFIG_JSON,
+  BASE_QUESTION_COUNT,
+  SCORING_VERSION,
+  TEST_CONFIG,
+  TEST_CONFIG_ID,
+  TEST_CONFIG_JSON,
+  type Difficulty,
+} from '@/lib/test-config.ts';
+import {
+  summarizeAttemptBreakdown,
+  summarizeAttemptStatistics,
+  validateAttemptFacts,
+  type AttemptBreakdownFact,
+} from '@/lib/attempt-statistics.ts';
+import { classifyQuestion, isUnsupportedActiveAttempt } from '@/lib/attempt-policy.ts';
+import {
+  ANALYTICS_FACTS_INTEGRITY_QUERY,
+  ANALYTICS_FACTS_READINESS_QUERY,
+} from '@/lib/analytics-facts-integrity.ts';
 import { summarizeQuestionBank, type QuestionDefinition } from '@/lib/question-bank-validation.ts';
 import { loadQuestionBank } from './question-bank';
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 7;
+export const CURRENT_SCHEMA_VERSION = 14;
 
 export type QuestionRow = {
   id: number;
@@ -41,6 +74,15 @@ export type AttemptRow = {
   candidate_key: string;
   public_alias: string;
   bank_revision: string | null;
+  scoring_version: number;
+  app_version: string;
+  test_config_id: string;
+  test_profile_id: string;
+  analytics_facts_version: number;
+  selection_version: number;
+  selection_strategy: string;
+  coverage_score: number | null;
+  shadow_coverage_score: number | null;
   telegram_root_message_id: number | null;
   status: 'active' | 'completed' | 'aborted';
   started_at: number;
@@ -87,7 +129,43 @@ const MANAGED_MIGRATIONS = [
   { version: 5, name: 'telegram-reporting-0006', sql: migration0006 },
   { version: 6, name: 'question-context-and-answer-metrics-0007', sql: migration0007 },
   { version: 7, name: 'candidate-identity-key-0008', sql: migration0008 },
+  { version: 8, name: 'analytics-facts-0009', sql: migration0009 },
+  { version: 9, name: 'balanced-selection-metadata-0010', sql: migration0010 },
+  { version: 10, name: 'question-review-history-0011', sql: migration0011 },
+  { version: 11, name: 'analytics-report-aggregates-0012', sql: migration0012 },
+  { version: 12, name: 'analytics-derived-aggregates-0013', sql: migration0013 },
+  { version: 13, name: 'analytics-candidate-dimensions-0014', sql: migration0014 },
+  { version: 14, name: 'runtime-and-readiness-indexes-0015', sql: migration0015 },
 ] as const;
+
+async function ensureCurrentTestConfigVersion() {
+  const db = database();
+  const configs = [
+    { id: TEST_CONFIG_ID, json: TEST_CONFIG_JSON },
+    { id: BALANCED_TEST_CONFIG_ID, json: BALANCED_TEST_CONFIG_JSON },
+  ];
+  for (const config of configs) {
+    if (await sha256Hex(config.json) !== config.id) {
+      throw new Error('test_config_hash_mismatch');
+    }
+    await db.prepare(`INSERT OR IGNORE INTO test_config_versions (
+      id, scoring_version, config_json, created_at
+    ) VALUES (?, ?, ?, ?)`)
+      .bind(config.id, SCORING_VERSION, config.json, Date.now())
+      .run();
+    const stored = await db.prepare(`SELECT scoring_version, config_json
+      FROM test_config_versions WHERE id = ?`)
+      .bind(config.id)
+      .first<{ scoring_version: number; config_json: string }>();
+    if (
+      !stored ||
+      stored.scoring_version !== SCORING_VERSION ||
+      stored.config_json !== config.json
+    ) {
+      throw new Error('test_config_identity_conflict');
+    }
+  }
+}
 
 function migrationStatements(sql: string) {
   return sql
@@ -152,6 +230,7 @@ export function ensureSchema() {
       await applyManagedMigration(migration.version, migration.name, migration.sql);
       versions.add(migration.version);
     }
+    await ensureCurrentTestConfigVersion();
     await db.prepare('PRAGMA optimize').run();
   })().catch((error) => {
     schemaInitialization = null;
@@ -166,6 +245,17 @@ export async function currentSchemaVersion() {
     .prepare('SELECT COALESCE(MAX(version), 0) AS version FROM schema_migrations')
     .first<{ version: number }>();
   return row?.version ?? 0;
+}
+
+export async function analyticsFactsIntegrityViolations(
+  scope: 'full' | 'readiness' = 'full',
+) {
+  const row = await database()
+    .prepare(scope === 'readiness'
+      ? ANALYTICS_FACTS_READINESS_QUERY
+      : ANALYTICS_FACTS_INTEGRITY_QUERY)
+    .first<{ violations: number }>();
+  return row?.violations ?? 0;
 }
 
 export async function sha256(value: string) {
@@ -194,7 +284,12 @@ function canonicalQuestion(question: QuestionDefinition) {
 }
 
 async function questionContentHash(question: QuestionDefinition) {
-  return sha256Hex(JSON.stringify(canonicalQuestion(question)));
+  // dedupeKey affects both selection and historical interviewer grouping, so it
+  // is immutable for an existing question id just like prompt/choices/weight.
+  return sha256Hex(JSON.stringify({
+    ...canonicalQuestion(question),
+    dedupeKey: question.dedupeKey,
+  }));
 }
 
 export async function questionBankRevision(questions = loadQuestionBank()) {
@@ -217,7 +312,8 @@ function rowMatchesQuestion(row: QuestionRow, question: QuestionDefinition) {
     row.context_text === (question.context ?? null) &&
     row.choices_json === JSON.stringify(question.choices) &&
     row.correct_index === question.correctIndex &&
-    row.weight === TEST_CONFIG.weights[question.difficulty]
+    row.weight === TEST_CONFIG.weights[question.difficulty] &&
+    row.dedupe_key === question.dedupeKey
   );
 }
 
@@ -277,9 +373,14 @@ export function ensureQuestionBankReady() {
     }
     statements.push(
       db
-        .prepare(`INSERT OR IGNORE INTO question_bank_revisions (
+        .prepare(`INSERT INTO question_bank_revisions (
           hash, applied_at, total_count, active_count, pools_json
-        ) VALUES (?, ?, ?, ?, ?)`)
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(hash) DO UPDATE SET
+          applied_at = excluded.applied_at,
+          total_count = excluded.total_count,
+          active_count = excluded.active_count,
+          pools_json = excluded.pools_json`)
         .bind(
           revision,
           Date.now(),
@@ -288,6 +389,14 @@ export function ensureQuestionBankReady() {
           JSON.stringify(summary.pools),
         ),
     );
+    for (const question of questions) {
+      statements.push(
+        db.prepare(`INSERT OR IGNORE INTO question_bank_revision_items (
+          revision_hash, question_id, active
+        ) VALUES (?, ?, ?)`)
+          .bind(revision, question.id, question.active ? 1 : 0),
+      );
+    }
     await db.batch(statements);
     return revision;
   })().catch((error) => {
@@ -346,47 +455,192 @@ export async function verifyAttempt(id: string, token: string) {
 }
 
 type AttemptStatisticRow = {
+  question_id: number;
   difficulty: Difficulty;
   topic: string;
-  answered_count: number;
-  correct_count: number;
-  timeout_count: number;
+  is_correct: number;
+  timed_out: number;
   elapsed_seconds: number;
-  measured_count: number;
+  selected_index: number | null;
+  awarded_score: number | null;
+  fact_version: number;
+  answer_origin: string;
 };
 
-async function loadAttemptResultStats(attemptId: string) {
+type AttemptLedgerStatisticRow = {
+  question_id: number;
+  question_kind: 'base' | 'additional';
+  score_value: number;
+  presented_at: number | null;
+  answer_id: number | null;
+  is_correct: number | null;
+  timed_out: number | null;
+  awarded_score: number | null;
+  fact_version: number | null;
+  answer_origin: string | null;
+  canonical_selected_index: number | null;
+};
+
+async function loadAttemptResultStats(attempt: AttemptRow, baseQuestionIds: ReadonlySet<number>) {
   const rows = await database()
-    .prepare(`SELECT questions.difficulty, questions.topic,
-      COUNT(*) AS answered_count,
-      COALESCE(SUM(answers.is_correct), 0) AS correct_count,
-      COALESCE(SUM(answers.timed_out), 0) AS timeout_count,
-      COALESCE(SUM(answers.elapsed_seconds), 0) AS elapsed_seconds,
-      COALESCE(SUM(CASE
-        WHEN answers.selected_index IS NOT NULL OR answers.elapsed_seconds > 0 THEN 1
-        ELSE 0
-      END), 0) AS measured_count
+    .prepare(`SELECT answers.question_id, questions.difficulty, questions.topic,
+      answers.is_correct, answers.timed_out, answers.elapsed_seconds, answers.selected_index,
+      answers.awarded_score, answers.fact_version, answers.answer_origin
       FROM answers JOIN questions ON questions.id = answers.question_id
-      WHERE answers.attempt_id = ?
-      GROUP BY questions.difficulty, questions.topic`)
-    .bind(attemptId)
+      WHERE answers.attempt_id = ?`)
+    .bind(attempt.id)
     .all<AttemptStatisticRow>();
 
-  return summarizeAttemptStatistics(rows.results.map((row) => ({
+  const summary = summarizeAttemptStatistics(rows.results.map((row) => ({
+    questionKind: classifyQuestion(row.question_id, baseQuestionIds),
     difficulty: row.difficulty,
     topic: row.topic,
-    answeredCount: row.answered_count,
-    correctCount: row.correct_count,
-    timeoutCount: row.timeout_count,
+    answeredCount: 1,
+    correctCount: row.is_correct,
+    timeoutCount: row.timed_out,
     elapsedSeconds: row.elapsed_seconds,
-    measuredCount: row.measured_count,
+    measuredCount: row.fact_version >= ANALYTICS_FACTS_VERSION
+      ? row.answer_origin === 'submitted' ? 1 : 0
+      : row.selected_index !== null || row.elapsed_seconds > 0 ? 1 : 0,
   })));
+
+  const ledger = await database().prepare(`SELECT
+      attempt_questions.question_id,
+      attempt_questions.question_kind,
+      attempt_questions.score_value,
+      attempt_questions.presented_at,
+      answers.id AS answer_id,
+      answers.is_correct,
+      answers.timed_out,
+      answers.awarded_score,
+      answers.fact_version,
+      answers.answer_origin,
+      answers.canonical_selected_index
+    FROM attempt_questions
+    LEFT JOIN answers
+      ON answers.attempt_id = attempt_questions.attempt_id
+      AND answers.question_id = attempt_questions.question_id
+    WHERE attempt_questions.attempt_id = ?
+    ORDER BY attempt_questions.ordinal`)
+    .bind(attempt.id)
+    .all<AttemptLedgerStatisticRow>();
+  const ledgerQuestionIds = new Set(ledger.results.map((row) => row.question_id));
+  const supportedOrigins = new Set([
+    'submitted',
+    'question_timeout',
+    'total_timeout_presented',
+    'total_timeout_unshown',
+  ]);
+  const answerFactsComplete = ledger.results.every((row) => row.answer_id === null || (
+    row.fact_version === attempt.analytics_facts_version
+    && row.awarded_score !== null
+    && row.answer_origin !== null
+    && supportedOrigins.has(row.answer_origin)
+    && (row.answer_origin !== 'submitted' || (
+      row.presented_at !== null
+      && row.timed_out === 0
+      && row.canonical_selected_index !== null
+    ))
+    && (!['question_timeout', 'total_timeout_presented'].includes(row.answer_origin) || (
+      row.presented_at !== null && row.timed_out === 1
+    ))
+    && (row.answer_origin !== 'total_timeout_unshown' || (
+      row.presented_at === null
+      && row.timed_out === 1
+      && row.canonical_selected_index === null
+    ))
+  ));
+  const ledgerFacts: AttemptBreakdownFact[] = ledger.results.map((row) => ({
+    questionKind: row.question_kind,
+    assigned: true,
+    presented: row.presented_at !== null,
+    resolved: row.answer_id !== null,
+    correct: row.is_correct === 1,
+    timedOut: row.timed_out === 1,
+    awardedScore: row.awarded_score ?? 0,
+    scoreValue: row.score_value,
+  }));
+  const ledgerValidation = validateAttemptFacts(ledgerFacts, {
+    expectedBaseAssigned: BASE_QUESTION_COUNT,
+    maxAdditionalAssigned: TEST_CONFIG.maxAdditionalQuestions,
+    expectedBaseMaxScore: BASE_MAX_SCORE,
+    attemptScore: attempt.score,
+  });
+  const ledgerIsComplete = attempt.analytics_facts_version >= ANALYTICS_FACTS_VERSION
+    && ledger.results.length >= baseQuestionIds.size
+    && rows.results.every((row) => ledgerQuestionIds.has(row.question_id))
+    && answerFactsComplete
+    && ledgerValidation.valid;
+
+  let breakdownFacts: AttemptBreakdownFact[];
+  if (ledgerIsComplete) {
+    breakdownFacts = ledgerFacts;
+  } else {
+    const asked = new Set(JSON.parse(attempt.asked_question_ids) as number[]);
+    const pending = new Set(JSON.parse(attempt.pending_question_ids) as number[]);
+    const answeredByQuestion = new Map(rows.results.map((row) => [row.question_id, row]));
+    const knownIds = new Set<number>([
+      ...baseQuestionIds,
+      ...asked,
+      ...pending,
+      ...answeredByQuestion.keys(),
+      ...(attempt.current_question_id === null ? [] : [attempt.current_question_id]),
+    ]);
+    const questionRows = await database().prepare(
+      'SELECT id, weight FROM questions',
+    ).all<{ id: number; weight: number }>();
+    const weightByQuestion = new Map(questionRows.results.map((row) => [row.id, row.weight]));
+    breakdownFacts = [...knownIds].flatMap((questionId): AttemptBreakdownFact[] => {
+      const weight = weightByQuestion.get(questionId);
+      if (weight === undefined) return [];
+      const questionKind = classifyQuestion(questionId, baseQuestionIds);
+      const answer = answeredByQuestion.get(questionId);
+      const scoreValue = attempt.base_max_score === BASE_MAX_SCORE
+        ? questionScoreValue(weight, questionKind)
+        : weight;
+      return [{
+        questionKind,
+        assigned: baseQuestionIds.has(questionId)
+          || asked.has(questionId)
+          || pending.has(questionId)
+          || answer !== undefined,
+        presented: asked.has(questionId)
+          || attempt.current_question_id === questionId
+          || answer !== undefined,
+        resolved: answer !== undefined,
+        correct: answer?.is_correct === 1,
+        timedOut: answer?.timed_out === 1,
+        awardedScore: answer?.awarded_score ?? (answer?.is_correct === 1 ? scoreValue : 0),
+        scoreValue,
+      }];
+    });
+  }
+
+  return {
+    ...summary,
+    breakdown: summarizeAttemptBreakdown(breakdownFacts),
+    statisticsCompleteness: ledgerIsComplete ? 'complete' as const : 'partial' as const,
+  };
+}
+
+function attemptModel(attempt: AttemptRow, statisticsCompleteness?: 'complete' | 'partial') {
+  return {
+    bankRevision: attempt.bank_revision ?? 'legacy-unknown',
+    scoringVersion: attempt.scoring_version,
+    appVersion: attempt.app_version,
+    testConfigId: attempt.test_config_id,
+    testProfileId: attempt.test_profile_id,
+    analyticsFactsVersion: attempt.analytics_facts_version,
+    statisticsCompleteness: statisticsCompleteness
+      ?? (attempt.analytics_facts_version >= ANALYTICS_FACTS_VERSION ? 'complete' : 'partial'),
+  };
 }
 
 export async function attemptPayload(attempt: AttemptRow) {
   const serverNowMs = Date.now();
   const answeredCount = attempt.correct_count + attempt.wrong_count;
   const accuracy = calculateAccuracy(attempt.correct_count, attempt.wrong_count);
+  const baseQuestionIds = new Set(JSON.parse(attempt.base_question_ids) as number[]);
 
   if (attempt.status === 'aborted') {
     return {
@@ -394,17 +648,26 @@ export async function attemptPayload(attempt: AttemptRow) {
       alias: attempt.public_alias,
       status: 'aborted' as const,
       serverNowMs,
+      model: attemptModel(attempt),
     };
   }
 
   if (attempt.status === 'completed' || attempt.current_question_id === null) {
-    const verdict = attempt.verdict ?? calculateVerdict(attempt.score, attempt.base_max_score, accuracy);
-    const resultStats = await loadAttemptResultStats(attempt.id);
+    const scoreForVerdict = attempt.base_max_score === BASE_MAX_SCORE
+      ? attempt.score
+      : attempt.base_max_score > 0
+        ? Math.round((attempt.score / attempt.base_max_score) * BASE_MAX_SCORE)
+        : 0;
+    // Stored legacy verdicts are authoritative. Normalization is only a read-time
+    // fallback for old/test rows that were completed before verdict persistence.
+    const verdict = attempt.verdict ?? calculateVerdict(scoreForVerdict, accuracy);
+    const resultStats = await loadAttemptResultStats(attempt, baseQuestionIds);
     return {
       attemptId: attempt.id,
       alias: attempt.public_alias,
       status: 'completed' as const,
       serverNowMs,
+      model: attemptModel(attempt, resultStats.statisticsCompleteness),
       result: {
         verdict,
         score: attempt.score,
@@ -419,8 +682,12 @@ export async function attemptPayload(attempt: AttemptRow) {
         durationSeconds: attempt.duration_seconds ?? 0,
         timeoutCount: resultStats.timeoutCount,
         averageAnswerSeconds: resultStats.averageAnswerSeconds,
+        baseAnsweredCount: resultStats.baseAnsweredCount,
+        baseCorrectCount: resultStats.baseCorrectCount,
+        additionalAnsweredCount: resultStats.additionalAnsweredCount,
+        additionalCorrectCount: resultStats.additionalCorrectCount,
         difficultyStats: resultStats.difficultyStats,
-        topicStats: resultStats.topicStats,
+        breakdown: resultStats.breakdown,
         completedAt: new Date(
           attempt.completed_at ?? attempt.started_at + (attempt.duration_seconds ?? 0) * 1_000,
         ).toISOString(),
@@ -428,16 +695,31 @@ export async function attemptPayload(attempt: AttemptRow) {
     };
   }
 
+  if (isUnsupportedActiveAttempt(attempt)) throw new Error('attempt_version_unsupported');
+
   const question = await findQuestion(attempt.current_question_id);
   if (!question) throw new Error('Question not found');
   const choices = JSON.parse(question.choices_json) as string[];
   const permutation = await choicePermutation(attempt.id, question.id, choices.length);
+  const askedQuestionIds = JSON.parse(attempt.asked_question_ids) as number[];
+  const ledgerQuestion = await database().prepare(`SELECT question_kind, ordinal, score_value
+    FROM attempt_questions WHERE attempt_id = ? AND question_id = ?`)
+    .bind(attempt.id, question.id)
+    .first<{ question_kind: 'base' | 'additional'; ordinal: number; score_value: number }>();
+  const questionKind = ledgerQuestion?.question_kind
+    ?? classifyQuestion(question.id, baseQuestionIds);
+  const additionalNumber = questionKind === 'additional'
+    ? ledgerQuestion
+      ? Math.max(1, ledgerQuestion.ordinal - baseQuestionIds.size)
+      : askedQuestionIds.filter((questionId) => !baseQuestionIds.has(questionId)).length
+    : undefined;
 
   return {
     attemptId: attempt.id,
     alias: attempt.public_alias,
     status: 'active' as const,
     serverNowMs,
+    model: attemptModel(attempt),
     question: {
       id: question.id,
       prompt: question.prompt,
@@ -447,9 +729,11 @@ export async function attemptPayload(attempt: AttemptRow) {
         : {}),
       choices: permutation.map((index) => choices[index]),
       difficulty: question.difficulty,
-      weight: question.weight,
-      position: JSON.parse(attempt.asked_question_ids).length,
-      minimumQuestions: JSON.parse(attempt.base_question_ids).length,
+      scoreValue: ledgerQuestion?.score_value ?? questionScoreValue(question.weight, questionKind),
+      questionKind,
+      ...(additionalNumber === undefined ? {} : { additionalNumber }),
+      position: askedQuestionIds.length,
+      minimumQuestions: baseQuestionIds.size,
       questionDeadlineAt: attempt.question_deadline_at,
       totalDeadlineAt: attempt.total_deadline_at,
     },

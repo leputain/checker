@@ -8,7 +8,22 @@ const ATTEMPT_ID_PATTERN = /^[0-9a-f-]{36}$/i;
 
 type StartedAttempt = {
   attemptId: string;
-  question: { id: number };
+  question: {
+    id: number;
+    choices?: string[];
+    difficulty?: 'easy' | 'medium' | 'hard' | 'expert';
+    questionKind?: 'base' | 'additional';
+    scoreValue?: number;
+    additionalNumber?: number;
+  };
+};
+
+type CurrentQuestionState = {
+  id: number;
+  difficulty: 'easy' | 'medium' | 'hard' | 'expert';
+  correctChoice: string;
+  incorrectChoice: string;
+  isBase: number;
 };
 
 async function expectNoHorizontalOverflow(page: Page) {
@@ -63,6 +78,35 @@ function correctChoiceForAttempt(attemptId: string) {
   `, E2E_STATE_PATH)[0];
   if (!row) throw new Error('Current E2E question was not found.');
   return (JSON.parse(row.choicesJson) as string[])[row.correctIndex];
+}
+
+function currentQuestionState(attemptId: string): CurrentQuestionState {
+  if (!ATTEMPT_ID_PATTERN.test(attemptId)) throw new Error('Unexpected attempt id in E2E query.');
+  const row = queryLocalD1<{
+    id: number;
+    difficulty: CurrentQuestionState['difficulty'];
+    choicesJson: string;
+    correctIndex: number;
+    isBase: number;
+  }>(`
+    SELECT questions.id, questions.difficulty,
+      questions.choices_json AS choicesJson, questions.correct_index AS correctIndex,
+      CASE WHEN EXISTS (
+        SELECT 1 FROM json_each(attempts.base_question_ids) AS base
+        WHERE base.value = questions.id
+      ) THEN 1 ELSE 0 END AS isBase
+    FROM attempts JOIN questions ON questions.id = attempts.current_question_id
+    WHERE attempts.id = '${attemptId}'
+  `, E2E_STATE_PATH)[0];
+  if (!row) throw new Error('Current E2E question was not found.');
+  const choices = JSON.parse(row.choicesJson) as string[];
+  return {
+    id: row.id,
+    difficulty: row.difficulty,
+    correctChoice: choices[row.correctIndex],
+    incorrectChoice: choices[(row.correctIndex + 1) % choices.length],
+    isBase: row.isBase,
+  };
 }
 
 test('таблица лидеров доступна до начала теста', async ({ page }) => {
@@ -158,6 +202,44 @@ test('пробный вопрос доступен без readiness, а наст
   expect(startRequests).toBe(0);
 });
 
+test('повтор starting-сессии старой версии очищается после 409', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes('landscape'), 'Legacy starting recovery не зависит от orientation.');
+  await page.goto('/');
+  await expect(page.getByText('Система готова', { exact: true })).toBeVisible();
+
+  await page.evaluate((session) => {
+    localStorage.setItem('candidate-check:active-attempt', JSON.stringify(session));
+  }, {
+    version: 2,
+    phase: 'starting',
+    startKey: randomUUID(),
+    token: randomBytes(32).toString('base64url'),
+    createdAt: Date.now(),
+  });
+  await page.route('**/api/attempts', (route) => route.fulfill({
+    status: 409,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      error: 'Эта активная попытка создана в устаревшей версии теста.',
+      code: 'attempt_version_unsupported',
+    }),
+  }));
+
+  await page.getByRole('textbox', { name: 'Имя и фамилия' }).fill(`E2E legacy ${Date.now()}`);
+  await page.getByRole('button', { name: 'Продолжить' }).click();
+  await page.locator('label.answer').filter({
+    hasText: 'Выбрать карточку и нажать «Проверить ответ»',
+  }).click();
+  await page.getByRole('button', { name: 'Проверить ответ' }).click();
+  await page.getByRole('button', { name: 'Начать настоящий тест' }).click();
+
+  await expect(page.getByText('Тест обновлён. Начните новую попытку.')).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Имя и фамилия' })).toHaveValue('');
+  await expect.poll(() => page.evaluate(() => (
+    localStorage.getItem('candidate-check:active-attempt')
+  ))).toBeNull();
+});
+
 test('полный flow сохраняется после reload и показывает доступный результат', async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   let attemptId = '';
@@ -191,12 +273,27 @@ test('полный flow сохраняется после reload и показы
     }
 
     await expect(page.getByRole('heading', { name: 'Результат готов.' })).toBeVisible();
+    await expect(page.getByRole('img', { name: '100 из 100 баллов' })).toBeVisible();
+    await expect(page.getByText('Рекомендован', { exact: true })).toBeVisible();
+    const resultStats = page.locator('.result-stats');
+    await expect(resultStats.getByText('20 из 20', { exact: true })).toHaveCount(2);
+    await expect(resultStats.getByText('не задавались', { exact: true })).toBeVisible();
+    await expect(resultStats.getByText('100%', { exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Компетенции' })).toBeVisible();
     await expect.poll(() => page.getByRole('progressbar').count()).toBeGreaterThanOrEqual(4);
-    const completed = queryLocalD1<{ completedAt: number }>(`
-      SELECT completed_at AS completedAt FROM attempts WHERE id = '${attemptId}'
+    await expect(page.getByRole('heading', { name: 'По направлениям' })).toHaveCount(0);
+    const completed = queryLocalD1<{
+      completedAt: number;
+      score: number;
+      baseMaxScore: number;
+      verdict: string;
+    }>(`
+      SELECT completed_at AS completedAt, score,
+        base_max_score AS baseMaxScore, verdict
+      FROM attempts WHERE id = '${attemptId}'
     `, E2E_STATE_PATH)[0];
     expect(completed?.completedAt).toBeTruthy();
+    expect(completed).toMatchObject({ score: 100, baseMaxScore: 100, verdict: 'PASS' });
     const completedAtIso = new Date(completed.completedAt).toISOString();
     const resultDate = page.locator('.result-stat-date time');
     await expect(resultDate).toHaveAttribute('datetime', completedAtIso);
@@ -206,6 +303,29 @@ test('полный flow сохраняется после reload и показы
       buttons.map((button) => Math.round(button.getBoundingClientRect().height))
     ));
     expect(actionHeights.every((height) => height >= 44)).toBe(true);
+
+    runWrangler([
+      'd1', 'execute', 'DB', '--command',
+      `UPDATE attempts SET base_max_score = 50 WHERE id = '${attemptId}';`,
+    ], E2E_STATE_PATH);
+    const legacyLeaderboard = await page.request.get('/api/leaderboard?period=all');
+    expect(legacyLeaderboard.status()).toBe(200);
+    const legacyEntries = (await legacyLeaderboard.json()) as {
+      entries: Array<{ completedAt: string; baseMaxScore: number }>;
+    };
+    expect(legacyEntries.entries.some((entry) => entry.completedAt === completedAtIso)).toBe(false);
+    runWrangler([
+      'd1', 'execute', 'DB', '--command',
+      `UPDATE attempts SET base_max_score = 100 WHERE id = '${attemptId}';`,
+    ], E2E_STATE_PATH);
+    const currentLeaderboard = await page.request.get('/api/leaderboard?period=all');
+    expect(currentLeaderboard.status()).toBe(200);
+    const currentEntries = (await currentLeaderboard.json()) as {
+      entries: Array<{ completedAt: string; baseMaxScore: number }>;
+    };
+    expect(currentEntries.entries.some((entry) => (
+      entry.completedAt === completedAtIso && entry.baseMaxScore === 100
+    ))).toBe(true);
 
     const leaderboardButton = page.getByRole('button', { name: 'Таблица лидеров' });
     await leaderboardButton.click();
@@ -217,6 +337,124 @@ test('полный flow сохраняется после reload и показы
     await dialog.press('Escape');
     await expect(dialog).toBeHidden();
     await expect(leaderboardButton).toBeFocused();
+  } finally {
+    await stopAndCleanup(page, attemptId);
+  }
+});
+
+test('ошибки базовых hard и expert добавляют только два вопроса после основной двадцатки', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes('landscape'), 'Remedial policy достаточно проверить один раз.');
+  test.setTimeout(120_000);
+  let attemptId = '';
+  const missedDifficulties = new Set<CurrentQuestionState['difficulty']>();
+  let baseSeen = 0;
+  let additionalSeen = 0;
+  const scoreValues = {
+    easy: { base: 2, additional: 1 },
+    medium: { base: 4, additional: 2 },
+    hard: { base: 6, additional: 3 },
+    expert: { base: 20, additional: 10 },
+  } as const;
+  const difficultyLabels = {
+    easy: 'Базовый',
+    medium: 'Средний',
+    hard: 'Сложный',
+    expert: 'Экспертный',
+  } as const;
+
+  try {
+    ({ attemptId } = await startCandidate(page, `remedial ${Date.now()}`));
+
+    for (let step = 0; step < 30; step += 1) {
+      if (await page.getByRole('radio').count() === 0) break;
+      const state = currentQuestionState(attemptId);
+      const questionKind = state.isBase ? 'base' : 'additional';
+      const previousQuestion = await page.getByRole('heading', { level: 1 }).textContent();
+      const shouldMiss = state.isBase === 1
+        && (state.difficulty === 'hard' || state.difficulty === 'expert')
+        && !missedDifficulties.has(state.difficulty);
+
+      if (state.isBase) {
+        baseSeen += 1;
+        expect(additionalSeen).toBe(0);
+        if (shouldMiss) missedDifficulties.add(state.difficulty);
+      } else {
+        expect(baseSeen).toBe(20);
+        additionalSeen += 1;
+        expect(missedDifficulties.has(state.difficulty)).toBe(true);
+        await expect(page.getByText(`Дополнительный вопрос ${additionalSeen}`, { exact: true })).toBeVisible();
+      }
+
+      const scoreValue = scoreValues[state.difficulty][questionKind];
+      const pointsLabel = scoreValue % 10 === 1 && scoreValue % 100 !== 11
+        ? `${scoreValue} балл`
+        : scoreValue % 10 >= 2 && scoreValue % 10 <= 4
+          && !(scoreValue % 100 >= 12 && scoreValue % 100 <= 14)
+          ? `${scoreValue} балла`
+          : `${scoreValue} баллов`;
+      await expect(page.getByText(
+        `${difficultyLabels[state.difficulty]} · ${pointsLabel}`,
+        { exact: true },
+      )).toBeVisible();
+
+      const choice = shouldMiss ? state.incorrectChoice : state.correctChoice;
+      await page.locator('label.answer').filter({
+        has: page.getByText(choice, { exact: true }),
+      }).click();
+      await page.getByRole('button', { name: 'Ответить' }).click();
+      await expect.poll(async () => {
+        if (await page.getByRole('radio').count() === 0) return true;
+        return (await page.getByRole('heading', { level: 1 }).textContent()) !== previousQuestion;
+      }).toBe(true);
+    }
+
+    expect(baseSeen).toBe(20);
+    expect(additionalSeen).toBe(2);
+    expect([...missedDifficulties].sort()).toEqual(['expert', 'hard']);
+    await expect(page.getByRole('heading', { name: 'Результат готов.' })).toBeVisible();
+    await expect(page.getByRole('img', { name: '87 из 100 баллов' })).toBeVisible();
+    await expect(page.getByText('Рекомендован', { exact: true })).toBeVisible();
+    const resultStats = page.locator('.result-stats');
+    await expect(resultStats.getByText('20 из 22', { exact: true })).toBeVisible();
+    await expect(resultStats.getByText('18 из 20', { exact: true })).toBeVisible();
+    await expect(resultStats.getByText('2 из 2', { exact: true })).toBeVisible();
+    await expect(resultStats.getByText('91%', { exact: true })).toBeVisible();
+
+    const completed = queryLocalD1<{
+      score: number;
+      baseMaxScore: number;
+      correctCount: number;
+      wrongCount: number;
+      verdict: string;
+      baseAnsweredCount: number;
+      baseCorrectCount: number;
+      additionalAnsweredCount: number;
+      additionalCorrectCount: number;
+    }>(`
+      SELECT attempts.score, attempts.base_max_score AS baseMaxScore,
+        attempts.correct_count AS correctCount, attempts.wrong_count AS wrongCount,
+        attempts.verdict,
+        SUM(CASE WHEN base.value IS NOT NULL THEN 1 ELSE 0 END) AS baseAnsweredCount,
+        SUM(CASE WHEN base.value IS NOT NULL AND answers.is_correct = 1 THEN 1 ELSE 0 END) AS baseCorrectCount,
+        SUM(CASE WHEN base.value IS NULL THEN 1 ELSE 0 END) AS additionalAnsweredCount,
+        SUM(CASE WHEN base.value IS NULL AND answers.is_correct = 1 THEN 1 ELSE 0 END) AS additionalCorrectCount
+      FROM attempts
+      JOIN answers ON answers.attempt_id = attempts.id
+      LEFT JOIN json_each(attempts.base_question_ids) AS base ON base.value = answers.question_id
+      WHERE attempts.id = '${attemptId}'
+      GROUP BY attempts.id
+    `, E2E_STATE_PATH)[0];
+    expect(completed).toEqual({
+      score: 87,
+      baseMaxScore: 100,
+      correctCount: 20,
+      wrongCount: 2,
+      verdict: 'PASS',
+      baseAnsweredCount: 20,
+      baseCorrectCount: 18,
+      additionalAnsweredCount: 2,
+      additionalCorrectCount: 2,
+    });
   } finally {
     await stopAndCleanup(page, attemptId);
   }
@@ -428,6 +666,21 @@ test('таймаут закрывает abort-диалог, отправляет
         AND event_type = 'progress' AND delivery_method = 'edit_root'
     `, E2E_STATE_PATH)[0];
     expect(progress.count).toBe(1);
+    const scheduledAdditional = queryLocalD1<{ count: number }>(`
+      WITH queued(id) AS (
+        SELECT value FROM attempts, json_each(attempts.asked_question_ids)
+        WHERE attempts.id = '${attemptId}'
+        UNION
+        SELECT value FROM attempts, json_each(attempts.pending_question_ids)
+        WHERE attempts.id = '${attemptId}'
+      )
+      SELECT COUNT(*) AS count FROM queued
+      WHERE NOT EXISTS (
+        SELECT 1 FROM attempts, json_each(attempts.base_question_ids) AS base
+        WHERE attempts.id = '${attemptId}' AND base.value = queued.id
+      )
+    `, E2E_STATE_PATH)[0];
+    expect(scheduledAdditional.count).toBe(1);
     const abortEvents = queryLocalD1<{ count: number }>(`
       SELECT COUNT(*) AS count FROM telegram_outbox
       WHERE attempt_id = '${attemptId}' AND event_type = 'aborted'
@@ -437,6 +690,181 @@ test('таймаут закрывает abort-диалог, отправляет
     expect(timeoutRequests).toBe(1);
   } finally {
     await stopAndCleanup(page, attemptId);
+  }
+});
+
+test('общий таймаут не считает незаданный дополнительный вопрос ошибкой', async ({ request }, testInfo) => {
+  test.skip(testInfo.project.name.includes('landscape'), 'API/D1 integration не зависит от orientation.');
+  const startKey = randomUUID();
+  const token = randomBytes(32).toString('base64url');
+  let attemptId = '';
+
+  try {
+    const start = await request.post('/api/attempts', {
+      data: { name: `E2E total timeout ${Date.now()}`, startKey, token },
+      headers: { 'Idempotency-Key': startKey },
+    });
+    expect(start.status()).toBe(201);
+    const payload = await start.json() as StartedAttempt;
+    attemptId = payload.attemptId;
+    const choices = payload.question.choices ?? [];
+    const correctChoice = correctChoiceForAttempt(attemptId);
+    const correctDisplayedIndex = choices.indexOf(correctChoice);
+    expect(correctDisplayedIndex).toBeGreaterThanOrEqual(0);
+    const wrongDisplayedIndex = (correctDisplayedIndex + 1) % choices.length;
+
+    const firstAnswer = await request.post(`/api/attempts/${attemptId}/answer`, {
+      data: { questionId: payload.question.id, choiceIndex: wrongDisplayedIndex },
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(firstAnswer.status()).toBe(200);
+    const afterFirst = await firstAnswer.json() as StartedAttempt;
+    const scheduledAdditional = queryLocalD1<{ id: number }>(`
+      SELECT pending.value AS id
+      FROM attempts, json_each(attempts.pending_question_ids) AS pending
+      WHERE attempts.id = '${attemptId}'
+        AND NOT EXISTS (
+          SELECT 1 FROM json_each(attempts.base_question_ids) AS base
+          WHERE base.value = pending.value
+        )
+      LIMIT 1
+    `, E2E_STATE_PATH)[0];
+    expect(scheduledAdditional?.id).toBeTruthy();
+
+    const expiredAt = Date.now() - 1_000;
+    runWrangler([
+      'd1', 'execute', 'DB', '--command',
+      `UPDATE attempts SET total_deadline_at = ${expiredAt}, question_deadline_at = ${expiredAt}
+       WHERE id = '${attemptId}';`,
+    ], E2E_STATE_PATH);
+    const completedResponse = await request.post(`/api/attempts/${attemptId}/answer`, {
+      data: { questionId: afterFirst.question.id, choiceIndex: null },
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(completedResponse.status()).toBe(200);
+    const completedPayload = await completedResponse.json() as {
+      status: string;
+      result: {
+        wrongCount: number;
+        timeoutCount: number;
+        baseAnsweredCount: number;
+        additionalAnsweredCount: number;
+      };
+    };
+    expect(completedPayload.status).toBe('completed');
+    expect(completedPayload.result).toMatchObject({
+      wrongCount: 20,
+      timeoutCount: 19,
+      baseAnsweredCount: 20,
+      additionalAnsweredCount: 0,
+    });
+
+    const state = queryLocalD1<{
+      answers: number;
+      baseAssigned: number;
+      baseResolved: number;
+      additionalAssigned: number;
+      additionalPresented: number;
+      additionalAnswers: number;
+      askedQuestions: number;
+      additionalAnswerEvents: number;
+      submitted: number;
+      totalTimeoutPresented: number;
+      totalTimeoutUnshown: number;
+      questionTimeout: number;
+      presentedWithoutAnswer: number;
+      invalidUnshownBaseFacts: number;
+      unshownAdditionalAnswers: number;
+      score: number;
+      awardedScore: number;
+      correctCount: number;
+      wrongCount: number;
+      factCorrect: number;
+      factWrong: number;
+    }>(`
+      SELECT
+        (SELECT COUNT(*) FROM answers WHERE attempt_id = attempts.id) AS answers,
+        (SELECT COUNT(*) FROM attempt_questions
+          WHERE attempt_id = attempts.id AND question_kind = 'base') AS baseAssigned,
+        (SELECT COUNT(*) FROM attempt_questions aq JOIN answers a
+          ON a.attempt_id = aq.attempt_id AND a.question_id = aq.question_id
+          WHERE aq.attempt_id = attempts.id AND aq.question_kind = 'base'
+            AND a.fact_version = attempts.analytics_facts_version) AS baseResolved,
+        (SELECT COUNT(*) FROM attempt_questions
+          WHERE attempt_id = attempts.id AND question_kind = 'additional') AS additionalAssigned,
+        (SELECT COUNT(*) FROM attempt_questions
+          WHERE attempt_id = attempts.id AND question_kind = 'additional'
+            AND presented_at IS NOT NULL) AS additionalPresented,
+        (SELECT COUNT(*) FROM answers
+          WHERE attempt_id = attempts.id AND question_id = ${scheduledAdditional.id}) AS additionalAnswers,
+        json_array_length(asked_question_ids) AS askedQuestions,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = attempts.id AND question_id = ${scheduledAdditional.id}
+            AND event_type = 'answer') AS additionalAnswerEvents,
+        (SELECT COUNT(*) FROM answers
+          WHERE attempt_id = attempts.id AND answer_origin = 'submitted') AS submitted,
+        (SELECT COUNT(*) FROM answers
+          WHERE attempt_id = attempts.id
+            AND answer_origin = 'total_timeout_presented') AS totalTimeoutPresented,
+        (SELECT COUNT(*) FROM answers
+          WHERE attempt_id = attempts.id
+            AND answer_origin = 'total_timeout_unshown') AS totalTimeoutUnshown,
+        (SELECT COUNT(*) FROM answers
+          WHERE attempt_id = attempts.id AND answer_origin = 'question_timeout') AS questionTimeout,
+        (SELECT COUNT(*) FROM attempt_questions aq
+          LEFT JOIN answers a ON a.attempt_id = aq.attempt_id
+            AND a.question_id = aq.question_id
+            AND a.fact_version = attempts.analytics_facts_version
+          WHERE aq.attempt_id = attempts.id AND aq.presented_at IS NOT NULL
+            AND a.id IS NULL) AS presentedWithoutAnswer,
+        (SELECT COUNT(*) FROM attempt_questions aq
+          LEFT JOIN answers a ON a.attempt_id = aq.attempt_id
+            AND a.question_id = aq.question_id
+            AND a.fact_version = attempts.analytics_facts_version
+          WHERE aq.attempt_id = attempts.id AND aq.question_kind = 'base'
+            AND aq.presented_at IS NULL
+            AND (a.id IS NULL OR a.answer_origin != 'total_timeout_unshown'))
+          AS invalidUnshownBaseFacts,
+        (SELECT COUNT(*) FROM attempt_questions aq JOIN answers a
+          ON a.attempt_id = aq.attempt_id AND a.question_id = aq.question_id
+          WHERE aq.attempt_id = attempts.id AND aq.question_kind = 'additional'
+            AND aq.presented_at IS NULL) AS unshownAdditionalAnswers,
+        score,
+        COALESCE((SELECT SUM(awarded_score) FROM answers
+          WHERE attempt_id = attempts.id), 0) AS awardedScore,
+        correct_count AS correctCount,
+        wrong_count AS wrongCount,
+        (SELECT COUNT(*) FROM answers
+          WHERE attempt_id = attempts.id AND is_correct = 1) AS factCorrect,
+        (SELECT COUNT(*) FROM answers
+          WHERE attempt_id = attempts.id AND is_correct = 0) AS factWrong
+      FROM attempts WHERE id = '${attemptId}'
+    `, E2E_STATE_PATH)[0];
+    expect(state).toEqual({
+      answers: 20,
+      baseAssigned: 20,
+      baseResolved: 20,
+      additionalAssigned: 1,
+      additionalPresented: 0,
+      additionalAnswers: 0,
+      askedQuestions: 20,
+      additionalAnswerEvents: 0,
+      submitted: 1,
+      totalTimeoutPresented: 1,
+      totalTimeoutUnshown: 18,
+      questionTimeout: 0,
+      presentedWithoutAnswer: 0,
+      invalidUnshownBaseFacts: 0,
+      unshownAdditionalAnswers: 0,
+      score: 0,
+      awardedScore: 0,
+      correctCount: 0,
+      wrongCount: 20,
+      factCorrect: 0,
+      factWrong: 20,
+    });
+  } finally {
+    if (attemptId) cleanupAttempt(attemptId);
   }
 });
 
@@ -511,7 +939,7 @@ test('идемпотентный API создаёт один ответ и со�
     expect(start.status()).toBe(201);
     const payload = await start.json() as {
       attemptId: string;
-      question: { id: number };
+      question: { id: number; choices: string[] };
     };
     attemptId = payload.attemptId;
 
@@ -531,30 +959,46 @@ test('идемпотентный API создаёт один ответ и со�
     expect((await replay.json()).attemptId).toBe(attemptId);
 
     const answerUrl = `/api/attempts/${attemptId}/answer`;
-    const answerBody = { questionId: payload.question.id, choiceIndex: 0 };
-    const firstAnswer = await request.post(answerUrl, {
-      data: answerBody,
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    const correctChoice = correctChoiceForAttempt(attemptId);
+    const correctDisplayedIndex = payload.question.choices.indexOf(correctChoice);
+    expect(correctDisplayedIndex).toBeGreaterThanOrEqual(0);
+    const wrongDisplayedIndex = (correctDisplayedIndex + 1) % payload.question.choices.length;
+    const answerBody = {
+      questionId: payload.question.id,
+      choiceIndex: wrongDisplayedIndex,
+    };
+    const [firstAnswer, duplicateAnswer] = await Promise.all([
+      request.post(answerUrl, {
+        data: answerBody,
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      request.post(answerUrl, {
+        data: answerBody,
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+    ]);
     expect(firstAnswer.status()).toBe(200);
-    const duplicateAnswer = await request.post(answerUrl, {
-      data: answerBody,
-      headers: { Authorization: `Bearer ${token}` },
-    });
     expect(duplicateAnswer.status()).toBe(200);
 
     const counts = queryLocalD1<{
       answers: number;
       isCorrect: number;
+      remedial: number;
       started: number;
       progress: number;
+      progressPending: number;
+      progressDead: number;
       answerEvent: number;
+      answerPending: number;
     }>(`
       SELECT
         (SELECT COUNT(*) FROM answers
           WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}) AS answers,
         (SELECT is_correct FROM answers
           WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}) AS isCorrect,
+        (SELECT COUNT(*) FROM attempt_questions
+          WHERE attempt_id = '${attemptId}' AND question_kind = 'additional'
+            AND source_question_id = ${payload.question.id}) AS remedial,
         (SELECT COUNT(*) FROM telegram_outbox
           WHERE attempt_id = '${attemptId}' AND event_type = 'started') AS started,
         (SELECT COUNT(*) FROM telegram_outbox
@@ -562,12 +1006,28 @@ test('идемпотентный API создаёт один ответ и со�
             AND event_type = 'progress' AND delivery_method = 'edit_root') AS progress,
         (SELECT COUNT(*) FROM telegram_outbox
           WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
-            AND event_type = 'answer' AND delivery_method = 'reply_root') AS answerEvent
+            AND event_type = 'progress' AND delivery_method = 'edit_root'
+            AND status = 'pending' AND last_error_code IS NULL) AS progressPending,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
+            AND event_type = 'progress' AND status = 'dead') AS progressDead,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
+            AND event_type = 'answer' AND delivery_method = 'reply_root') AS answerEvent,
+        (SELECT COUNT(*) FROM telegram_outbox
+          WHERE attempt_id = '${attemptId}' AND question_id = ${payload.question.id}
+            AND event_type = 'answer' AND delivery_method = 'reply_root'
+            AND status = 'pending' AND last_error_code IS NULL) AS answerPending
     `, E2E_STATE_PATH)[0];
     expect(counts.answers).toBe(1);
+    expect(counts.isCorrect).toBe(0);
+    expect(counts.remedial).toBe(1);
     expect(counts.started).toBe(1);
     expect(counts.progress).toBe(1);
-    expect(counts.answerEvent).toBe(counts.isCorrect ? 0 : 1);
+    expect(counts.progressPending).toBe(1);
+    expect(counts.progressDead).toBe(0);
+    expect(counts.answerEvent).toBe(1);
+    expect(counts.answerPending).toBe(1);
 
     for (let index = 0; index < 2; index += 1) {
       const flush = await request.post(`/api/attempts/${attemptId}/notifications/flush`, {
@@ -586,7 +1046,7 @@ test('идемпотентный API создаёт один ответ и со�
             AND event_type = 'answer') AS answerEvent
     `, E2E_STATE_PATH)[0];
     expect(afterFlush.progress).toBe(1);
-    expect(afterFlush.answerEvent).toBe(counts.isCorrect ? 0 : 1);
+    expect(afterFlush.answerEvent).toBe(1);
 
     const abortUrl = `/api/attempts/${attemptId}/abort`;
     for (let index = 0; index < 2; index += 1) {

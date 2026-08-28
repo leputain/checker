@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { telegramReadiness } from '@/db/telegram-outbox';
 import {
   CURRENT_SCHEMA_VERSION,
+  analyticsFactsIntegrityViolations,
   currentSchemaVersion,
   database,
   ensureQuestionBankReady,
@@ -21,6 +22,12 @@ export async function GET() {
       );
     }
     await ensureQuestionBankReady();
+    if ((await analyticsFactsIntegrityViolations('readiness')) > 0) {
+      return NextResponse.json(
+        { status: 'unavailable', code: 'analytics_facts_invalid' },
+        { status: 503, headers: NO_STORE },
+      );
+    }
     const telegram = await telegramReadiness();
     if (!telegram.ready) {
       return NextResponse.json(

@@ -10,7 +10,8 @@ import {
 } from 'react';
 import { appPath } from '@/lib/app-path.ts';
 import { APP_RELEASE, releaseAssetPath } from '@/lib/release.ts';
-import { BASE_MAX_SCORE, BASE_QUESTION_COUNT, TEST_CONFIG } from '@/lib/test-config.ts';
+import { BASE_MAX_SCORE } from '@/lib/scoring.ts';
+import { BASE_QUESTION_COUNT, TEST_CONFIG } from '@/lib/test-config.ts';
 
 type Difficulty = 'easy' | 'medium' | 'hard' | 'expert';
 type Verdict = 'PASS' | 'REVIEW' | 'FAIL';
@@ -28,8 +29,20 @@ type DifficultyStat = CompetencyStat & {
   difficulty: Difficulty;
 };
 
-type TopicStat = CompetencyStat & {
-  topic: string;
+type ResultBreakdownSection = {
+  assignedCount: number;
+  presentedCount: number;
+  resolvedCount: number;
+  correctCount: number;
+  incorrectCount: number;
+  timeoutCount: number;
+  earnedScore: number;
+  maxEarnableScore: number;
+};
+
+type ResultBreakdown = {
+  base: ResultBreakdownSection;
+  additional: ResultBreakdownSection;
 };
 
 type QuestionView = {
@@ -37,7 +50,9 @@ type QuestionView = {
   prompt: string;
   choices: string[];
   difficulty: Difficulty;
-  weight: number;
+  scoreValue: number;
+  questionKind: 'base' | 'additional';
+  additionalNumber?: number;
   position: number;
   minimumQuestions: number;
   questionDeadlineAt: number;
@@ -60,8 +75,22 @@ type Result = {
   completedAt: string;
   timeoutCount: number;
   averageAnswerSeconds: number;
+  baseAnsweredCount: number;
+  baseCorrectCount: number;
+  additionalAnsweredCount: number;
+  additionalCorrectCount: number;
   difficultyStats: DifficultyStat[];
-  topicStats: TopicStat[];
+  breakdown?: ResultBreakdown;
+};
+
+type AttemptModel = {
+  bankRevision: string;
+  scoringVersion: number;
+  appVersion: string;
+  testConfigId: string;
+  testProfileId: string;
+  analyticsFactsVersion: number;
+  statisticsCompleteness: 'complete' | 'partial';
 };
 
 type AttemptPayload = {
@@ -69,6 +98,7 @@ type AttemptPayload = {
   alias: string;
   status: 'active' | 'completed' | 'aborted';
   serverNowMs: number;
+  model?: AttemptModel;
   question?: QuestionView;
   result?: Result;
 };
@@ -136,8 +166,8 @@ const difficultyLabels: Record<Difficulty, string> = {
 
 const verdictLabels: Record<Verdict, string> = {
   PASS: 'Рекомендован',
-  REVIEW: 'Нужна проверка',
-  FAIL: 'Порог не пройден',
+  REVIEW: 'К просмотру',
+  FAIL: 'Не рекомендован',
 };
 
 const verdictCopy: Record<Verdict, string> = {
@@ -149,6 +179,15 @@ const verdictCopy: Record<Verdict, string> = {
 function formatTime(seconds: number) {
   const safe = Math.max(0, seconds);
   return `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+function formatPoints(points: number) {
+  const lastTwo = points % 100;
+  const last = points % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return `${points} баллов`;
+  if (last === 1) return `${points} балл`;
+  if (last >= 2 && last <= 4) return `${points} балла`;
+  return `${points} баллов`;
 }
 
 function formatTestDate(value: string) {
@@ -252,12 +291,14 @@ function delay(milliseconds: number) {
 class RequestError extends Error {
   retryable: boolean;
   status: number;
+  code?: string;
 
-  constructor(message: string, retryable: boolean, status = 0) {
+  constructor(message: string, retryable: boolean, status = 0, code?: string) {
     super(message);
     this.name = 'RequestError';
     this.retryable = retryable;
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -276,12 +317,13 @@ async function requestJson<T>(
         cache: 'no-store',
         signal: controller.signal,
       });
-      const data = await response.json().catch(() => ({})) as T & { error?: string };
+      const data = await response.json().catch(() => ({})) as T & { error?: string; code?: string };
       if (response.ok) return data;
       const error = new RequestError(
         data.error || 'Сервер временно недоступен',
         response.status >= 500 || response.status === 408 || response.status === 429,
         response.status,
+        data.code,
       );
       if (!error.retryable) throw error;
       lastError = error;
@@ -422,6 +464,18 @@ export default function Home() {
     }
   }, []);
 
+  const resetUnsupportedAttempt = useCallback(() => {
+    clearStoredSession();
+    setAttempt(null);
+    setName('');
+    setSelectedChoice(null);
+    setShowAbortConfirm(false);
+    setPretestStep('welcome');
+    setRestoreFailed(false);
+    setError('');
+    setNotice('Тест обновлён. Начните новую попытку.');
+  }, []);
+
   useEffect(() => {
     const restore = async () => {
       setRestoreFailed(false);
@@ -479,7 +533,9 @@ export default function Home() {
           if (data.status === 'completed') clearStoredSession();
         }
       } catch (caught) {
-        if (caught instanceof RequestError && caught.status === 404) {
+        if (caught instanceof RequestError && caught.code === 'attempt_version_unsupported') {
+          resetUnsupportedAttempt();
+        } else if (caught instanceof RequestError && caught.status === 404) {
           clearStoredSession();
         } else {
           setError('Не удалось восстановить попытку. Проверьте соединение и обновите страницу.');
@@ -490,7 +546,7 @@ export default function Home() {
       }
     };
     void restore();
-  }, [applyServerTime, restoreRevision, triggerNotificationFlush]);
+  }, [applyServerTime, resetUnsupportedAttempt, restoreRevision, triggerNotificationFlush]);
 
   useEffect(() => {
     const initialCheck = window.setTimeout(() => {
@@ -555,10 +611,13 @@ export default function Home() {
         }
         if (data.status === 'completed') clearStoredSession();
       }
-    } catch {
-      // Существующая попытка остаётся локально и восстановится при следующем reconnect.
+    } catch (caught) {
+      if (caught instanceof RequestError && caught.code === 'attempt_version_unsupported') {
+        resetUnsupportedAttempt();
+      }
+      // Иначе существующая попытка остаётся локально и восстановится при reconnect.
     }
-  }, [applyServerTime, attempt, triggerNotificationFlush]);
+  }, [applyServerTime, attempt, resetUnsupportedAttempt, triggerNotificationFlush]);
 
   const submitAnswer = useCallback(async (choiceIndex: number | null, timeout = false) => {
     if (!attempt?.question || submittingRef.current || !navigator.onLine) return;
@@ -593,7 +652,9 @@ export default function Home() {
         if (data.status === 'completed') clearStoredSession();
       }
     } catch (caught) {
-      if (caught instanceof RequestError && caught.status === 404) {
+      if (caught instanceof RequestError && caught.code === 'attempt_version_unsupported') {
+        resetUnsupportedAttempt();
+      } else if (caught instanceof RequestError && caught.status === 404) {
         clearStoredSession();
         setAttempt(null);
         setPretestStep('welcome');
@@ -613,7 +674,7 @@ export default function Home() {
       setBusy(false);
       setTransitioning(false);
     }
-  }, [applyServerTime, attempt, syncAttempt, triggerNotificationFlush]);
+  }, [applyServerTime, attempt, resetUnsupportedAttempt, syncAttempt, triggerNotificationFlush]);
 
   useEffect(() => {
     if (!question || busy || connectivity === 'offline') return;
@@ -743,6 +804,10 @@ export default function Home() {
       applyServerTime(data.serverNowMs);
       triggerNotificationFlush(data.attemptId, pending.token);
     } catch (caught) {
+      if (caught instanceof RequestError && caught.code === 'attempt_version_unsupported') {
+        resetUnsupportedAttempt();
+        return;
+      }
       setPretestStep('demo');
       setDemoResult('correct');
       setError(
@@ -754,7 +819,7 @@ export default function Home() {
       startRequestRef.current = false;
       setBusy(false);
     }
-  }, [applyServerTime, name, triggerNotificationFlush]);
+  }, [applyServerTime, name, resetUnsupportedAttempt, triggerNotificationFlush]);
 
   useEffect(() => {
     if (pretestStep !== 'countdown') return;
@@ -828,7 +893,11 @@ export default function Home() {
         setAttempt({ ...data, token: attempt.token });
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Не удалось прервать тест.');
+      if (caught instanceof RequestError && caught.code === 'attempt_version_unsupported') {
+        resetUnsupportedAttempt();
+      } else {
+        setError(caught instanceof Error ? caught.message : 'Не удалось прервать тест.');
+      }
     } finally {
       submittingRef.current = false;
       setAborting(false);
@@ -906,12 +975,12 @@ export default function Home() {
             <div
               className="score-ring"
               role="img"
-              aria-label={`${result.scorePercent}%: ${result.score} из ${result.baseMaxScore} баллов`}
+              aria-label={`${result.score} из ${result.baseMaxScore} баллов`}
               style={{ '--score': `${result.scorePercent * 3.6}deg` } as React.CSSProperties}
             >
               <div>
-                <strong>{result.scorePercent}%</strong>
-                <span>{result.score} из {result.baseMaxScore} баллов</span>
+                <strong>{result.score} / {result.baseMaxScore}</strong>
+                <span>баллов</span>
               </div>
             </div>
             <div className="result-summary">
@@ -924,11 +993,18 @@ export default function Home() {
             </div>
           </div>
           <div className="stats-grid result-stats">
+            <div><strong>{result.correctCount} из {result.answeredCount}</strong><span>верно</span></div>
+            <div><strong>{result.baseCorrectCount} из {result.baseAnsweredCount}</strong><span>основные вопросы</span></div>
+            <div>
+              <strong className={result.additionalAnsweredCount === 0 ? 'stat-text' : undefined}>
+                {result.additionalAnsweredCount === 0
+                  ? 'не задавались'
+                  : `${result.additionalCorrectCount} из ${result.additionalAnsweredCount}`}
+              </strong>
+              <span>дополнительные</span>
+            </div>
             <div><strong>{result.accuracy}%</strong><span>точность</span></div>
-            <div><strong>{result.correctCount}</strong><span>верных</span></div>
-            <div><strong>{result.wrongCount}</strong><span>ошибок</span></div>
             <div><strong>{result.timeoutCount ?? 0}</strong><span>таймаутов</span></div>
-            <div><strong>{result.answeredCount}</strong><span>вопросов</span></div>
             <div><strong>{Math.round(result.averageAnswerSeconds ?? 0)} сек.</strong><span>средний ответ</span></div>
             <div><strong>{formatTime(result.durationSeconds)}</strong><span>время</span></div>
             <div className="result-stat-date">
@@ -938,7 +1014,6 @@ export default function Home() {
           </div>
           <CompetencyProfile
             difficultyStats={result.difficultyStats ?? []}
-            topicStats={result.topicStats ?? []}
           />
           <div className="result-actions">
             <button
@@ -996,8 +1071,13 @@ export default function Home() {
             <div className="quiz-meta">
               <span className="question-tags">
                 <span className={`difficulty difficulty-${question.difficulty}`}>
-                  {difficultyLabels[question.difficulty]} · {question.weight} балл(а)
+                  {difficultyLabels[question.difficulty]} · {formatPoints(question.scoreValue)}
                 </span>
+                {question.questionKind === 'additional' && (
+                  <span className="additional-chip">
+                    Дополнительный вопрос{question.additionalNumber ? ` ${question.additionalNumber}` : ''}
+                  </span>
+                )}
                 {question.topic && <span className="topic-chip">{question.topic}</span>}
               </span>
               <span>Вопрос {question.position} · минимум {question.minimumQuestions}</span>
@@ -1327,13 +1407,10 @@ function TotalTimer({ seconds, maximum }: { seconds: number; maximum: number }) 
 
 function CompetencyProfile({
   difficultyStats,
-  topicStats,
 }: {
   difficultyStats: DifficultyStat[];
-  topicStats: TopicStat[];
 }) {
   const difficultyOrder: Difficulty[] = ['easy', 'medium', 'hard', 'expert'];
-  const topics = topicStats.slice(0, 5);
   return (
     <section className="competency-profile" aria-labelledby="competency-profile-title">
       <div className="profile-heading">
@@ -1343,7 +1420,7 @@ function CompetencyProfile({
         </div>
         <p>Без раскрытия правильных ответов</p>
       </div>
-      <div className="profile-columns">
+      <div className="profile-columns profile-columns-private">
         <div className="profile-section">
           <h3>По сложности</h3>
           <div className="skill-bars">
@@ -1371,31 +1448,6 @@ function CompetencyProfile({
             })}
           </div>
         </div>
-        {topics.length > 0 && (
-          <div className="profile-section topic-profile">
-            <h3>По направлениям</h3>
-            <div className="skill-bars">
-              {topics.map((stat) => {
-                const accuracy = Math.max(0, Math.min(100, stat.accuracy));
-                return (
-                  <div className="skill-row" key={stat.topic}>
-                    <div><span>{stat.topic}</span><strong>{accuracy}% · {stat.correctCount}/{stat.answeredCount}</strong></div>
-                    <span
-                      className="skill-track"
-                      role="progressbar"
-                      aria-label={`${stat.topic}: ${accuracy}%`}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={accuracy}
-                    >
-                      <i style={{ width: `${accuracy}%` }} />
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </div>
     </section>
   );

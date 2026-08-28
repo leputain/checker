@@ -13,7 +13,6 @@ import {
   outboxMaintenanceBindings,
   telegramDeliveryStateForError,
   TELEGRAM_GROUP_MIN_INTERVAL_MS,
-  TELEGRAM_MAX_AGE_MS,
   TELEGRAM_MAX_ATTEMPTS,
   TELEGRAM_RETRY_DELAYS_MS,
 } from '@/lib/telegram-outbox-policy.ts';
@@ -142,32 +141,6 @@ async function pendingState(attemptId: string, now = Date.now()) {
   };
 }
 
-async function cleanupPrivateData(now: number) {
-  const cutoff = now - TELEGRAM_MAX_AGE_MS;
-  const db = database();
-  await db.batch([
-    db
-      .prepare(`UPDATE telegram_outbox SET status = 'dead', last_error_code = 'retry_exhausted',
-        payload_text = '', lease_token = NULL, lease_until = NULL
-        WHERE status IN ('pending','sending')
-          AND (attempt_count >= ? OR created_at < ?)`)
-      .bind(TELEGRAM_MAX_ATTEMPTS, cutoff),
-    db
-      .prepare("UPDATE telegram_outbox SET payload_text = '' WHERE created_at < ? AND payload_text != ''")
-      .bind(cutoff),
-    db
-      .prepare(`UPDATE attempts SET candidate_name = NULL
-        WHERE candidate_name IS NOT NULL AND (
-          started_at < ? OR (status IN ('completed','aborted') AND NOT EXISTS (
-            SELECT 1 FROM telegram_outbox
-            WHERE telegram_outbox.attempt_id = attempts.id
-              AND telegram_outbox.status IN ('pending','sending')
-          ))
-        )`)
-      .bind(cutoff),
-  ]);
-}
-
 async function cleanupCompletedAttempt(attemptId: string) {
   await database()
     .prepare(`UPDATE attempts SET candidate_name = NULL
@@ -179,13 +152,12 @@ async function cleanupCompletedAttempt(attemptId: string) {
     .run();
 }
 
-async function disablePendingNotifications(now: number) {
+async function disablePendingNotifications() {
   await database()
     .prepare(`UPDATE telegram_outbox SET status = 'dead', payload_text = '',
       last_error_code = 'telegram_disabled', lease_token = NULL, lease_until = NULL
       WHERE status IN ('pending','sending')`)
     .run();
-  await cleanupPrivateData(now);
 }
 
 async function nextDueAttemptId(now: number) {
@@ -198,10 +170,11 @@ async function nextDueAttemptId(now: number) {
 
 export async function flushAttemptNotifications(attemptId: string) {
   const now = Date.now();
-  await cleanupPrivateData(now);
   const config = telegramRuntimeConfig();
   if (!config.enabled) {
-    await disablePendingNotifications(now);
+    // Periodic maintenance owns the global retention scans. An answer flush
+    // only needs to scrub this terminal attempt and must stay cheap.
+    await cleanupCompletedAttempt(attemptId);
     return { delivered: false, pending: false, nextAttemptAt: null };
   }
   if (!config.configured) {
@@ -292,11 +265,10 @@ export async function flushAttemptNotifications(attemptId: string) {
 
 export async function maintainTelegramOutbox() {
   const now = Date.now();
-  await cleanupPrivateData(now);
   const config = telegramRuntimeConfig();
 
   if (!config.enabled) {
-    await disablePendingNotifications(now);
+    await disablePendingNotifications();
     return;
   }
   if (!config.configured) return;

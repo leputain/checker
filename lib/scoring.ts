@@ -1,15 +1,31 @@
-import { TEST_CONFIG } from './test-config.ts';
+import { DIFFICULTIES, TEST_CONFIG } from './test-config.ts';
 
 export type Verdict = 'PASS' | 'REVIEW' | 'FAIL';
+export type QuestionKind = 'base' | 'additional';
+
+export function questionScoreValue(unitWeight: number, questionKind: QuestionKind) {
+  const multiplier = questionKind === 'base'
+    ? TEST_CONFIG.baseQuestionMultiplier
+    : TEST_CONFIG.additionalQuestionMultiplier;
+  return unitWeight * multiplier;
+}
+
+export const BASE_MAX_SCORE = DIFFICULTIES.reduce(
+  (total, difficulty) => total
+    + TEST_CONFIG.plan[difficulty]
+      * questionScoreValue(TEST_CONFIG.weights[difficulty], 'base'),
+  0,
+);
 
 export function calculateScore(
   previousScore: number,
-  questionWeight: number,
+  questionValue: number,
   baseMaxScore: number,
   correct: boolean,
 ) {
-  if (!correct) return previousScore;
-  return Math.min(baseMaxScore, previousScore + questionWeight);
+  const boundedPreviousScore = Math.max(0, Math.min(baseMaxScore, previousScore));
+  if (!correct) return boundedPreviousScore;
+  return Math.min(baseMaxScore, boundedPreviousScore + questionValue);
 }
 
 export function calculateAccuracy(correctCount: number, wrongCount: number) {
@@ -19,21 +35,14 @@ export function calculateAccuracy(correctCount: number, wrongCount: number) {
 
 export function calculateVerdict(
   score: number,
-  baseMaxScore: number,
   accuracy: number,
 ): Verdict {
-  const scorePercent = baseMaxScore > 0 ? (score / baseMaxScore) * 100 : 0;
   if (
-    scorePercent >= TEST_CONFIG.verdict.passScorePercent &&
+    score >= TEST_CONFIG.verdict.passScore &&
     accuracy >= TEST_CONFIG.verdict.passAccuracy
   ) {
     return 'PASS';
   }
-  if (
-    scorePercent >= TEST_CONFIG.verdict.reviewScorePercent ||
-    accuracy >= TEST_CONFIG.verdict.reviewAccuracy
-  ) {
-    return 'REVIEW';
-  }
+  if (score >= TEST_CONFIG.verdict.reviewScore) return 'REVIEW';
   return 'FAIL';
 }

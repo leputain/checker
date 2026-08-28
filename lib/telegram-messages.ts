@@ -9,6 +9,11 @@ const TELEGRAM_FIELD_LIMITS = {
   topic: 120,
 } as const;
 
+export type TelegramInterviewerProfile = {
+  strongTopics: readonly string[];
+  checkAreas: readonly string[];
+};
+
 const difficultyLabels: Record<Difficulty, string> = {
   easy: 'Базовый',
   medium: 'Средний',
@@ -16,12 +21,10 @@ const difficultyLabels: Record<Difficulty, string> = {
   expert: 'Экспертный',
 };
 
-const difficultyOrder: Difficulty[] = ['easy', 'medium', 'hard', 'expert'];
-
 const verdictLabels: Record<Verdict, string> = {
   PASS: 'Рекомендован',
-  REVIEW: 'Нужна проверка',
-  FAIL: 'Порог не пройден',
+  REVIEW: 'К просмотру',
+  FAIL: 'Не рекомендован',
 };
 
 const verdictIcons: Record<Verdict, string> = {
@@ -73,6 +76,40 @@ function shortId(value: string) {
   return value.replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase();
 }
 
+function compactProfileTopics(
+  values: readonly string[],
+  excluded: ReadonlySet<string> = new Set(),
+) {
+  const topics: string[] = [];
+  const seen = new Set(excluded);
+  for (const value of values) {
+    const topic = value.trim().replace(/\s+/gu, ' ');
+    if (!topic) continue;
+    const key = topic.toLocaleLowerCase('ru-RU');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    topics.push(escapeTelegramHtml(truncateTelegramField(
+      topic,
+      TELEGRAM_FIELD_LIMITS.topic,
+    )));
+    if (topics.length === 3) break;
+  }
+  return { topics, seen };
+}
+
+function interviewerProfileLines(profile?: TelegramInterviewerProfile) {
+  if (!profile) return [];
+  const strong = compactProfileTopics(profile.strongTopics);
+  const check = compactProfileTopics(profile.checkAreas, strong.seen);
+  if (strong.topics.length === 0 && check.topics.length === 0) return [];
+  return [
+    '',
+    '<b>Профиль для интервью</b>',
+    ...(strong.topics.length > 0 ? [`Сильные темы: ${strong.topics.join(' · ')}`] : []),
+    ...(check.topics.length > 0 ? [`Проверить: ${check.topics.join(' · ')}`] : []),
+  ];
+}
+
 export function progressTelegramMessage(input: {
   attemptId: string;
   candidateName: string;
@@ -114,7 +151,9 @@ export function answerTelegramMessage(input: {
   position: number;
   totalQuestions: number;
   difficulty: Difficulty;
-  weight: number;
+  questionKind: 'base' | 'additional';
+  scoreValue: number;
+  additionalNumber?: number;
   prompt: string;
   contextType?: 'text' | 'code' | 'command' | 'log' | 'config';
   context?: string;
@@ -125,6 +164,9 @@ export function answerTelegramMessage(input: {
   questionElapsedSeconds: number;
 }) {
   const result = input.timedOut ? '⏱ Таймаут' : input.correct ? '✅ Верно' : '❌ Неверно';
+  const questionKindLabel = input.questionKind === 'additional'
+    ? `Дополнительный${input.additionalNumber ? ` №${input.additionalNumber}` : ''} · `
+    : '';
   const contextLabels = {
     text: 'Контекст',
     code: 'Код',
@@ -146,7 +188,7 @@ export function answerTelegramMessage(input: {
     : [];
   return [
     `<b>${result} · вопрос ${input.position} из ${input.totalQuestions}</b>`,
-    `${difficultyLabels[input.difficulty]} · ${pointsLabel(input.weight)}`,
+    `${questionKindLabel}${difficultyLabels[input.difficulty]} · ${pointsLabel(input.scoreValue)}`,
     '',
     escapeTelegramHtml(truncateTelegramField(input.prompt, TELEGRAM_FIELD_LIMITS.prompt)),
     ...contextLines,
@@ -171,47 +213,20 @@ export function completedTelegramMessage(input: {
   verdict: Verdict;
   score: number;
   baseMaxScore: number;
-  scorePercent: number;
-  correctCount: number;
-  wrongCount: number;
-  answeredCount: number;
   accuracy: number;
   timeoutCount: number;
   durationSeconds: number;
   averageAnswerSeconds: number;
   completedAt: number;
-  difficultyStats: Array<{
-    difficulty: Difficulty;
-    correctCount: number;
-    answeredCount: number;
-    accuracy: number;
-  }>;
-  topicErrors: Array<{ topic: string; count: number }>;
+  baseAnsweredCount: number;
+  baseCorrectCount: number;
+  additionalAnsweredCount: number;
+  additionalCorrectCount: number;
+  interviewerProfile?: TelegramInterviewerProfile;
 }) {
-  const sortedTopics = [...input.topicErrors]
-    .sort((left, right) => right.count - left.count || left.topic.localeCompare(right.topic, 'ru'));
-  const visibleTopics = sortedTopics.slice(0, 5);
-  const hiddenTopics = Math.max(0, sortedTopics.length - visibleTopics.length);
-  const topicLines = visibleTopics.length
-    ? [
-        '',
-        '<b>Слабые темы:</b>',
-        ...visibleTopics.map(({ topic, count }) => (
-          `• ${escapeTelegramHtml(truncateTelegramField(topic, TELEGRAM_FIELD_LIMITS.topic))} — ${count}`
-        )),
-        ...(hiddenTopics ? [`• ещё тем: ${hiddenTopics}`] : []),
-      ]
-    : [];
-  const difficultyLines = difficultyOrder
-    .map((difficulty) => input.difficultyStats.find((item) => item.difficulty === difficulty))
-    .filter((item): item is NonNullable<typeof item> => Boolean(item && item.answeredCount > 0))
-    .map(
-      (item) =>
-        `• ${difficultyLabels[item.difficulty]}: ${item.correctCount}/${item.answeredCount} · ${item.accuracy}%`,
-    );
-  const difficultyBlock = difficultyLines.length
-    ? ['', '<b>По сложности:</b>', ...difficultyLines]
-    : [];
+  const additionalLine = input.additionalAnsweredCount === 0
+    ? 'Дополнительные: не задавались'
+    : `Дополнительные: ${input.additionalCorrectCount} / ${input.additionalAnsweredCount}`;
 
   return [
     `${verdictIcons[input.verdict]} <b>${escapeTelegramHtml(truncateTelegramField(
@@ -220,12 +235,12 @@ export function completedTelegramMessage(input: {
     ))}</b>`,
     `<b>${verdictLabels[input.verdict]}</b>`,
     '',
-    `<b>${input.score} / ${input.baseMaxScore} баллов · ${input.scorePercent}%</b>`,
-    `✅ Верно: ${input.correctCount} · ❌ Ошибок: ${input.wrongCount} · из них таймаутов: ${input.timeoutCount}`,
-    `Точность: ${input.accuracy}%`,
+    `<b>${input.score} / ${input.baseMaxScore} баллов</b>`,
+    `Основные: ${input.baseCorrectCount} / ${input.baseAnsweredCount}`,
+    additionalLine,
+    `Точность: ${input.accuracy}% · таймаутов: ${input.timeoutCount}`,
     `Время: ${durationLabel(input.durationSeconds)} · среднее на ответ: ${durationLabel(input.averageAnswerSeconds)}`,
-    ...difficultyBlock,
-    ...topicLines,
+    ...interviewerProfileLines(input.interviewerProfile),
     '',
     `Дата теста: ${completedAtLabel(input.completedAt)}`,
     `<code>#${shortId(input.attemptId)}</code>`,
