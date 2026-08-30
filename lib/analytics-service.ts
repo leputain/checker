@@ -1,13 +1,20 @@
 import { calculateAccuracy } from './scoring.ts';
 import {
   analyticsCursor,
+  questionAnalyticsMatches,
+  sortQuestionAnalyticsItems,
   type ParsedAnalyticsQuery,
 } from './analytics-query.ts';
 import {
   analyticsReliability,
   interviewerRecommendations,
   median,
+  observedQuestionMetrics,
+  questionAnalyticsSignals,
+  questionAnalyticsSummary,
+  questionPromptPreview,
   questionQuality,
+  questionSample,
   roundedRate,
   summarizeQuestionFacts,
 } from './analytics-math.ts';
@@ -26,7 +33,9 @@ import type {
   QuestionAnalyticsDetailDto,
   QuestionAnalyticsItemDto,
   QuestionKindSplitDto,
+  QuestionAnalyticsListDto,
 } from './analytics-contract.ts';
+import { QUESTION_ANALYTICS_MODEL_VERSION } from './analytics-contract.ts';
 import type {
   AnalyticsAttemptRow,
   AnalyticsFactRow,
@@ -100,6 +109,7 @@ export function buildAnalyticsCohort(
   generatedAt = Date.now(),
 ): AnalyticsCohortDto {
   return {
+    questionAnalyticsModelVersion: QUESTION_ANALYTICS_MODEL_VERSION,
     from: query.from,
     to: query.to,
     bankRevision: query.bankRevision,
@@ -156,13 +166,6 @@ function kindSplit(rows: readonly AnalyticsFactRow[], minSample: number): Questi
   };
 }
 
-function qualityMatches(query: ParsedAnalyticsQuery, item: QuestionAnalyticsItemDto) {
-  if (query.qualityStatus === 'all') return true;
-  if (query.qualityStatus === 'insufficient') return item.quality.status === 'insufficient';
-  if (query.qualityStatus === 'healthy') return item.quality.status === 'good';
-  return item.quality.status === 'observe' || item.quality.status === 'review';
-}
-
 function questionItems(
   query: ParsedAnalyticsQuery,
   attempts: readonly AnalyticsAttemptRow[],
@@ -186,7 +189,7 @@ function questionItems(
       allFacts,
       true,
     ).map((item) => [item.questionId, item]));
-    return displayItems.map((item) => {
+    return sortQuestionAnalyticsItems(query, displayItems.map((item) => {
       const calibration = baseItems.get(item.questionId);
       return calibration ? {
         ...item,
@@ -194,8 +197,9 @@ function questionItems(
         quality: calibration.quality,
         qualityWarnings: calibration.qualityWarnings,
         recommendation: calibration.recommendation,
+        signals: calibration.signals,
       } : item;
-    }).filter((item) => qualityMatches(query, item));
+    }).filter((item) => questionAnalyticsMatches({ ...query, q: null }, item, item.promptPreview)));
   }
   const effectiveCalibration = calibrationEnabled
     && query.candidatePolicy === 'latest'
@@ -271,6 +275,7 @@ function questionItems(
         rawTimeoutRate: roundedRate(outcomes.filter((row) => row.timedOut).length, outcomes.length),
         item: {
         questionId,
+        promptPreview: questionPromptPreview(first.prompt),
         topic: first.topic,
         difficulty: first.difficulty,
         active: first.active,
@@ -310,33 +315,60 @@ function questionItems(
         },
         qualityWarnings: [],
         recommendation: effectiveCalibration ? summary.recommendation : null,
+        observed: observedQuestionMetrics({
+          assignedCount: rows.length,
+          presentedCount: presented.length,
+          outcomeCount: outcomes.length,
+          submittedCount: responseTimes.length,
+          correctCount: outcomes.filter((row) => row.isCorrect).length,
+          timeoutCount: outcomes.filter((row) => row.timedOut).length,
+          averageSeconds: average(responseTimes),
+          medianSeconds: median(responseTimes),
+          minSeconds: responseTimes.length ? Math.min(...responseTimes) : null,
+          maxSeconds: responseTimes.length ? Math.max(...responseTimes) : null,
+        }),
+        sample: questionSample(outcomes.length),
+        signals: questionAnalyticsSignals({
+          difficulty: first.difficulty,
+          sample: questionSample(outcomes.length),
+          successRate: null,
+          timeoutRate: null,
+          medianSeconds: null,
+          peerMedianSeconds: null,
+          peerCount: 0,
+          discrimination: null,
+        }),
         } satisfies QuestionAnalyticsItemDto,
       };
     });
-  const peerMedians = new Map<string, number>();
+  const peerGroups = new Map<string, Array<{ questionId: number; value: number }>>();
   const peerKeys = new Set(preliminary.map(({ item }) => `${item.difficulty}\u0000${item.kind}`));
   for (const key of peerKeys) {
     const values = preliminary.flatMap((entry) => (
       `${entry.item.difficulty}\u0000${entry.item.kind}` === key
         && entry.item.sampleSize >= 30
         && entry.rawMedianSeconds !== null
-        ? [entry.rawMedianSeconds]
+        ? [{ questionId: entry.item.questionId, value: entry.rawMedianSeconds }]
         : []
     ));
-    const peer = median(values);
-    if (peer !== null) peerMedians.set(key, peer);
+    peerGroups.set(key, values);
   }
 
-  return preliminary
+  const enriched = preliminary
     .map(({ item, summary, rawMedianSeconds, rawSuccessRate, rawTimeoutRate }) => {
       if (!effectiveCalibration) return item;
+      const peerValues = (peerGroups.get(`${item.difficulty}\u0000${item.kind}`) ?? [])
+        .filter((peer) => peer.questionId !== item.questionId)
+        .map((peer) => peer.value);
+      const peerMedianSeconds = median(peerValues);
       const result = questionQuality({
         difficulty: item.difficulty,
         sampleSize: item.sampleSize,
         successRate: rawSuccessRate,
         timeoutRate: rawTimeoutRate,
         medianSeconds: rawMedianSeconds,
-        peerMedianSeconds: peerMedians.get(`${item.difficulty}\u0000${item.kind}`) ?? null,
+        peerMedianSeconds,
+        peerCount: peerValues.length,
         functioningDistractors: summary.functioningDistractorCount,
         distractorCount: summary.distractorCount,
         discrimination: summary.discrimination,
@@ -345,10 +377,29 @@ function questionItems(
         ...item,
         quality: result.quality,
         qualityWarnings: result.warnings,
+        signals: questionAnalyticsSignals({
+          difficulty: item.difficulty,
+          sample: item.sample,
+          successRate: rawSuccessRate,
+          timeoutRate: rawTimeoutRate,
+          medianSeconds: rawMedianSeconds,
+          peerMedianSeconds,
+          peerCount: peerValues.length,
+          discrimination: summary.discrimination,
+        }),
       };
-    })
-    .filter((item) => qualityMatches(query, item))
-    .toSorted((left, right) => left.questionId - right.questionId);
+    });
+  return sortQuestionAnalyticsItems(
+    query,
+    enriched.filter((item) => questionAnalyticsMatches(
+      query,
+      item,
+      (() => {
+        const row = grouped.get(item.questionId)?.[0];
+        return row ? `${row.prompt}\n${row.context ?? ''}` : item.promptPreview;
+      })(),
+    )),
+  );
 }
 
 export function buildQuestionList(
@@ -356,13 +407,24 @@ export function buildQuestionList(
   attempts: readonly AnalyticsAttemptRow[],
   facts: readonly AnalyticsFactRow[],
   calibrationEnabled = true,
-): AnalyticsListDto<QuestionAnalyticsItemDto> & { nextCursor: string | null } {
+): QuestionAnalyticsListDto {
   const allItems = questionItems(query, attempts, facts, calibrationEnabled);
+  const summaryItems = query.qualityStatus === 'all'
+    ? allItems
+    : questionItems(
+        { ...query, qualityStatus: 'all' },
+        attempts,
+        facts,
+        calibrationEnabled,
+      );
   const items = allItems.slice(query.cursorOffset, query.cursorOffset + query.limit);
   const nextOffset = query.cursorOffset + items.length;
   return {
+    questionAnalyticsModelVersion: QUESTION_ANALYTICS_MODEL_VERSION,
     cohort: cohortDto(query, attempts, facts, calibrationEnabled),
     items,
+    totalCount: allItems.length,
+    summary: questionAnalyticsSummary(summaryItems),
     nextCursor: nextOffset < allItems.length ? analyticsCursor(nextOffset) : null,
   };
 }
@@ -495,11 +557,11 @@ function groupItems(
         key: groupKey,
         kind: query.questionKind,
         sampleSize: rows.length,
-        successRate: rows.length >= query.minSample ? roundedRate(correct, rows.length) : null,
-        timeoutRate: rows.length >= query.minSample
-          ? roundedRate(rows.filter((row) => row.timedOut).length, rows.length)
-          : null,
-        medianSeconds: rows.length >= query.minSample ? median(times) : null,
+        // These are observed facts, not calibration conclusions. Keep them visible
+        // even for a small cohort and communicate uncertainty through reliability.
+        successRate: roundedRate(correct, rows.length),
+        timeoutRate: roundedRate(rows.filter((row) => row.timedOut).length, rows.length),
+        medianSeconds: median(times),
         reliability: analyticsReliability(rows.length),
       };
     })
@@ -733,10 +795,8 @@ export function buildTrends(
     return [...values].map(([dimensionKey, rows]) => ({
       key: dimensionKey,
       outcomeCount: rows.length,
-      successRate: rows.length >= query.minSample
-        ? roundedRate(rows.filter((row) => row.isCorrect).length, rows.length) : null,
-      timeoutRate: rows.length >= query.minSample
-        ? roundedRate(rows.filter((row) => row.timedOut).length, rows.length) : null,
+      successRate: roundedRate(rows.filter((row) => row.isCorrect).length, rows.length),
+      timeoutRate: roundedRate(rows.filter((row) => row.timedOut).length, rows.length),
     })).toSorted((left, right) => left.key.localeCompare(right.key, 'ru'));
   };
   const items = [...groups].map(([date, rows]): AnalyticsTrendItemDto => ({

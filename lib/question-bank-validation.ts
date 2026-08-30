@@ -27,6 +27,7 @@ export type QuestionBankSummary = {
 
 export const QUESTION_LIMITS = {
   promptLength: 280,
+  topicLength: 80,
   choiceLength: 160,
   choicesMin: 2,
   choicesMax: 5,
@@ -120,6 +121,8 @@ export function validateQuestionBank(
     }
     if (typeof topic !== 'string' || !topic.trim()) {
       entryIssues.push('topic должен быть непустой строкой');
+    } else if (topic.trim().length > QUESTION_LIMITS.topicLength) {
+      entryIssues.push(`topic должен содержать не более ${QUESTION_LIMITS.topicLength} символов`);
     }
     if (typeof prompt !== 'string' || !prompt.trim()) {
       entryIssues.push('prompt должен быть непустой строкой');

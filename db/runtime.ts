@@ -16,6 +16,7 @@ import migration0013 from '../drizzle/0013_productive_darkstar.sql?raw';
 import migration0014 from '../drizzle/0014_supreme_domino.sql?raw';
 import migration0015 from '../drizzle/0015_mighty_adam_destine.sql?raw';
 import migration0016 from '../drizzle/0016_free_khan.sql?raw';
+import migration0017 from '../drizzle/0017_narrow_baron_zemo.sql?raw';
 import {
   BASE_MAX_SCORE,
   calculateAccuracy,
@@ -50,7 +51,7 @@ import { loadQuestionBank } from './question-bank';
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 15;
+export const CURRENT_SCHEMA_VERSION = 16;
 
 export type QuestionRow = {
   id: number;
@@ -138,6 +139,7 @@ const MANAGED_MIGRATIONS = [
   { version: 13, name: 'analytics-candidate-dimensions-0014', sql: migration0014 },
   { version: 14, name: 'runtime-and-readiness-indexes-0015', sql: migration0015 },
   { version: 15, name: 'analytics-refresh-lease-0016', sql: migration0016 },
+  { version: 16, name: 'question-bank-admin-0017-narrow-baron-zemo', sql: migration0017 },
 ] as const;
 
 async function ensureCurrentTestConfigVersion() {
@@ -285,7 +287,7 @@ function canonicalQuestion(question: QuestionDefinition) {
   };
 }
 
-async function questionContentHash(question: QuestionDefinition) {
+export async function questionContentHash(question: QuestionDefinition) {
   // dedupeKey affects both selection and historical interviewer grouping, so it
   // is immutable for an existing question id just like prompt/choices/weight.
   return sha256Hex(JSON.stringify({
@@ -305,6 +307,10 @@ export async function questionBankRevision(questions = loadQuestionBank()) {
   return sha256Hex(JSON.stringify(canonical));
 }
 
+export function invalidateQuestionBankCache() {
+  bankInitialization = null;
+}
+
 function rowMatchesQuestion(row: QuestionRow, question: QuestionDefinition) {
   return (
     row.difficulty === question.difficulty &&
@@ -319,11 +325,30 @@ function rowMatchesQuestion(row: QuestionRow, question: QuestionDefinition) {
   );
 }
 
-export function ensureQuestionBankReady() {
+async function storedQuestionBankRevision(db: D1Database) {
+  const current = await db.prepare(`SELECT state.current_revision
+    FROM question_bank_state state
+    JOIN question_bank_revisions revisions ON revisions.hash = state.current_revision
+    WHERE state.id = 1`)
+    .first<{ current_revision: string }>();
+  return current?.current_revision ?? null;
+}
+
+export async function ensureQuestionBankReady() {
+  await ensureSchema();
+  const db = database();
+  const current = await storedQuestionBankRevision(db);
+  if (current) return current;
   if (bankInitialization) return bankInitialization;
-  bankInitialization = (async () => {
-    await ensureSchema();
-    const db = database();
+
+  // Cache only the one-time bootstrap work. The current revision itself must
+  // always come from D1: another Worker isolate may have changed the bank.
+  const initialization = (async () => {
+    const refreshed = await storedQuestionBankRevision(db);
+    if (refreshed) return refreshed;
+
+    // The bundled JSON is a one-time bootstrap source. Once question_bank_state
+    // exists, D1 is authoritative so administrative edits survive restarts.
     const questions = loadQuestionBank();
     const revision = await questionBankRevision(questions);
 
@@ -398,14 +423,30 @@ export function ensureQuestionBankReady() {
         ) VALUES (?, ?, ?)`)
           .bind(revision, question.id, question.active ? 1 : 0),
       );
+      statements.push(
+        db.prepare(`INSERT INTO question_bank_change_events (
+          event_type, question_id, bank_revision, created_at, note
+        ) VALUES ('created', ?, ?, ?, ?)`)
+          .bind(question.id, revision, Date.now(), 'Импортировано из базового банка'),
+      );
     }
+    statements.push(
+      db.prepare(`INSERT INTO question_bank_state (id, current_revision, updated_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          current_revision = excluded.current_revision,
+          updated_at = excluded.updated_at`)
+        .bind(revision, Date.now()),
+    );
     await db.batch(statements);
     return revision;
-  })().catch((error) => {
-    bankInitialization = null;
-    throw error;
-  });
-  return bankInitialization;
+  })();
+  bankInitialization = initialization;
+  try {
+    return await initialization;
+  } finally {
+    if (bankInitialization === initialization) bankInitialization = null;
+  }
 }
 
 export function publicAlias(name: string) {

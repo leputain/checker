@@ -26,8 +26,14 @@ import {
   analyticsReliability,
   interviewerRecommendations,
   median,
+  observedQuestionMetrics,
   pointBiserial,
+  questionAnalyticsSignals,
+  questionAnalyticsSummary,
+  questionPromptPreview,
   questionQuality,
+  questionRecommendation,
+  questionSample,
   roundedRate,
   semicolonCsv,
   summarizeQuestionFacts,
@@ -38,6 +44,8 @@ import {
   analyticsCursor,
   eligibleAttemptsCte,
   parseAnalyticsQuery,
+  questionAnalyticsMatches,
+  sortQuestionAnalyticsItems,
 } from '../lib/analytics-query.ts';
 import {
   fetchCandidateListReport,
@@ -97,6 +105,16 @@ assert.equal(defaults.testProfileId, TEST_PROFILE_ID);
 assert.equal(defaults.from, '2026-07-30');
 assert.equal(defaults.to, '2026-08-28');
 assert.equal(defaults.toExclusiveMs! - defaults.fromMs!, 30 * 24 * 60 * 60 * 1_000);
+assert.deepEqual(
+  {
+    q: defaults.q,
+    minN: defaults.minN,
+    sampleStatus: defaults.sampleStatus,
+    sort: defaults.sort,
+    direction: defaults.direction,
+  },
+  { q: null, minN: 0, sampleStatus: 'all', sort: 'priority', direction: 'asc' },
+);
 const balancedDefaults = applyCurrentModelDefaults(
   defaults,
   'http://localhost/api/admin/analytics/questions',
@@ -136,6 +154,44 @@ assert.throws(
   () => parseAnalyticsQuery('http://localhost/x?limit=101', now),
   AnalyticsQueryError,
 );
+const questionDiscoveryQuery = parseAnalyticsQuery(
+  'http://localhost/x?q=%D1%81%D0%B5%D1%82%D0%B5%D0%B2%D0%BE%D0%B9&minN=49&sampleStatus=early&sort=timeout&direction=desc&limit=20',
+  now,
+);
+assert.deepEqual(
+  {
+    q: questionDiscoveryQuery.q,
+    minN: questionDiscoveryQuery.minN,
+    sampleStatus: questionDiscoveryQuery.sampleStatus,
+    sort: questionDiscoveryQuery.sort,
+    direction: questionDiscoveryQuery.direction,
+    limit: questionDiscoveryQuery.limit,
+  },
+  {
+    q: 'сетевой',
+    minN: 49,
+    sampleStatus: 'early',
+    sort: 'timeout',
+    direction: 'desc',
+    limit: 20,
+  },
+);
+assert.equal(parseAnalyticsQuery('http://localhost/x?sort=success', now).direction, 'desc');
+assert.equal(parseAnalyticsQuery('http://localhost/x?sort=id', now).direction, 'asc');
+for (const invalidQuery of [
+  'minN=-1',
+  'minN=1.5',
+  'sampleStatus=unknown',
+  'sort=random',
+  'direction=sideways',
+  `q=${encodeURIComponent('x'.repeat(161))}`,
+]) {
+  assert.throws(
+    () => parseAnalyticsQuery(`http://localhost/x?${invalidQuery}`, now),
+    AnalyticsQueryError,
+    `query validation must reject ${invalidQuery.slice(0, 40)}`,
+  );
+}
 const latestSql = eligibleAttemptsCte(defaults).sql;
 assert.match(
   latestSql,
@@ -167,12 +223,169 @@ assert.equal(analyticsReliability(29), 'insufficient');
 assert.equal(analyticsReliability(30), 'descriptive');
 assert.equal(analyticsReliability(50), 'directional');
 assert.equal(analyticsReliability(100), 'stable');
+assert.deepEqual(questionSample(29), {
+  n: 29,
+  status: 'insufficient',
+  nextGate: 30,
+  remaining: 1,
+});
+assert.deepEqual(questionSample(30), {
+  n: 30,
+  status: 'early',
+  nextGate: 50,
+  remaining: 20,
+});
+assert.deepEqual(questionSample(49), {
+  n: 49,
+  status: 'early',
+  nextGate: 50,
+  remaining: 1,
+});
+assert.deepEqual(questionSample(50), {
+  n: 50,
+  status: 'working',
+  nextGate: 100,
+  remaining: 50,
+});
+assert.deepEqual(questionSample(99), {
+  n: 99,
+  status: 'working',
+  nextGate: 100,
+  remaining: 1,
+});
+assert.deepEqual(questionSample(100), {
+  n: 100,
+  status: 'stable',
+  nextGate: null,
+  remaining: 0,
+});
 assert.deepEqual(EXPECTED_SUCCESS_RANGES, {
   easy: { min: 75, max: 95 },
   medium: { min: 55, max: 80 },
   hard: { min: 30, max: 60 },
   expert: { min: 10, max: 40 },
 });
+
+const smallObserved = observedQuestionMetrics({
+  assignedCount: 4,
+  presentedCount: 3,
+  outcomeCount: 3,
+  submittedCount: 2,
+  correctCount: 1,
+  timeoutCount: 1,
+  averageSeconds: 12,
+  medianSeconds: 12,
+  minSeconds: 8,
+  maxSeconds: 16,
+});
+assert.deepEqual(smallObserved, {
+  assignedCount: 4,
+  presentedCount: 3,
+  outcomeCount: 3,
+  submittedCount: 2,
+  correctCount: 1,
+  incorrectCount: 1,
+  timeoutCount: 1,
+  presentationRate: 75,
+  responseRate: 66.7,
+  completionRate: 100,
+  successRate: 33.3,
+  timeoutRate: 33.3,
+  timing: {
+    sampleSize: 2,
+    averageSeconds: 12,
+    medianSeconds: 12,
+    minSeconds: 8,
+    maxSeconds: 16,
+  },
+}, 'exact observations stay visible below every statistical gate');
+assert.equal(
+  questionPromptPreview('  Первая\n\tстрока   и вторая  '),
+  'Первая строка и вторая',
+);
+assert.equal(Array.from(questionPromptPreview('Я'.repeat(240))).length, 200);
+
+for (const sampleSize of [0, 29, 30, 49]) {
+  const recommendation = questionRecommendation({
+    sampleSize,
+    correctRate: 80,
+    timeoutRate: 0,
+    discrimination: null,
+    deadDistractors: 0,
+  });
+  assert.equal(
+    recommendation.code,
+    'collect_more_data',
+    `n=${sampleSize} must never yield a keep recommendation`,
+  );
+}
+assert.equal(questionRecommendation({
+  sampleSize: 50,
+  correctRate: 70,
+  timeoutRate: 0,
+  discrimination: null,
+  deadDistractors: 0,
+}).code, 'keep', 'keep becomes possible only at the working-quality gate');
+
+for (const [difficulty, expected] of Object.entries(EXPECTED_SUCCESS_RANGES)) {
+  for (const successRate of [expected.min, expected.max]) {
+    const signals = questionAnalyticsSignals({
+      difficulty,
+      sample: questionSample(30),
+      successRate,
+      timeoutRate: 0,
+      medianSeconds: 10,
+      peerMedianSeconds: 10,
+      peerCount: 5,
+      discrimination: null,
+    });
+    assert.ok(!signals.some((signal) => signal.code === 'too_easy' || signal.code === 'too_hard'));
+  }
+  assert.ok(questionAnalyticsSignals({
+    difficulty,
+    sample: questionSample(30),
+    successRate: expected.min - 0.1,
+    timeoutRate: 0,
+    medianSeconds: null,
+    peerMedianSeconds: null,
+    peerCount: 0,
+    discrimination: null,
+  }).some((signal) => signal.code === 'too_hard'));
+  assert.ok(questionAnalyticsSignals({
+    difficulty,
+    sample: questionSample(30),
+    successRate: expected.max + 0.1,
+    timeoutRate: 0,
+    medianSeconds: null,
+    peerMedianSeconds: null,
+    peerCount: 0,
+    discrimination: null,
+  }).some((signal) => signal.code === 'too_easy'));
+}
+
+function signalCodes(input: Parameters<typeof questionAnalyticsSignals>[0]) {
+  return questionAnalyticsSignals(input).map((signal) => signal.code);
+}
+
+const signalDefaults: Parameters<typeof questionAnalyticsSignals>[0] = {
+  difficulty: 'medium',
+  sample: questionSample(50),
+  successRate: 70,
+  timeoutRate: 0,
+  medianSeconds: 10,
+  peerMedianSeconds: 10,
+  peerCount: 5,
+  discrimination: null,
+};
+assert.ok(!signalCodes({ ...signalDefaults, timeoutRate: 24.9 }).includes('high_timeout'));
+assert.ok(signalCodes({ ...signalDefaults, timeoutRate: 25 }).includes('high_timeout'));
+assert.equal(
+  questionAnalyticsSignals({ ...signalDefaults, timeoutRate: 40 })
+    .find((signal) => signal.code === 'high_timeout')?.severity,
+  'critical',
+);
+assert.ok(!signalCodes({ ...signalDefaults, medianSeconds: 15, peerCount: 4 }).includes('slow'));
+assert.ok(signalCodes({ ...signalDefaults, medianSeconds: 15, peerCount: 5 }).includes('slow'));
 
 const hundredFacts = Array.from({ length: 100 }, (_, index) => ({
   correct: index < 50,
@@ -196,6 +409,22 @@ assert.deepEqual(
 );
 assert.equal(summarizeQuestionFacts(hundredFacts.slice(0, 99), 4, 1, 30).discrimination, null);
 
+const distractorBoundaryFacts = Array.from({ length: 100 }, (_, index) => ({
+  correct: index < 80,
+  timedOut: false,
+  elapsedSeconds: 10,
+  selectedIndex: index < 80 ? 0 : index < 85 ? 1 : 2,
+  restScore: index < 80 ? 80 : 20,
+  submitted: true,
+}));
+const distractorBoundary = summarizeQuestionFacts(distractorBoundaryFacts, 4, 0, 30);
+assert.equal(
+  distractorBoundary.functioningDistractorCount,
+  2,
+  'a distractor selected by exactly 5% of submitted answers is functioning',
+);
+assert.equal(distractorBoundary.deadDistractors, 1);
+
 const healthyPartial = questionQuality({
   difficulty: 'medium',
   sampleSize: 50,
@@ -203,6 +432,7 @@ const healthyPartial = questionQuality({
   timeoutRate: 5,
   medianSeconds: 12,
   peerMedianSeconds: 12,
+  peerCount: 5,
   functioningDistractors: 3,
   distractorCount: 3,
   discrimination: null,
@@ -224,6 +454,7 @@ const criticalQuality = questionQuality({
   timeoutRate: 45,
   medianSeconds: 20,
   peerMedianSeconds: 10,
+  peerCount: 5,
   functioningDistractors: 2,
   distractorCount: 3,
   discrimination: -0.2,
@@ -252,6 +483,7 @@ const slowAtBoundary = questionQuality({
   timeoutRate: 5,
   medianSeconds: 15,
   peerMedianSeconds: 10,
+  peerCount: 5,
   functioningDistractors: 3,
   distractorCount: 3,
   discrimination: null,
@@ -260,6 +492,24 @@ assert.ok(slowAtBoundary.warnings.includes('slow'), 'exactly 1.5× peer median i
 assert.equal(
   slowAtBoundary.quality.components.find((component) => component.key === 'timing_consistency')?.earned,
   0,
+);
+const noPeerTiming = questionQuality({
+  difficulty: 'medium',
+  sampleSize: 50,
+  successRate: 65,
+  timeoutRate: 5,
+  medianSeconds: 15,
+  peerMedianSeconds: 10,
+  peerCount: 4,
+  functioningDistractors: 3,
+  distractorCount: 3,
+  discrimination: null,
+});
+assert.ok(!noPeerTiming.warnings.includes('slow'));
+assert.equal(
+  noPeerTiming.quality.components.find((component) => component.key === 'timing_consistency')?.available,
+  false,
+  'timing comparison needs at least five peer questions',
 );
 
 const csv = semicolonCsv(
@@ -396,6 +646,125 @@ assert.equal(questionDetail.bankRevision, revisionA);
 const serializedDetail = JSON.stringify(questionDetail);
 assert.doesNotMatch(serializedDetail, /correctIndex|functioningDistractor|answerOrigin|selectedAnswer/u);
 assert.match(serializedDetail, /canonicalIndex/u);
+
+const hiddenPromptMarker = 'маркер-за-пределом-превью';
+const discoveryPrompt = `${'Длинный технический контекст '.repeat(12)} ${hiddenPromptMarker}`;
+const discoveryFacts = [
+  ...serviceFacts,
+  ...serviceFacts.slice(0, 30).map((row, index) => fact({
+    ...row,
+    questionId: 202,
+    answerId: 1_000 + index,
+    ordinal: 2,
+    topic: 'Linux',
+    dedupeKey: 'linux-systemd',
+    difficulty: 'hard',
+    prompt: discoveryPrompt,
+  })),
+];
+const discoveryQuery = parseAnalyticsQuery(
+  `http://localhost/x?bankRevision=${revisionA}&from=2026-07-30&to=2026-08-28&questionKind=base&sort=id&limit=1`,
+  now,
+);
+const firstQuestionPage = buildQuestionList(discoveryQuery, serviceAttempts, discoveryFacts);
+assert.equal(firstQuestionPage.items.length, 1);
+assert.equal(firstQuestionPage.items[0].questionId, 101);
+assert.equal(firstQuestionPage.totalCount, 2, 'totalCount describes the filtered set before pagination');
+assert.deepEqual(firstQuestionPage.summary, {
+  total: 2,
+  review: 0,
+  observe: 0,
+  good: 0,
+  insufficient: 2,
+  disabled: 0,
+});
+assert.ok(firstQuestionPage.nextCursor);
+const secondQuestionPage = buildQuestionList(
+  { ...discoveryQuery, cursorOffset: 1 },
+  serviceAttempts,
+  discoveryFacts,
+);
+assert.equal(secondQuestionPage.items[0].questionId, 202);
+assert.equal(secondQuestionPage.totalCount, 2);
+assert.equal(secondQuestionPage.nextCursor, null);
+
+const fullBankSearchQuery = parseAnalyticsQuery(
+  `http://localhost/x?bankRevision=${revisionA}&from=2026-07-30&to=2026-08-28&questionKind=base&q=${encodeURIComponent(hiddenPromptMarker)}`,
+  now,
+);
+const fullBankSearch = buildQuestionList(fullBankSearchQuery, serviceAttempts, discoveryFacts);
+assert.deepEqual(fullBankSearch.items.map((item) => item.questionId), [202]);
+assert.equal(fullBankSearch.totalCount, 1);
+assert.doesNotMatch(fullBankSearch.items[0].promptPreview, new RegExp(hiddenPromptMarker, 'u'));
+assert.equal(
+  questionAnalyticsMatches(fullBankSearchQuery, fullBankSearch.items[0], discoveryPrompt),
+  true,
+  'server search uses the full prompt, not only the truncated preview',
+);
+
+const allDiscoveryItems = buildQuestionList(
+  { ...discoveryQuery, limit: 50 },
+  serviceAttempts,
+  discoveryFacts,
+).items;
+const prioritizedItems = sortQuestionAnalyticsItems(
+  { ...discoveryQuery, sort: 'priority', direction: 'asc' },
+  [
+    allDiscoveryItems[0],
+    {
+      ...allDiscoveryItems[1],
+      quality: { ...allDiscoveryItems[1].quality, status: 'review', critical: true },
+      observed: { ...allDiscoveryItems[1].observed, timeoutRate: 40 },
+    },
+  ],
+);
+assert.equal(prioritizedItems[0].questionId, 202, 'critical questions sort before insufficient ones');
+assert.equal(questionAnalyticsSummary(prioritizedItems).review, 1);
+assert.equal(questionAnalyticsSummary(prioritizedItems).insufficient, 1);
+assert.equal(sortQuestionAnalyticsItems(
+  { ...discoveryQuery, sort: 'timeout', direction: 'desc' },
+  prioritizedItems,
+)[0].questionId, 202);
+
+const qualityAttempts = Array.from({ length: 50 }, (_, index) => attempt(`quality-${index + 1}`));
+const qualityFacts = [
+  ...qualityAttempts.map((item, index) => fact({
+    attemptId: item.id,
+    questionId: 303,
+    answerId: 3_000 + index,
+    prompt: 'Вопрос с критической долей тайм-аутов',
+    canonicalSelectedIndex: index < 30 ? 1 : null,
+    awardedScore: index < 30 ? 2 : 0,
+    isCorrect: index < 30,
+    timedOut: index >= 30,
+    answerOrigin: index < 30 ? 'submitted' : 'question_timeout',
+  })),
+  ...qualityAttempts.slice(0, 30).map((item, index) => fact({
+    attemptId: item.id,
+    questionId: 404,
+    answerId: 4_000 + index,
+    ordinal: 2,
+    prompt: 'Вопрос с недостаточной выборкой',
+  })),
+];
+const reviewOnlyList = buildQuestionList(
+  parseAnalyticsQuery(
+    `http://localhost/x?bankRevision=${revisionA}&from=2026-07-30&to=2026-08-28&questionKind=base&qualityStatus=needs_review&sort=id`,
+    now,
+  ),
+  qualityAttempts,
+  qualityFacts,
+);
+assert.deepEqual(reviewOnlyList.items.map((item) => item.questionId), [303]);
+assert.equal(reviewOnlyList.totalCount, 1, 'totalCount includes all list filters');
+assert.deepEqual(reviewOnlyList.summary, {
+  total: 2,
+  review: 1,
+  observe: 0,
+  good: 0,
+  insufficient: 1,
+  disabled: 0,
+}, 'summary keeps the status distribution before applying qualityStatus');
 
 const candidateAttempt = attempt('candidate-print', {
   score: 67,

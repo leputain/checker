@@ -101,10 +101,15 @@ export async function POST(request: Request) {
     for (const difficulty of DIFFICULTIES) {
       const result = await db
         .prepare(
-          `SELECT id, weight, dedupe_key, topic FROM questions
-           WHERE active = 1 AND difficulty = ? ORDER BY RANDOM()`,
+          `SELECT questions.id, questions.weight, questions.dedupe_key, questions.topic
+           FROM questions
+           JOIN question_bank_revision_items membership
+             ON membership.question_id = questions.id
+           WHERE membership.revision_hash = ? AND membership.active = 1
+             AND questions.difficulty = ?
+           ORDER BY RANDOM()`,
         )
-        .bind(difficulty)
+        .bind(bankRevision, difficulty)
         .all<{ id: number; weight: number; dedupe_key: string; topic: string }>();
       for (const question of result.results) {
         candidates.push({ ...question, difficulty });

@@ -17,7 +17,12 @@ type Counts = {
   questions: number;
   outbox: number;
   test_config_versions: number;
+  bank_revisions: number;
   bank_revision_items: number;
+  bank_state: number;
+  question_version_links: number;
+  question_bank_change_events: number;
+  question_bank_mutations: number;
   question_reviews: number;
   analytics_refresh_state: number;
   analytics_report_aggregates: number;
@@ -77,7 +82,12 @@ export async function createBackup(options: BackupOptions = {}) {
       ${count('questions')} AS questions,
       ${count('telegram_outbox')} AS outbox,
       ${count('test_config_versions')} AS test_config_versions,
+      ${count('question_bank_revisions')} AS bank_revisions,
       ${count('question_bank_revision_items')} AS bank_revision_items,
+      ${count('question_bank_state')} AS bank_state,
+      ${count('question_version_links')} AS question_version_links,
+      ${count('question_bank_change_events')} AS question_bank_change_events,
+      ${count('question_bank_mutations')} AS question_bank_mutations,
       ${count('question_review_history')} AS question_reviews,
       ${count('analytics_refresh_state')} AS analytics_refresh_state,
       ${count('analytics_report_aggregates')} AS analytics_report_aggregates,
@@ -89,12 +99,14 @@ export async function createBackup(options: BackupOptions = {}) {
       ${tables.has('schema_migrations')
         ? '(SELECT COALESCE(MAX(version), 0) FROM schema_migrations)'
         : '0'} AS schema_version,
-      ${tables.has('question_bank_revisions')
-        ? '(SELECT hash FROM question_bank_revisions ORDER BY applied_at DESC LIMIT 1)'
+      ${tables.has('question_bank_state')
+        ? '(SELECT current_revision FROM question_bank_state WHERE id = 1)'
+        : tables.has('question_bank_revisions')
+          ? '(SELECT hash FROM question_bank_revisions ORDER BY applied_at DESC LIMIT 1)'
         : 'NULL'} AS bank_revision
   `, context.persistPath, context.localD1)[0];
   const manifest = {
-    format: 2,
+    format: 3,
     createdAt: createdAt.toISOString(),
     expiresAt: new Date(createdAt.getTime() + RAW_BACKUP_TTL_MS).toISOString(),
     containsSensitiveData: true,

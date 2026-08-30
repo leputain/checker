@@ -49,15 +49,25 @@ async function chooseReplacementQuestion(
   topic: string,
   asked: number[],
   pending: number[],
+  bankRevision: string | null,
 ) {
   const excluded = [...asked, ...pending];
   const excludedIds = new Set(excluded);
   const excludedQuestions = await loadQuestions(excluded);
   const excludedDedupeKeys = new Set(excludedQuestions.map(dedupeKey));
   const candidates = await database()
-    .prepare(`SELECT id, difficulty, topic, dedupe_key, weight FROM questions
-      WHERE active = 1 AND difficulty = ? ORDER BY RANDOM()`)
-    .bind(difficulty)
+    .prepare(bankRevision
+      ? `SELECT questions.id, questions.difficulty, questions.topic,
+          questions.dedupe_key, questions.weight
+        FROM questions
+        JOIN question_bank_revision_items membership
+          ON membership.question_id = questions.id
+        WHERE membership.revision_hash = ? AND membership.active = 1
+          AND questions.difficulty = ?
+        ORDER BY RANDOM()`
+      : `SELECT id, difficulty, topic, dedupe_key, weight FROM questions
+        WHERE active = 1 AND difficulty = ? ORDER BY RANDOM()`)
+    .bind(...(bankRevision ? [bankRevision, difficulty] : [difficulty]))
     .all<{
       id: number;
       difficulty: Difficulty;
@@ -275,6 +285,7 @@ export async function processAttemptAnswer(
       question.topic,
       asked,
       pending,
+      attempt.bank_revision,
     );
     if (replacement) {
       pending.push(replacement.id);

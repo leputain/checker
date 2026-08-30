@@ -1,7 +1,17 @@
 export const ANALYTICS_SAMPLE_GATES = [30, 50, 100] as const;
+export const QUESTION_ANALYTICS_MODEL_VERSION = 2 as const;
 
 export type AnalyticsSampleGate = (typeof ANALYTICS_SAMPLE_GATES)[number];
 export type AnalyticsReliability = 'insufficient' | 'descriptive' | 'directional' | 'stable';
+export type QuestionSampleStatus = 'insufficient' | 'early' | 'working' | 'stable';
+export type QuestionAnalyticsSort =
+  | 'priority'
+  | 'timeout'
+  | 'success'
+  | 'sample'
+  | 'lastPresented'
+  | 'id';
+export type AnalyticsSortDirection = 'asc' | 'desc';
 export type AnalyticsQuestionKind = 'all' | 'base' | 'additional';
 export type AnalyticsCandidatePolicy = 'latest' | 'all';
 export type AnalyticsVerdict = 'PASS' | 'REVIEW' | 'FAIL';
@@ -20,7 +30,14 @@ export type AnalyticsCohortQuery = {
   difficulty?: string;
   questionKind?: AnalyticsQuestionKind;
   qualityStatus?: AnalyticsQualityStatus;
+  /** @deprecated Legacy presentation threshold; exact `observed` metrics are never gated. */
   minSample?: AnalyticsSampleGate;
+  /** Full-bank server-side search. The API never returns answer choices or answer keys. */
+  q?: string;
+  minN?: number;
+  sampleStatus?: QuestionSampleStatus | 'all';
+  sort?: QuestionAnalyticsSort;
+  direction?: AnalyticsSortDirection;
   candidatePolicy?: AnalyticsCandidatePolicy;
   cursor?: string;
   limit?: number;
@@ -31,6 +48,7 @@ export type AnalyticsCohortQuery = {
 };
 
 export type AnalyticsCohortDto = {
+  questionAnalyticsModelVersion: typeof QUESTION_ANALYTICS_MODEL_VERSION;
   from: string | null;
   to: string | null;
   bankRevision: string | null;
@@ -66,6 +84,11 @@ export type AdminApiErrorCode =
   | 'rate_limited'
   | 'csrf_invalid'
   | 'not_found'
+  | 'bank_revision_conflict'
+  | 'idempotency_conflict'
+  | 'question_has_successor'
+  | 'question_validation_failed'
+  | 'question_bank_not_ready'
   | 'analytics_refresh_required'
   | 'analytics_unavailable';
 
@@ -124,6 +147,8 @@ export type QuestionRecommendationDto = {
 
 export type QuestionAnalyticsItemDto = {
   questionId: number;
+  /** Whitespace-normalized, server-truncated preview. Full text is available only in detail. */
+  promptPreview: string;
   topic: string;
   difficulty: string;
   active: boolean;
@@ -148,6 +173,57 @@ export type QuestionAnalyticsItemDto = {
   quality: QuestionQualityDto;
   qualityWarnings: QuestionQualityWarning[];
   recommendation: QuestionRecommendationDto | null;
+  /** Exact observations. These fields are never hidden by statistical sample gates. */
+  observed: QuestionObservedMetricsDto;
+  sample: QuestionSampleDto;
+  signals: QuestionAnalyticsSignalDto[];
+};
+
+export type QuestionObservedMetricsDto = {
+  assignedCount: number;
+  presentedCount: number;
+  outcomeCount: number;
+  submittedCount: number;
+  correctCount: number;
+  incorrectCount: number;
+  timeoutCount: number;
+  presentationRate: number | null;
+  responseRate: number | null;
+  completionRate: number | null;
+  successRate: number | null;
+  timeoutRate: number | null;
+  timing: {
+    sampleSize: number;
+    averageSeconds: number | null;
+    medianSeconds: number | null;
+    minSeconds: number | null;
+    maxSeconds: number | null;
+  };
+};
+
+export type QuestionSampleDto = {
+  n: number;
+  status: QuestionSampleStatus;
+  nextGate: AnalyticsSampleGate | null;
+  remaining: number;
+};
+
+export type QuestionAnalyticsSignalCode =
+  | 'sample_insufficient'
+  | 'sample_early'
+  | 'too_easy'
+  | 'too_hard'
+  | 'high_timeout'
+  | 'slow'
+  | 'negative_discrimination';
+
+export type QuestionAnalyticsSignalDto = {
+  code: QuestionAnalyticsSignalCode;
+  severity: 'info' | 'warning' | 'critical';
+  title: string;
+  explanation: string;
+  observed: number | null;
+  threshold: string | null;
 };
 
 export type AnalyticsBreakdownDto = {
@@ -354,9 +430,25 @@ export type AnalyticsPagedListDto<T> = AnalyticsListDto<T> & {
   nextCursor: string | null;
 };
 
+export type QuestionAnalyticsSummaryDto = {
+  total: number;
+  review: number;
+  observe: number;
+  good: number;
+  insufficient: number;
+  disabled: number;
+};
+
+export type QuestionAnalyticsListDto = AnalyticsPagedListDto<QuestionAnalyticsItemDto> & {
+  questionAnalyticsModelVersion: typeof QUESTION_ANALYTICS_MODEL_VERSION;
+  totalCount: number;
+  summary: QuestionAnalyticsSummaryDto;
+};
+
 export type AnalyticsExportFormat = 'csv' | 'json';
 
 export type AnalyticsExportRowDto = {
+  questionAnalyticsModelVersion: typeof QUESTION_ANALYTICS_MODEL_VERSION;
   questionId: number;
   topic: string;
   difficulty: string;
@@ -379,4 +471,15 @@ export type AnalyticsExportRowDto = {
   qualityWarnings: QuestionQualityWarning[];
   reliability: AnalyticsReliability;
   recommendation: QuestionRecommendationCode | null;
+  observedSubmittedCount: number;
+  observedCorrectCount: number;
+  observedIncorrectCount: number;
+  observedTimeoutCount: number;
+  observedPresentationRate: number | null;
+  observedResponseRate: number | null;
+  observedSuccessRate: number | null;
+  observedTimeoutRate: number | null;
+  sampleStatus: QuestionSampleStatus;
+  nextSampleGate: AnalyticsSampleGate | null;
+  signalCodes: QuestionAnalyticsSignalCode[];
 };

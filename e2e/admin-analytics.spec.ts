@@ -9,6 +9,7 @@ import type {
   QuestionAnalyticsDetailDto,
   QuestionAnalyticsItemDto,
 } from '../lib/analytics-contract.ts';
+import { QUESTION_ANALYTICS_MODEL_VERSION } from '../lib/analytics-contract.ts';
 import { APP_RELEASE } from '../lib/release.ts';
 import { SCORING_VERSION, TEST_CONFIG_ID, TEST_PROFILE_ID } from '../lib/test-config.ts';
 
@@ -104,7 +105,7 @@ async function loginAsAdmin(page: Page) {
   expect(loginResponse.headers()['cache-control']).toContain('no-store');
 
   await expect(page).toHaveURL(/\/admin\/analytics$/u);
-  await expect(page.getByRole('heading', { name: 'Сигналы для решения, а не BI ради BI.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Тесты, кандидаты и банк вопросов.' })).toBeVisible();
   return pin;
 }
 
@@ -126,6 +127,7 @@ async function ensureAnalyticsReady(page: Page) {
 }
 
 const mockCohort: AnalyticsCohortDto = {
+  questionAnalyticsModelVersion: QUESTION_ANALYTICS_MODEL_VERSION,
   from: '2026-07-29',
   to: '2026-08-28',
   bankRevision: 'revision-b',
@@ -160,8 +162,13 @@ const emptyBreakdown = {
 } as const;
 
 function mockQuestion(questionId: number, topic: string): QuestionAnalyticsItemDto {
+  const successRate = questionId === 101 ? 82 : 54;
+  const correctCount = questionId === 101 ? 41 : 27;
   return {
     questionId,
+    promptPreview: questionId === 101
+      ? 'Какой протокол разрешает имена в IP-адреса?'
+      : 'Как определить причину высокой нагрузки Linux-сервера?',
     topic,
     difficulty: questionId === 101 ? 'easy' : 'hard',
     active: true,
@@ -172,7 +179,7 @@ function mockQuestion(questionId: number, topic: string): QuestionAnalyticsItemD
     sampleSize: 50,
     reliability: 'directional',
     completionRate: 100,
-    successRate: questionId === 101 ? 82 : 54,
+    successRate,
     timeoutRate: 4,
     averageSeconds: 11,
     medianSeconds: 10,
@@ -181,11 +188,45 @@ function mockQuestion(questionId: number, topic: string): QuestionAnalyticsItemD
     lastPresentedAt: '2026-08-28T11:00:00.000Z',
     lastAnsweredAt: '2026-08-28T11:00:10.000Z',
     discrimination: null,
-    base: { ...emptyBreakdown, assigned: 50, presented: 50, resolved: 50, correct: 41, incorrect: 9, earned: 82, max: 100, successRate: 82 },
+    base: {
+      ...emptyBreakdown,
+      assigned: 50,
+      presented: 50,
+      resolved: 50,
+      correct: correctCount,
+      incorrect: 48 - correctCount,
+      timedOut: 2,
+      earned: 82,
+      max: 100,
+      successRate,
+    },
     additional: emptyBreakdown,
     quality: { enabled: true, earned: 75, maxAvailable: 80, partial: true, status: 'good', critical: false, components: [] },
     qualityWarnings: [],
     recommendation: { code: 'keep', label: 'Оставить', reasons: [] },
+    observed: {
+      assignedCount: 50,
+      presentedCount: 50,
+      outcomeCount: 50,
+      submittedCount: 48,
+      correctCount,
+      incorrectCount: 48 - correctCount,
+      timeoutCount: 2,
+      presentationRate: 100,
+      responseRate: 96,
+      completionRate: 100,
+      successRate,
+      timeoutRate: 4,
+      timing: {
+        sampleSize: 48,
+        averageSeconds: 11,
+        medianSeconds: 10,
+        minSeconds: 2,
+        maxSeconds: 29,
+      },
+    },
+    sample: { n: 50, status: 'working', nextGate: 100, remaining: 50 },
+    signals: [],
   };
 }
 
@@ -295,8 +336,22 @@ async function mockAdminAnalyticsUi(page: Page) {
       payload = questionDetail;
     } else if (pathname.endsWith('/questions')) {
       payload = url.searchParams.has('cursor')
-        ? { cohort: mockCohort, items: [questionA, questionB], nextCursor: null }
-        : { cohort: mockCohort, items: [questionA], nextCursor: 'questions-next' };
+        ? {
+            cohort: mockCohort,
+            questionAnalyticsModelVersion: QUESTION_ANALYTICS_MODEL_VERSION,
+            items: [questionA, questionB],
+            totalCount: 2,
+            summary: { total: 2, review: 0, observe: 0, good: 2, insufficient: 0, disabled: 0 },
+            nextCursor: null,
+          }
+        : {
+            cohort: mockCohort,
+            questionAnalyticsModelVersion: QUESTION_ANALYTICS_MODEL_VERSION,
+            items: [questionA],
+            totalCount: 2,
+            summary: { total: 2, review: 0, observe: 0, good: 2, insufficient: 0, disabled: 0 },
+            nextCursor: 'questions-next',
+          };
     } else if (/\/candidates\/attempt-00000101$/u.test(pathname)) {
       payload = candidateDetail;
     } else if (pathname.endsWith('/candidates')) {
@@ -349,7 +404,16 @@ test('admin analytics работает на iPad и не раскрывает к
   const exportResponse = await page.request.get(
     '/api/admin/analytics/export?format=json&questionKind=base&qualityStatus=all&minSample=30&candidatePolicy=latest',
   );
-  await expectPrivateAdminResponse(exportResponse, pin);
+  const exportPayload = await expectPrivateAdminResponse(exportResponse, pin) as {
+    questionAnalyticsModelVersion: number;
+    cohort: { questionAnalyticsModelVersion: number };
+    rows: Array<Record<string, unknown>>;
+  };
+  expect(exportPayload.questionAnalyticsModelVersion).toBe(QUESTION_ANALYTICS_MODEL_VERSION);
+  expect(exportPayload.cohort.questionAnalyticsModelVersion).toBe(QUESTION_ANALYTICS_MODEL_VERSION);
+  expect(exportPayload.rows.every((row) => (
+    row.questionAnalyticsModelVersion === QUESTION_ANALYTICS_MODEL_VERSION
+  ))).toBe(true);
   expect(exportResponse.headers()['content-disposition']).toContain('attachment;');
 
   const csvResponse = await page.request.get(
@@ -362,6 +426,10 @@ test('admin analytics работает на iPad и не раскрывает к
   const csv = await csvResponse.text();
   expect(csv.startsWith('\uFEFF')).toBe(true);
   expect(csv).toContain(';');
+  expect(csv).toContain('analytics_model_version;question_id;topic;difficulty;kind');
+  expect(csv).toContain('observed_correct');
+  expect(csv).toContain('sample_status');
+  expect(csv).toContain('signals');
   expect(csv).not.toContain(pin);
 
   const bodyText = await page.locator('body').innerText();
@@ -387,14 +455,15 @@ test('admin analytics работает на iPad и не раскрывает к
 
   await page.getByRole('tab', { name: 'Вопросы' }).click();
   await expect(page.getByRole('tabpanel').getByRole('heading', { name: 'Качество вопросов' })).toBeVisible();
-  await page.locator('summary').filter({ hasText: 'Модель' }).click();
+  await page.locator('summary').filter({ hasText: 'Изменить выборку' }).click();
+  await page.locator('summary > span').filter({ hasText: 'Техническая модель' }).click();
   await page.getByLabel('Версия scoring').fill(String(SCORING_VERSION));
   await page.getByLabel('Конфигурация теста').fill(TEST_CONFIG_ID);
   await page.getByLabel('Профиль теста').fill(TEST_PROFILE_ID);
   await page.getByLabel('Версия приложения').fill(APP_RELEASE);
   await page.getByLabel('Тип вопроса').selectOption('all');
   await page.getByLabel('Тема').fill('Сети');
-  await page.getByLabel('Мин. выборка').selectOption('50');
+  await page.getByLabel('Порог агрегатов').selectOption('50');
   await page.getByLabel('Повторные попытки').selectOption('all');
 
   const filteredResponsePromise = page.waitForResponse((response) => {
@@ -412,7 +481,7 @@ test('admin analytics работает на iPad и не раскрывает к
   await page.getByRole('button', { name: 'Применить' }).click();
   const filteredResponse = await filteredResponsePromise;
   await expectPrivateAdminResponse(filteredResponse, pin);
-  await expect(page.getByRole('tabpanel').getByText('Недостаточно данных', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('tabpanel').getByText('Ничего не найдено', { exact: true }).first()).toBeVisible();
   await expectNoHorizontalOverflow(page);
 
   const touchTargetHeights = await page.getByRole('tab').evaluateAll((tabs) => (
@@ -444,7 +513,7 @@ test('admin analytics показывает пагинацию, детали, д�
   await expect(page.getByRole('tabpanel').getByRole('heading', { name: 'Общая картина' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Сравнение ревизий' })).toBeVisible();
   await expect(page.getByRole('cell', { name: '+12' }).first()).toBeVisible();
-  await expect(page.getByText('Fallback / без shadow', { exact: true })).toBeVisible();
+  await expect(page.getByText('Без сравнения', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Темы', exact: true }).click();
   await expect(page.getByText('Сети', { exact: true })).toBeVisible();
@@ -454,14 +523,60 @@ test('admin analytics показывает пагинацию, детали, д�
   await expect(page.getByRole('tabpanel').getByText('Сложный', { exact: true })).toBeVisible();
 
   await page.getByRole('tab', { name: 'Вопросы' }).click();
-  await expect(page.getByRole('button', { name: '#101' })).toBeVisible();
+  const qualitySummary = page.getByRole('region', { name: 'Сводка качества вопросов' });
+  await expect(qualitySummary).toContainText('Вопросов в выборке');
+  await expect(qualitySummary).toContainText('Требуют проверки');
+  await expect(qualitySummary).toContainText('Наблюдать');
+  await expect(qualitySummary).toContainText('Мало данных');
+  for (const heading of ['Вопрос', 'Статус', 'Данные', 'Результаты', 'Время', 'Действие']) {
+    await expect(page.getByRole('columnheader', { name: heading, exact: true })).toBeVisible();
+  }
+  await expect(page.getByText('Верно 41 из 50 · 82%', { exact: true })).toBeVisible();
+  await expect(page.getByText('Тайм-ауты 2 из 50 · 4%', { exact: true })).toBeVisible();
+  await expect(page.getByText('n=50', { exact: true })).toBeVisible();
+  await expect(page.getByText('Рабочая оценка', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Открыть аналитику вопроса 101' })).toBeVisible();
   await page.getByRole('button', { name: 'Показать ещё' }).click();
-  await expect(page.getByRole('button', { name: '#202' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '#101' })).toHaveCount(1);
-  await page.getByRole('button', { name: '#101' }).click();
+  await expect(page.getByRole('button', { name: 'Открыть аналитику вопроса 202' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Открыть аналитику вопроса 101' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Открыть аналитику вопроса 101' }).click();
   await expect(page.getByRole('dialog', { name: 'Вопрос #101' })).toBeVisible();
   await expect(page.getByText('Какой протокол разрешает имена в IP-адреса?')).toBeVisible();
+  const questionDialog = page.getByRole('dialog', { name: 'Вопрос #101' });
+  for (const section of [
+    'Диагноз',
+    'Достоверность',
+    'Доказательства',
+    'Индекс качества вопроса',
+    'Распределение A / B / C / D',
+    'Следующее действие',
+    'Решение администратора',
+  ]) {
+    await expect(questionDialog.getByText(section, { exact: true }).first()).toBeVisible();
+  }
+  await expect(questionDialog.getByText('41 из 50 · 82%', { exact: true })).toBeVisible();
+  await expect(questionDialog.getByText('2 из 50 · 4%', { exact: true })).toBeVisible();
+  await expect(questionDialog.getByText('75 из доступных 80', { exact: true })).toBeVisible();
+  await expect(questionDialog.getByText(/Индекс неполный/u)).toBeVisible();
   await page.getByRole('button', { name: 'Закрыть' }).click();
+
+  const searchResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/admin/analytics/questions'
+      && url.searchParams.get('q') === 'Linux';
+  });
+  await page.getByLabel('Поиск по всему банку').fill('Linux');
+  await page.getByRole('button', { name: 'Найти' }).click();
+  expect((await searchResponsePromise).status()).toBe(200);
+  const sortResponsePromise = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/admin/analytics/questions'
+      && url.searchParams.get('sort') === 'timeout'
+      && url.searchParams.get('direction') === 'desc';
+  });
+  await page.getByLabel('Порядок').selectOption('timeout:desc');
+  expect((await sortResponsePromise).status()).toBe(200);
+  await expectNoHorizontalOverflow(page);
 
   await page.getByRole('tab', { name: 'Кандидаты' }).click();
   await expect(page.getByRole('button', { name: 'Кандидат 00000101' })).toBeVisible();

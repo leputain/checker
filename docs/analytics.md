@@ -79,6 +79,8 @@ ANALYTICS_EXPORT_ENABLED=1
 
 ## Метрики
 
+Пользовательские определения, знаменатели, уровни достоверности и правила интерпретации зафиксированы в [`analytics-metrics.md`](analytics-metrics.md). Начиная с v1.1.0 факты и статистический вывод разделены: абсолютные счётчики и наблюдаемые доли видны при любой выборке, а статус и рекомендация ограничиваются sample gates.
+
 Формулы вопроса:
 
 ```text
@@ -88,7 +90,7 @@ timeoutRate    = timeout / outcomes
 completionRate = outcomes / presentations
 ```
 
-Timing использует только `answer_origin = submitted`. Порог предупреждений — `n >= 30`, Question Quality Score — `n >= 50`, point-biserial discrimination — `n >= 100` и только при ненулевой variance.
+Timing использует только `answer_origin = submitted`. Порог предупреждений — `n >= 30`, индекс качества — `n >= 50`, point-biserial discrimination — `n >= 100` и только при ненулевой variance. В интерфейсе `n < 30` называется «Мало данных», `30–49` — «Первичный сигнал», `50–99` — «Рабочая оценка», `100+` — «Стабильная оценка».
 
 Ожидаемые success ranges:
 
@@ -99,7 +101,9 @@ Timing использует только `answer_origin = submitted`. Порог
 | hard | 30–60% |
 | expert | 10–40% |
 
-Quality Score не нормализует отсутствующие компоненты. API возвращает `earned`, `maxAvailable` и `partial`. Статусы: `good >= 75` без critical warning, `observe 50–74`, `review < 50` либо critical warning; при `n < 50` — `insufficient`.
+Индекс качества не нормализует отсутствующие компоненты. API возвращает `earned`, `maxAvailable` и `partial`: например, `58/80` остаётся `58/80`, а не превращается в процент от 100. Статусы: `good >= 75` без critical warning, `observe 50–74`, `review < 50` либо critical warning; при `n < 50` — `insufficient`. Рекомендация `keep` при `n < 50` запрещена.
+
+Список вопросов использует серверный поиск, сортировку, фильтры и пагинацию. `totalCount` и summary относятся ко всей отфильтрованной выборке, а не только к загруженной странице. По умолчанию вопросы сортируются по необходимости внимания.
 
 Калибровка, discrimination и рекомендации применяются только к базовым вопросам и политике `latest`. Дополнительные вопросы показываются как recovery sample. При `questionKind=all` общие счётчики включают обе роли, а Quality Score рассчитывается только по базовому split.
 

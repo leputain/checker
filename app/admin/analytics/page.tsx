@@ -18,6 +18,7 @@ import type {
   AnalyticsReliability,
   AnalyticsRevisionItemDto,
   AnalyticsRevisionComparisonDto,
+  AnalyticsSortDirection,
   AnalyticsTrendItemDto,
   AnalyticsVerdict,
   CandidateAnalyticsItemDto,
@@ -26,10 +27,15 @@ import type {
   CreateQuestionReviewDto,
   GroupAnalyticsItemDto,
   QuestionAnalyticsDetailDto,
+  QuestionAnalyticsListDto,
   QuestionAnalyticsItemDto,
+  QuestionAnalyticsSort,
+  QuestionAnalyticsSummaryDto,
   QuestionKindSplitDto,
   QuestionReviewDecision,
   QuestionReviewDto,
+  QuestionSampleDto,
+  QuestionSampleStatus,
 } from '@/lib/analytics-contract.ts';
 import { ANALYTICS_SAMPLE_GATES } from '@/lib/analytics-contract.ts';
 import { appPath } from '@/lib/app-path.ts';
@@ -45,6 +51,7 @@ import {
   loginPath,
   type AdminFilters,
 } from '../admin-client.ts';
+import { QuestionBankPanel } from '../question-bank-panel.tsx';
 import styles from '../admin.module.css';
 
 type AnalyticsTab = 'overview' | 'questions' | 'candidates' | 'topics' | 'difficulty';
@@ -60,10 +67,10 @@ const tabLabels: Record<AnalyticsTab, string> = {
 };
 
 const reliabilityLabels: Record<AnalyticsReliability, string> = {
-  insufficient: 'Недостаточно данных',
-  descriptive: 'Предварительно',
-  directional: 'Устойчивый сигнал',
-  stable: 'Стабильно',
+  insufficient: 'Факты без вывода',
+  descriptive: 'Первичный сигнал',
+  directional: 'Рабочая оценка',
+  stable: 'Стабильная оценка',
 };
 
 const verdictLabels: Record<AnalyticsVerdict, string> = {
@@ -90,17 +97,24 @@ const qualityWarningLabels: Record<QuestionAnalyticsItemDto['qualityWarnings'][n
   insufficient: 'Недостаточно данных',
   too_easy: 'Фактически проще заявленного',
   too_hard: 'Фактически сложнее заявленного',
-  high_timeout: 'Высокая доля timeout',
+  high_timeout: 'Высокая доля тайм-аутов',
   slow: 'Аномально долгое решение',
-  negative_discrimination: 'Негативная дискриминация',
+  negative_discrimination: 'Отрицательная разделяющая способность',
 };
 
 const qualityComponentLabels: Record<QuestionAnalyticsItemDto['quality']['components'][number]['key'], string> = {
   difficulty_fit: 'Соответствие сложности',
-  timeout_health: 'Timeout',
+  timeout_health: 'Тайм-ауты',
   timing_consistency: 'Стабильность времени',
-  distractor: 'Дистракторы',
-  discrimination: 'Дискриминация',
+  distractor: 'Качество вариантов ответа',
+  discrimination: 'Разделяющая способность',
+};
+
+const questionSampleLabels: Record<QuestionSampleStatus, string> = {
+  insufficient: 'Факты без вывода',
+  early: 'Первичный сигнал',
+  working: 'Рабочая оценка',
+  stable: 'Стабильная оценка',
 };
 
 function reviewDecisionLabel(value: QuestionReviewDecision) {
@@ -132,6 +146,62 @@ function questionKindLabel(value: QuestionAnalyticsItemDto['kind']) {
 
 function percentage(value: number | null) {
   return value === null || !Number.isFinite(value) ? '—' : `${Math.round(value)}%`;
+}
+
+function questionCounts(item: QuestionAnalyticsItemDto) {
+  return {
+    assigned: item.observed.assignedCount,
+    presented: item.observed.presentedCount,
+    submitted: item.observed.submittedCount,
+    correct: item.observed.correctCount,
+    incorrect: item.observed.incorrectCount,
+    timedOut: item.observed.timeoutCount,
+  };
+}
+
+function questionSample(item: QuestionAnalyticsItemDto) {
+  return item.sample;
+}
+
+function questionRates(item: QuestionAnalyticsItemDto) {
+  return {
+    response: item.observed.responseRate,
+    success: item.observed.successRate,
+    timeout: item.observed.timeoutRate,
+  };
+}
+
+function observedRate(count: number, total: number, rate: number | null) {
+  return `${count} из ${total} · ${percentage(rate)}`;
+}
+
+function questionStatus(item: QuestionAnalyticsItemDto) {
+  if (questionSample(item).n < 30) return 'insufficient' as const;
+  return item.quality.status;
+}
+
+function questionAction(item: QuestionAnalyticsItemDto) {
+  const sample = questionSample(item);
+  if (sample.n < 30 || (sample.n < 50 && item.recommendation?.code === 'keep')) {
+    const target = sample.n < 30 ? 30 : 50;
+    return {
+      label: `Накопить ещё ${Math.max(0, target - sample.n)}`,
+      tone: 'neutral' as const,
+      reasons: [`Для следующего уровня достоверности нужно ${target} результатов.`],
+    };
+  }
+  if (!item.recommendation) {
+    return {
+      label: item.kind === 'additional' ? 'Смотреть отдельно' : 'Нет действия',
+      tone: 'neutral' as const,
+      reasons: [] as string[],
+    };
+  }
+  return {
+    label: item.recommendation.label,
+    tone: item.recommendation.code === 'keep' ? 'good' as const : 'warning' as const,
+    reasons: item.recommendation.reasons,
+  };
 }
 
 function secondsLabel(value: number | null) {
@@ -180,6 +250,7 @@ export default function AdminAnalyticsPage() {
   const [session, setSession] = useState<AdminSessionDto | null>(null);
   const [sessionError, setSessionError] = useState('');
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('overview');
+  const [questionView, setQuestionView] = useState<'analytics' | 'bank'>('analytics');
   const [draftFilters, setDraftFilters] = useState<AdminFilters>(DEFAULT_ADMIN_FILTERS);
   const [filters, setFilters] = useState<AdminFilters>(DEFAULT_ADMIN_FILTERS);
   const [revisions, setRevisions] = useState<AnalyticsRevisionItemDto[]>([]);
@@ -304,6 +375,20 @@ export default function AdminAnalyticsPage() {
     setFiltersRevision((value) => value + 1);
   }
 
+  function openQuestionDrilldown(resource: 'topics' | 'difficulty', value: string) {
+    const nextFilters = {
+      ...filters,
+      topic: resource === 'topics' ? value : '',
+      difficulty: resource === 'difficulty' ? value : '',
+      qualityStatus: 'all' as const,
+    };
+    setDraftFilters(nextFilters);
+    setFilters(nextFilters);
+    setFiltersRevision((revision) => revision + 1);
+    setQuestionView('analytics');
+    setActiveTab('questions');
+  }
+
   function moveTab(event: ReactKeyboardEvent<HTMLElement>) {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
     event.preventDefault();
@@ -341,7 +426,7 @@ export default function AdminAnalyticsPage() {
         </a>
         <div className={styles.headerTitle}>
           <span>Локальная панель</span>
-          <strong>Аналитика</strong>
+          <strong>Администрирование</strong>
         </div>
         <div className={styles.headerActions}>
           <span className={styles.privateBadge}>Обезличено</span>
@@ -352,15 +437,17 @@ export default function AdminAnalyticsPage() {
       <div className={styles.adminContent}>
         <section className={styles.hero}>
           <div>
-            <p className={styles.eyebrow}>Candidate analytics</p>
-            <h1>Сигналы для решения, а не BI ради BI.</h1>
-            <p>Результаты кандидатов, качество банка и точки для следующего интервью — в одной локальной панели.</p>
+            <p className={styles.eyebrow}>Административная панель</p>
+            <h1>Тесты, кандидаты и банк вопросов.</h1>
+            <p>Управление содержимым теста и понятные факты для проверки его качества.</p>
           </div>
-          <div className={styles.exportGroup} aria-label="Экспорт текущей когорты">
-            <span>Экспорт когорты</span>
-            <a href={exportHref('csv', filters)} download>CSV</a>
-            <a href={exportHref('json', filters)} download>JSON</a>
-          </div>
+          {!(activeTab === 'questions' && questionView === 'bank') && (
+            <div className={styles.exportGroup} aria-label="Экспорт текущей когорты">
+              <span>Экспорт когорты</span>
+              <a href={exportHref('csv', filters)} download>CSV</a>
+              <a href={exportHref('json', filters)} download>JSON</a>
+            </div>
+          )}
         </section>
 
         {refreshState !== 'idle' && (
@@ -398,14 +485,16 @@ export default function AdminAnalyticsPage() {
           ))}
         </nav>
 
-        <FilterBar
-          filters={draftFilters}
-          revisions={revisions}
-          error={sessionError}
-          onChange={setDraftFilters}
-          onApply={applyFilters}
-          onReset={resetFilters}
-        />
+        {!(activeTab === 'questions' && questionView === 'bank') && (
+          <FilterBar
+            filters={draftFilters}
+            revisions={revisions}
+            error={sessionError}
+            onChange={setDraftFilters}
+            onApply={applyFilters}
+            onReset={resetFilters}
+          />
+        )}
 
         <section
           id={`admin-panel-${activeTab}`}
@@ -430,6 +519,8 @@ export default function AdminAnalyticsPage() {
               revision={filtersRevision}
               csrfToken={session?.csrfToken ?? ''}
               onAdminError={handleAdminError}
+              view={questionView}
+              onViewChange={setQuestionView}
             />
           )}
           {activeTab === 'candidates' && (
@@ -443,6 +534,7 @@ export default function AdminAnalyticsPage() {
               filters={filters}
               revision={filtersRevision}
               onAdminError={handleAdminError}
+              onOpenQuestions={(value) => openQuestionDrilldown('topics', value)}
             />
           )}
           {activeTab === 'difficulty' && (
@@ -453,6 +545,7 @@ export default function AdminAnalyticsPage() {
               filters={filters}
               revision={filtersRevision}
               onAdminError={handleAdminError}
+              onOpenQuestions={(value) => openQuestionDrilldown('difficulty', value)}
             />
           )}
         </section>
@@ -478,175 +571,181 @@ function FilterBar({
 }) {
   return (
     <form className={styles.filterBar} onSubmit={onApply}>
-      <div className={styles.filterHeading}>
-        <span>Когорта</span>
-        <small>Фильтры применяются ко всем вкладкам</small>
-      </div>
-      <details className={styles.modelFilters}>
+      <details className={styles.cohortFilters}>
         <summary>
-          <span>Модель</span>
-          <small>Авто · текущая модель сервера</small>
+          <span>Изменить выборку</span>
+          <small>Период, банк, тип вопросов и техническая модель</small>
         </summary>
-        <div className={styles.modelFilterGrid}>
+        <div className={styles.cohortFilterGrid}>
+          <details className={styles.modelFilters}>
+            <summary>
+              <span>Техническая модель</span>
+              <small>Авто · активная модель сервера</small>
+            </summary>
+            <div className={styles.modelFilterGrid}>
+              <label>
+                <span>Версия scoring</span>
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  max="1000"
+                  step="1"
+                  value={filters.scoringVersion}
+                  onChange={(event) => onChange({ ...filters, scoringVersion: event.target.value })}
+                  placeholder={String(SCORING_VERSION)}
+                />
+              </label>
+              <label>
+                <span>Конфигурация теста</span>
+                <input
+                  value={filters.testConfigId}
+                  onChange={(event) => onChange({ ...filters, testConfigId: event.target.value.trim() })}
+                  placeholder={TEST_CONFIG_ID}
+                  minLength={64}
+                  maxLength={64}
+                  pattern="[a-f0-9]{64}"
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                <span>Профиль теста</span>
+                <input
+                  value={filters.testProfileId}
+                  onChange={(event) => onChange({ ...filters, testProfileId: event.target.value.trim() })}
+                  placeholder={TEST_PROFILE_ID}
+                  maxLength={96}
+                  pattern="[a-zA-Z0-9._:-]{1,96}"
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                <span>Версия приложения</span>
+                <input
+                  value={filters.appVersion}
+                  onChange={(event) => onChange({ ...filters, appVersion: event.target.value.trim() })}
+                  placeholder={APP_RELEASE}
+                  maxLength={96}
+                  pattern="[a-zA-Z0-9._:-]{1,96}"
+                  spellCheck={false}
+                />
+              </label>
+            </div>
+            <p>Пустые поля используют активную модель сервера — включая balanced-профиль при его включении.</p>
+          </details>
           <label>
-            <span>Версия scoring</span>
+            <span>С даты</span>
             <input
-              type="number"
-              inputMode="numeric"
-              min="1"
-              max="1000"
-              step="1"
-              value={filters.scoringVersion}
-              onChange={(event) => onChange({ ...filters, scoringVersion: event.target.value })}
-              placeholder={String(SCORING_VERSION)}
+              type="date"
+              value={filters.from}
+              onChange={(event) => onChange({ ...filters, from: event.target.value })}
             />
           </label>
           <label>
-            <span>Конфигурация теста</span>
+            <span>По дату</span>
             <input
-              value={filters.testConfigId}
-              onChange={(event) => onChange({ ...filters, testConfigId: event.target.value.trim() })}
-              placeholder={TEST_CONFIG_ID}
-              minLength={64}
-              maxLength={64}
-              pattern="[a-f0-9]{64}"
-              spellCheck={false}
+              type="date"
+              value={filters.to}
+              onChange={(event) => onChange({ ...filters, to: event.target.value })}
             />
           </label>
           <label>
-            <span>Профиль теста</span>
+            <span>Ревизия банка</span>
+            <select
+              value={filters.bankRevision}
+              onChange={(event) => onChange({ ...filters, bankRevision: event.target.value })}
+            >
+              <option value="">Текущая когорта</option>
+              {revisions.map((item) => (
+                <option value={item.revision} key={item.revision}>
+                  {item.revision.slice(0, 10)} · {item.attempts}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Тип вопроса</span>
+            <select
+              value={filters.questionKind}
+              onChange={(event) => onChange({
+                ...filters,
+                questionKind: event.target.value as AdminFilters['questionKind'],
+              })}
+            >
+              <option value="all">Все</option>
+              <option value="base">Основные</option>
+              <option value="additional">Дополнительные</option>
+            </select>
+          </label>
+          <label>
+            <span>Тема</span>
             <input
-              value={filters.testProfileId}
-              onChange={(event) => onChange({ ...filters, testProfileId: event.target.value.trim() })}
-              placeholder={TEST_PROFILE_ID}
-              maxLength={96}
-              pattern="[a-zA-Z0-9._:-]{1,96}"
-              spellCheck={false}
+              value={filters.topic}
+              onChange={(event) => onChange({ ...filters, topic: event.target.value })}
+              placeholder="Все темы"
             />
           </label>
           <label>
-            <span>Версия приложения</span>
-            <input
-              value={filters.appVersion}
-              onChange={(event) => onChange({ ...filters, appVersion: event.target.value.trim() })}
-              placeholder={APP_RELEASE}
-              maxLength={96}
-              pattern="[a-zA-Z0-9._:-]{1,96}"
-              spellCheck={false}
-            />
+            <span>Сложность</span>
+            <select
+              value={filters.difficulty}
+              onChange={(event) => onChange({ ...filters, difficulty: event.target.value })}
+            >
+              <option value="">Все уровни</option>
+              <option value="easy">Базовый</option>
+              <option value="medium">Средний</option>
+              <option value="hard">Сложный</option>
+              <option value="expert">Экспертный</option>
+            </select>
           </label>
+          <label>
+            <span>Качество</span>
+            <select
+              value={filters.qualityStatus}
+              onChange={(event) => onChange({
+                ...filters,
+                qualityStatus: event.target.value as AdminFilters['qualityStatus'],
+              })}
+            >
+              <option value="all">Все статусы</option>
+              <option value="needs_review">Требует проверки</option>
+              <option value="healthy">Без замечаний</option>
+              <option value="insufficient">Мало данных</option>
+            </select>
+          </label>
+          <label>
+            <span>Порог агрегатов</span>
+            <select
+              aria-describedby="aggregate-threshold-hint"
+              value={filters.minSample}
+              onChange={(event) => onChange({
+                ...filters,
+                minSample: Number(event.target.value) as AdminFilters['minSample'],
+              })}
+            >
+              {ANALYTICS_SAMPLE_GATES.map((gate) => <option value={gate} key={gate}>{gate}</option>)}
+            </select>
+            <small className={styles.fieldHint} id="aggregate-threshold-hint">Для сводных метрик; факты вопроса видны всегда.</small>
+          </label>
+          <label>
+            <span>Повторные попытки</span>
+            <select
+              value={filters.candidatePolicy}
+              onChange={(event) => onChange({
+                ...filters,
+                candidatePolicy: event.target.value as AdminFilters['candidatePolicy'],
+              })}
+            >
+              <option value="latest">Последняя кандидата</option>
+              <option value="all">Все попытки</option>
+            </select>
+          </label>
+          <div className={styles.filterActions}>
+            <button className={styles.primaryButton} type="submit">Применить</button>
+            <button className={styles.quietButton} type="button" onClick={onReset}>Сбросить</button>
+          </div>
         </div>
-        <p>Пустые поля используют активную модель сервера — включая balanced-профиль при его включении.</p>
       </details>
-      <label>
-        <span>С даты</span>
-        <input
-          type="date"
-          value={filters.from}
-          onChange={(event) => onChange({ ...filters, from: event.target.value })}
-        />
-      </label>
-      <label>
-        <span>По дату</span>
-        <input
-          type="date"
-          value={filters.to}
-          onChange={(event) => onChange({ ...filters, to: event.target.value })}
-        />
-      </label>
-      <label>
-        <span>Ревизия банка</span>
-        <select
-          value={filters.bankRevision}
-          onChange={(event) => onChange({ ...filters, bankRevision: event.target.value })}
-        >
-          <option value="">Текущая когорта</option>
-          {revisions.map((item) => (
-            <option value={item.revision} key={item.revision}>
-              {item.revision.slice(0, 10)} · {item.attempts}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span>Тип вопроса</span>
-        <select
-          value={filters.questionKind}
-          onChange={(event) => onChange({
-            ...filters,
-            questionKind: event.target.value as AdminFilters['questionKind'],
-          })}
-        >
-          <option value="all">Все</option>
-          <option value="base">Основные</option>
-          <option value="additional">Дополнительные</option>
-        </select>
-      </label>
-      <label>
-        <span>Тема</span>
-        <input
-          value={filters.topic}
-          onChange={(event) => onChange({ ...filters, topic: event.target.value })}
-          placeholder="Все темы"
-        />
-      </label>
-      <label>
-        <span>Сложность</span>
-        <select
-          value={filters.difficulty}
-          onChange={(event) => onChange({ ...filters, difficulty: event.target.value })}
-        >
-          <option value="">Все уровни</option>
-          <option value="easy">Базовый</option>
-          <option value="medium">Средний</option>
-          <option value="hard">Сложный</option>
-          <option value="expert">Экспертный</option>
-        </select>
-      </label>
-      <label>
-        <span>Качество</span>
-        <select
-          value={filters.qualityStatus}
-          onChange={(event) => onChange({
-            ...filters,
-            qualityStatus: event.target.value as AdminFilters['qualityStatus'],
-          })}
-        >
-          <option value="all">Все статусы</option>
-          <option value="needs_review">Требует проверки</option>
-          <option value="healthy">Без замечаний</option>
-          <option value="insufficient">Мало данных</option>
-        </select>
-      </label>
-      <label>
-        <span>Мин. выборка</span>
-        <select
-          value={filters.minSample}
-          onChange={(event) => onChange({
-            ...filters,
-            minSample: Number(event.target.value) as AdminFilters['minSample'],
-          })}
-        >
-          {ANALYTICS_SAMPLE_GATES.map((gate) => <option value={gate} key={gate}>{gate}</option>)}
-        </select>
-      </label>
-      <label>
-        <span>Повторные попытки</span>
-        <select
-          value={filters.candidatePolicy}
-          onChange={(event) => onChange({
-            ...filters,
-            candidatePolicy: event.target.value as AdminFilters['candidatePolicy'],
-          })}
-        >
-          <option value="latest">Последняя кандидата</option>
-          <option value="all">Все попытки</option>
-        </select>
-      </label>
-      <div className={styles.filterActions}>
-        <button className={styles.primaryButton} type="submit">Применить</button>
-        <button className={styles.quietButton} type="button" onClick={onReset}>Сбросить</button>
-      </div>
       {error && <p className={styles.filterError} role="alert">{error}</p>}
     </form>
   );
@@ -700,9 +799,10 @@ function usePagedAdminResource<T>(
   revision: number,
   onAdminError: (error: unknown) => void,
   itemKey: (item: T) => string,
+  extraQuery = '',
 ) {
   const [reloadRevision, setReloadRevision] = useState(0);
-  const requestKey = `${resource}:${JSON.stringify(filters)}:${revision}:${reloadRevision}`;
+  const requestKey = `${resource}:${JSON.stringify(filters)}:${extraQuery}:${revision}:${reloadRevision}`;
   const [state, setState] = useState<{
     key: string;
     data: AnalyticsPagedListDto<T> | null;
@@ -712,7 +812,10 @@ function usePagedAdminResource<T>(
 
   useEffect(() => {
     const controller = new AbortController();
-    void adminRequest<AnalyticsPagedListDto<T>>(analyticsPath(resource, filters), {
+    const params = cohortSearchParams(filters);
+    const extraParams = new URLSearchParams(extraQuery);
+    for (const [key, value] of extraParams) params.set(key, value);
+    void adminRequest<AnalyticsPagedListDto<T>>(`/api/admin/analytics/${resource}?${params.toString()}`, {
       signal: controller.signal,
     }).then((payload) => setState({
       key: requestKey,
@@ -730,12 +833,14 @@ function usePagedAdminResource<T>(
       });
     });
     return () => controller.abort();
-  }, [filters, onAdminError, requestKey, resource]);
+  }, [extraQuery, filters, onAdminError, requestKey, resource]);
 
   async function loadMore() {
     const current = state.key === requestKey ? state.data : null;
     if (!current?.nextCursor || state.loadingMore) return;
     const params = cohortSearchParams(filters);
+    const extraParams = new URLSearchParams(extraQuery);
+    for (const [key, value] of extraParams) params.set(key, value);
     params.set('cursor', current.nextCursor);
     setState((previous) => previous.key === requestKey
       ? { ...previous, loadingMore: true, error: '' }
@@ -797,7 +902,12 @@ function OverviewPanel({
         description="Каждая цифра рассчитана для одной и той же выбранной когорты."
         cohort={data.cohort}
       />
-      {total.completedAttempts === 0 ? <EmptyState /> : (
+      {total.completedAttempts === 0 ? (
+        <EmptyState
+          title="Нет завершённых тестов в выбранной когорте"
+          message="Измените период и модель выборки либо завершите первый тест. Незавершённые попытки в эти показатели не входят."
+        />
+      ) : (
         <>
           <div className={styles.kpiGrid}>
             <MetricCard label="Всего прохождений" value={String(total.completedAttempts)} note="за период хранения" />
@@ -810,23 +920,23 @@ function OverviewPanel({
 
           <section className={styles.analyticsCard}>
             <div className={styles.cardHeading}>
-              <div><p className={styles.eyebrow}>Shadow rollout</p><h2>Coverage Score</h2></div>
+              <div><p className={styles.eyebrow}>Диагностика подбора</p><h2>Равномерность покрытия</h2></div>
               <span>последние 30 дней</span>
             </div>
             <div className={styles.kpiGrid}>
-              <MetricCard label="Legacy-попытки" value={String(recent.selectionComparison.eligibleAttempts)} note="selection v1 с Coverage Score" />
-              <MetricCard label="Shadow-сопоставимые" value={String(recent.selectionComparison.sampleSize)} note="есть actual и shadow" />
-              <MetricCard label="Среднее actual-покрытие" value={recent.selectionComparison.actualCoverage === null ? '—' : String(recent.selectionComparison.actualCoverage)} note="только парные наблюдения" />
-              <MetricCard label="Среднее shadow-покрытие" value={recent.selectionComparison.shadowCoverage === null ? '—' : String(recent.selectionComparison.shadowCoverage)} note="без влияния на тест" />
-              <MetricCard label="Дельта shadow" value={signed(recent.selectionComparison.delta)} note="shadow − actual" />
-              <MetricCard label="Fallback / без shadow" value={String(recent.selectionComparison.fallbackOrNullCount)} note={percentage(recent.selectionComparison.fallbackOrNullRate)} />
+              <MetricCard label="Попытки старого подбора" value={String(recent.selectionComparison.eligibleAttempts)} note="доступны для сравнения" />
+              <MetricCard label="Сопоставимые попытки" value={String(recent.selectionComparison.sampleSize)} note="рассчитаны оба варианта" />
+              <MetricCard label="Фактическое покрытие" value={recent.selectionComparison.actualCoverage === null ? '—' : String(recent.selectionComparison.actualCoverage)} note="среднее по сопоставимым" />
+              <MetricCard label="Расчётное покрытие" value={recent.selectionComparison.shadowCoverage === null ? '—' : String(recent.selectionComparison.shadowCoverage)} note="не влияло на тест" />
+              <MetricCard label="Возможное улучшение" value={signed(recent.selectionComparison.delta)} note="расчётное минус фактическое" />
+              <MetricCard label="Без сравнения" value={String(recent.selectionComparison.fallbackOrNullCount)} note={percentage(recent.selectionComparison.fallbackOrNullRate)} />
             </div>
           </section>
 
           <div className={styles.splitGrid}>
             <section className={styles.analyticsCard}>
               <div className={styles.cardHeading}>
-                <div><p className={styles.eyebrow}>Решения</p><h2>Распределение verdict</h2></div>
+                <div><p className={styles.eyebrow}>Решения</p><h2>Итоги тестирования</h2></div>
                 <span>{totalVerdicts}</span>
               </div>
               <div className={styles.barList}>
@@ -857,7 +967,9 @@ function OverviewPanel({
             </div>
             {trends.loading ? <LoadingState compact /> : trends.error ? (
               <ErrorState message={trends.error} onRetry={trends.reload} compact />
-            ) : !trends.data?.items?.length ? <EmptyState compact /> : (
+            ) : !trends.data?.items?.length ? (
+              <EmptyState compact title="Динамика пока не сформирована" message="Для выбранного периода нет завершённых тестов, которые можно сгруппировать по дням." />
+            ) : (
               <TrendRows items={trends.data.items} />
             )}
           </section>
@@ -918,7 +1030,7 @@ function RevisionComparisonPanel({
         <div className={styles.cardHeading}>
           <div><p className={styles.eyebrow}>A / B</p><h3>Сравнение ревизий</h3></div>
         </div>
-        <EmptyState compact />
+        <EmptyState compact title="Нечего сравнивать" message="Сравнение появится после накопления точных данных хотя бы для двух ревизий банка." />
       </section>
     );
   }
@@ -959,80 +1071,242 @@ function RevisionComparisonPanel({
 }
 
 function QuestionsPanel({
+  view,
+  onViewChange,
+  ...props
+}: PanelProps & {
+  csrfToken: string;
+  view: 'analytics' | 'bank';
+  onViewChange: (view: 'analytics' | 'bank') => void;
+}) {
+  const questionViews = ['analytics', 'bank'] as const;
+  function handleQuestionViewKey(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const current = questionViews.indexOf(view);
+    const next = event.key === 'Home'
+      ? questionViews[0]
+      : event.key === 'End'
+        ? questionViews.at(-1)!
+        : questionViews[(current + (event.key === 'ArrowRight' ? 1 : -1) + questionViews.length) % questionViews.length];
+    onViewChange(next);
+    window.requestAnimationFrame(() => document.getElementById(`question-view-${next}`)?.focus());
+  }
+  return (
+    <div className={styles.questionWorkspace}>
+      <div className={styles.questionWorkspaceSwitcher}>
+        <div>
+          <span>Работа с вопросами</span>
+          <strong>{view === 'analytics' ? 'Качество по результатам тестов' : 'Содержимое и редакции банка'}</strong>
+        </div>
+        <div role="tablist" aria-label="Режим работы с вопросами" onKeyDown={handleQuestionViewKey}>
+          <button
+            id="question-view-analytics"
+            type="button"
+            role="tab"
+            aria-selected={view === 'analytics'}
+            aria-controls="question-analytics-workspace"
+            tabIndex={view === 'analytics' ? 0 : -1}
+            onClick={() => onViewChange('analytics')}
+          >
+            Аналитика
+          </button>
+          <button
+            id="question-view-bank"
+            type="button"
+            role="tab"
+            aria-selected={view === 'bank'}
+            aria-controls="question-bank-workspace"
+            tabIndex={view === 'bank' ? 0 : -1}
+            onClick={() => onViewChange('bank')}
+          >
+            Банк вопросов
+          </button>
+        </div>
+      </div>
+      {view === 'analytics' ? (
+        <section id="question-analytics-workspace" role="tabpanel" aria-labelledby="question-view-analytics">
+          <QuestionAnalyticsPanel {...props} />
+        </section>
+      ) : (
+        <section id="question-bank-workspace" role="tabpanel" aria-labelledby="question-view-bank" className={styles.bankWorkspace}>
+          <div className={styles.bankWorkspaceHeading}>
+            <div>
+              <p className={styles.eyebrow}>Банк вопросов</p>
+              <h2>Просмотр и безопасное редактирование</h2>
+              <p>Изменение текста, темы или сложности создаёт новую редакцию: уже собранные результаты остаются достоверными.</p>
+            </div>
+          </div>
+          <QuestionBankPanel csrfToken={props.csrfToken} onAdminError={props.onAdminError} />
+        </section>
+      )}
+    </div>
+  );
+}
+
+function QuestionAnalyticsPanel({
   filters,
   revision,
   csrfToken,
   onAdminError,
 }: PanelProps & { csrfToken: string }) {
-  const resource = usePagedAdminResource<QuestionAnalyticsItemDto>(
-    'questions', filters, revision, onAdminError, questionPageKey,
-  );
+  const [searchDraft, setSearchDraft] = useState('');
   const [search, setSearch] = useState('');
-  const [difficulty, setDifficulty] = useState('all');
+  const [sampleStatus, setSampleStatus] = useState<QuestionSampleStatus | 'all'>('all');
+  const [sortValue, setSortValue] = useState('priority:asc');
   const [selected, setSelected] = useState<QuestionAnalyticsItemDto | null>(null);
+  const [sort, direction] = sortValue.split(':') as [QuestionAnalyticsSort, AnalyticsSortDirection];
+  const extraQuery = useMemo(() => {
+    const params = new URLSearchParams({ sort, direction });
+    if (search) params.set('q', search);
+    if (sampleStatus !== 'all') params.set('sampleStatus', sampleStatus);
+    return params.toString();
+  }, [direction, sampleStatus, search, sort]);
+  const resource = usePagedAdminResource<QuestionAnalyticsItemDto>(
+    'questions', filters, revision, onAdminError, questionPageKey, extraQuery,
+  );
 
-  const items = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase('ru-RU');
-    return (resource.data?.items ?? []).filter((item) => (
-      (difficulty === 'all' || item.difficulty === difficulty) &&
-      (!query || String(item.questionId).includes(query) || item.topic.toLocaleLowerCase('ru-RU').includes(query))
-    ));
-  }, [difficulty, resource.data?.items, search]);
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSearch(searchDraft.trim());
+  }
+
+  function resetSearch() {
+    setSearchDraft('');
+    setSearch('');
+    setSampleStatus('all');
+    setSortValue('priority:asc');
+  }
 
   if (resource.loading) return <LoadingState />;
   if (resource.error || !resource.data) return <ErrorState message={resource.error} onRetry={resource.reload} />;
+  const data = resource.data as QuestionAnalyticsListDto;
+  const items = data.items;
+  const summary = data.summary;
+  const totalCount = data.totalCount;
+  const hasQuestionFilters = Boolean(
+    search
+      || sampleStatus !== 'all'
+      || filters.qualityStatus !== 'all'
+      || filters.topic
+      || filters.difficulty
+      || filters.bankRevision
+      || filters.questionKind !== 'all',
+  );
 
   return (
     <div className={styles.panelStack}>
       <PanelHeading
         title="Качество вопросов"
-        description="Выборка, timeout, фактическая сложность и воспроизводимая рекомендация."
+        description="Наблюдаемые факты, достоверность вывода и конкретное следующее действие."
         cohort={resource.data.cohort}
       />
-      <div className={styles.localFilters}>
-        <label>
-          <span>Поиск по ID или теме</span>
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Например, Linux или 512" />
+      <QuestionSummaryCards summary={summary} />
+      <QuestionCohortSummary cohort={data.cohort} />
+      <form className={styles.questionToolbar} role="search" onSubmit={submitSearch}>
+        <label className={styles.questionSearch}>
+          <span>Поиск по всему банку</span>
+          <input
+            type="search"
+            value={searchDraft}
+            onChange={(event) => setSearchDraft(event.target.value)}
+            placeholder="ID, тема или текст вопроса"
+            autoComplete="off"
+          />
         </label>
         <label>
-          <span>Сложность</span>
-          <select value={difficulty} onChange={(event) => setDifficulty(event.target.value)}>
+          <span>Достоверность</span>
+          <select
+            value={sampleStatus}
+            onChange={(event) => setSampleStatus(event.target.value as QuestionSampleStatus | 'all')}
+          >
             <option value="all">Все уровни</option>
-            <option value="easy">Базовый</option>
-            <option value="medium">Средний</option>
-            <option value="hard">Сложный</option>
-            <option value="expert">Экспертный</option>
+            <option value="insufficient">Факты без вывода · n&lt;30</option>
+            <option value="early">Первичный сигнал · n=30–49</option>
+            <option value="working">Рабочая оценка · n=50–99</option>
+            <option value="stable">Стабильная оценка · n≥100</option>
           </select>
         </label>
-        <span className={styles.resultCount}>{items.length} вопросов</span>
-      </div>
-      {items.length === 0 ? <EmptyState /> : (
-        <div className={styles.tableWrap}>
-          <table className={styles.dataTable}>
+        <label>
+          <span>Порядок</span>
+          <select value={sortValue} onChange={(event) => setSortValue(event.target.value)}>
+            <option value="priority:asc">Сначала требующие внимания</option>
+            <option value="timeout:desc">Больше тайм-аутов</option>
+            <option value="success:asc">Меньше верных ответов</option>
+            <option value="sample:desc">Больше данных</option>
+            <option value="lastPresented:desc">Недавно показанные</option>
+            <option value="id:asc">По ID</option>
+          </select>
+        </label>
+        <div className={styles.questionToolbarActions}>
+          <button className={styles.primaryButton} type="submit">Найти</button>
+          {(search || searchDraft || sampleStatus !== 'all' || sortValue !== 'priority:asc') && (
+            <button className={styles.quietButton} type="button" onClick={resetSearch}>Сбросить</button>
+          )}
+        </div>
+        <span className={styles.resultCount} aria-live="polite">
+          {totalCount} вопросов{items.length < totalCount ? ` · показано ${items.length}` : ''}
+        </span>
+      </form>
+      {items.length === 0 ? (
+        <EmptyState
+          title={hasQuestionFilters
+            ? 'Ничего не найдено'
+            : 'Нет точных данных по вопросам'}
+          message={hasQuestionFilters
+            ? 'Измените поиск или фильтр достоверности.'
+            : 'В текущей когорте ещё нет завершённых попыток с точными аналитическими фактами.'}
+        />
+      ) : (
+        <div className={`${styles.tableWrap} ${styles.questionTableWrap}`}>
+          <table className={`${styles.dataTable} ${styles.questionTable}`}>
             <thead>
               <tr>
-                <th>Вопрос</th><th>Тема</th><th>Уровень</th><th>Показы</th><th>Исходы</th><th>Выборка</th>
-                <th>Верно</th><th>Timeout</th><th>Медиана</th><th>Оценка</th>
+                <th>Вопрос</th><th>Статус</th><th>Данные</th><th>Результаты</th><th>Время</th><th>Действие</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
-                <tr key={`${item.questionId}-${item.kind}`}>
-                  <td data-label="Вопрос">
-                    <button className={styles.rowLink} onClick={() => setSelected(item)}>#{item.questionId}</button>
-                    <small>{questionKindLabel(item.kind)}{item.active ? '' : ' · выключен'}</small>
-                  </td>
-                  <td data-label="Тема">{item.topic}</td>
-                  <td data-label="Уровень">{difficultyLabels[item.difficulty] ?? item.difficulty}</td>
-                  <td data-label="Показы">{item.presentedCount}<small>назначено {item.assignedCount}</small></td>
-                  <td data-label="Исходы">{item.outcomeCount}<small>{percentage(item.completionRate)} завершено</small></td>
-                  <td data-label="Выборка">{item.sampleSize}<small>{reliabilityLabels[item.reliability]}</small></td>
-                  <td data-label="Верно">{percentage(item.successRate)}</td>
-                  <td data-label="Timeout">{percentage(item.timeoutRate)}</td>
-                  <td data-label="Медиана">{secondsLabel(item.medianSeconds)}</td>
-                  <td data-label="Оценка"><RecommendationBadge item={item} /></td>
-                </tr>
-              ))}
+              {items.map((item) => {
+                const counts = questionCounts(item);
+                const rates = questionRates(item);
+                const sample = questionSample(item);
+                return (
+                  <tr key={`${item.questionId}-${item.kind}`}>
+                    <td data-label="Вопрос" className={styles.questionIdentityCell}>
+                      <button
+                        className={styles.questionTitleButton}
+                        type="button"
+                        onClick={() => setSelected(item)}
+                        aria-label={`Открыть аналитику вопроса ${item.questionId}`}
+                      >
+                        <strong>{item.promptPreview}</strong>
+                        <span>#{item.questionId} · {item.topic} · {difficultyLabels[item.difficulty] ?? item.difficulty}</span>
+                      </button>
+                      <small>{questionKindLabel(item.kind)}{item.active ? '' : ' · выключен'}</small>
+                    </td>
+                    <td data-label="Статус">
+                      <QuestionStatusBadge item={item} />
+                      {item.signals.length > 0 && (
+                        <small>{item.signals[0].title}</small>
+                      )}
+                    </td>
+                    <td data-label="Данные">
+                      <strong>n={sample.n}</strong>
+                      <small>{questionSampleLabels[sample.status]}</small>
+                      <SampleLadder sample={sample} />
+                    </td>
+                    <td data-label="Результаты" className={styles.questionOutcomeCell}>
+                      <span><b>Верно</b> {observedRate(counts.correct, sample.n, rates.success)}</span>
+                      <span><b>Тайм-ауты</b> {observedRate(counts.timedOut, sample.n, rates.timeout)}</span>
+                    </td>
+                    <td data-label="Время">
+                      <strong>{secondsLabel(item.observed.timing.medianSeconds)}</strong>
+                      <small>типичное время{item.observed.timing.averageSeconds === null ? '' : ` · среднее ${secondsLabel(item.observed.timing.averageSeconds)}`}</small>
+                    </td>
+                    <td data-label="Действие"><QuestionActionBadge item={item} /></td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1060,6 +1334,80 @@ function QuestionsPanel({
       )}
     </div>
   );
+}
+
+function QuestionSummaryCards({ summary }: { summary: QuestionAnalyticsSummaryDto }) {
+  const cards = [
+    { label: 'Вопросов в выборке', value: summary.total, tone: 'neutral' },
+    { label: 'Требуют проверки', value: summary.review, tone: 'critical' },
+    { label: 'Наблюдать', value: summary.observe, tone: 'warning' },
+    { label: 'В норме', value: summary.good, tone: 'good' },
+    { label: 'Мало данных', value: summary.insufficient, tone: 'neutral' },
+  ] as const;
+  return (
+    <section className={styles.questionSummaryGrid} aria-label="Сводка качества вопросов">
+      {cards.map((card) => (
+        <article className={styles[`summaryTone${card.tone}`]} key={card.label}>
+          <strong>{card.value}</strong>
+          <span>{card.label}</span>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function QuestionCohortSummary({ cohort }: { cohort: AnalyticsCohortDto }) {
+  const period = cohort.from && cohort.to
+    ? `${dateLabel(cohort.from)} — ${dateLabel(cohort.to)}`
+    : cohort.to
+      ? `по ${dateLabel(cohort.to)}`
+      : 'весь точный период';
+  const revision = cohort.bankRevision ? `ревизия ${cohort.bankRevision.slice(0, 8)}` : 'текущая ревизия';
+  return (
+    <div className={styles.questionCohortSummary} aria-label="Контекст аналитической выборки">
+      <span>{period}</span>
+      <span>{questionKindLabel(cohort.questionKind)}</span>
+      <span>{revision}</span>
+      <span>{cohort.candidatePolicy === 'latest' ? 'последняя попытка кандидата' : 'все попытки'}</span>
+      <small>обновлено {dateTimeLabel(cohort.generatedAt)}</small>
+    </div>
+  );
+}
+
+function SampleLadder({ sample }: { sample: QuestionSampleDto }) {
+  const reached = (gate: number) => sample.n >= gate;
+  const progress = sample.nextGate === null
+    ? 'Все уровни достоверности достигнуты.'
+    : `До следующего уровня ещё ${sample.remaining}.`;
+  return (
+    <div className={styles.sampleLadder} aria-label={`Результатов ${sample.n}. ${progress}`}>
+      {[30, 50, 100].map((gate) => (
+        <span key={gate} data-reached={reached(gate)} aria-hidden="true">{gate}</span>
+      ))}
+    </div>
+  );
+}
+
+function QuestionStatusBadge({ item }: { item: QuestionAnalyticsItemDto }) {
+  const status = questionStatus(item);
+  const tone = status === 'good'
+    ? styles.goodBadge
+    : status === 'review' || status === 'disabled'
+      ? styles.criticalBadge
+      : status === 'observe'
+        ? styles.warningBadge
+        : styles.neutralBadge;
+  return <span className={`${styles.badge} ${tone}`}>{qualityStatusLabel(status)}</span>;
+}
+
+function QuestionActionBadge({ item }: { item: QuestionAnalyticsItemDto }) {
+  const action = questionAction(item);
+  const tone = action.tone === 'good'
+    ? styles.goodBadge
+    : action.tone === 'warning'
+      ? styles.warningBadge
+      : styles.neutralBadge;
+  return <span className={`${styles.badge} ${tone}`}>{action.label}</span>;
 }
 
 function CandidatesPanel({ filters, revision, onAdminError }: PanelProps) {
@@ -1092,7 +1440,14 @@ function CandidatesPanel({ filters, revision, onAdminError }: PanelProps) {
         </label>
         <span className={styles.resultCount}>{items.length} результатов</span>
       </div>
-      {items.length === 0 ? <EmptyState /> : (
+      {items.length === 0 ? (
+        <EmptyState
+          title={verdict === 'all' ? 'Нет результатов кандидатов' : 'Нет кандидатов с таким решением'}
+          message={verdict === 'all'
+            ? 'В выбранной когорте пока нет завершённых тестов с точными аналитическими фактами.'
+            : 'Выберите другое решение или измените период общей выборки.'}
+        />
+      ) : (
         <div className={styles.tableWrap}>
           <table className={styles.dataTable}>
             <thead>
@@ -1149,7 +1504,13 @@ function GroupsPanel({
   filters,
   revision,
   onAdminError,
-}: PanelProps & { title: string; description: string; resource: 'topics' | 'difficulty' }) {
+  onOpenQuestions,
+}: PanelProps & {
+  title: string;
+  description: string;
+  resource: 'topics' | 'difficulty';
+  onOpenQuestions: (value: string) => void;
+}) {
   const state = useAdminResource<AnalyticsListDto<GroupAnalyticsItemDto>>(
     resource, filters, revision, onAdminError,
   );
@@ -1159,7 +1520,12 @@ function GroupsPanel({
   return (
     <div className={styles.panelStack}>
       <PanelHeading title={title} description={description} cohort={state.data.cohort} />
-      {state.data.items.length === 0 ? <EmptyState /> : (
+      {state.data.items.length === 0 ? (
+        <EmptyState
+          title={resource === 'topics' ? 'Нет данных по темам' : 'Нет данных по уровням сложности'}
+          message="В выбранной когорте пока нет показанных вопросов с точными фактами ответа. Измените период или дождитесь завершённых тестов."
+        />
+      ) : (
         <div className={styles.groupGrid}>
           {state.data.items.map((item) => (
             <article className={styles.groupCard} key={`${item.key}-${item.kind}`}>
@@ -1174,9 +1540,16 @@ function GroupsPanel({
               <div className={styles.groupMetrics}>
                 <div><strong>{item.sampleSize}</strong><span>ответов</span></div>
                 <div><strong>{percentage(item.successRate)}</strong><span>верно</span></div>
-                <div><strong>{percentage(item.timeoutRate)}</strong><span>timeout</span></div>
-                <div><strong>{secondsLabel(item.medianSeconds)}</strong><span>медиана</span></div>
+                <div><strong>{percentage(item.timeoutRate)}</strong><span>тайм-ауты</span></div>
+                <div><strong>{secondsLabel(item.medianSeconds)}</strong><span>типичное время</span></div>
               </div>
+              {item.reliability === 'insufficient' && item.sampleSize > 0 && (
+                <p className={styles.groupObservationNote}>Наблюдаемые факты при малой выборке — вывод о качестве пока не делаем.</p>
+              )}
+              <button className={styles.groupDrilldown} type="button" onClick={() => onOpenQuestions(item.key)}>
+                Показать вопросы {resource === 'topics' ? 'темы' : 'этого уровня'}
+                <span aria-hidden="true">→</span>
+              </button>
             </article>
           ))}
         </div>
@@ -1207,6 +1580,12 @@ function QuestionDetail({
   const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const data = detail.data;
+  const sample = data ? questionSample(data) : null;
+  const counts = data ? questionCounts(data) : null;
+  const rates = data ? questionRates(data) : null;
+  const action = data ? questionAction(data) : null;
+  const signals = data?.signals ?? [];
 
   async function saveReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1245,73 +1624,145 @@ function QuestionDetail({
   }
   return (
     <DetailDialog title={`Вопрос #${summary.questionId}`} onClose={onClose}>
-      {detail.loading ? <LoadingState compact /> : detail.error || !detail.data ? (
+      {detail.loading ? <LoadingState compact /> : detail.error || !data || !sample || !counts || !rates || !action ? (
         <ErrorState message={detail.error} onRetry={detail.reload} compact />
       ) : (
         <div className={styles.detailStack}>
           <div className={styles.detailLead}>
             <div className={styles.detailBadges}>
-              <span>{difficultyLabels[detail.data.difficulty] ?? detail.data.difficulty}</span>
-              <span>{detail.data.topic}</span>
-              <span>{questionKindLabel(detail.data.kind)}</span>
-              {!detail.data.active && <span className={styles.warningBadge}>Выключен</span>}
+              <span>{difficultyLabels[data.difficulty] ?? data.difficulty}</span>
+              <span>{data.topic}</span>
+              <span>{questionKindLabel(data.kind)}</span>
+              {!data.active && <span className={styles.warningBadge}>Выключен</span>}
             </div>
-            <h3>{detail.data.prompt}</h3>
-            {detail.data.context && (
-              <pre className={styles.contextBlock}><code>{detail.data.context}</code></pre>
+            <h3>{data.prompt}</h3>
+            {data.context && (
+              <pre className={styles.contextBlock}><code>{data.context}</code></pre>
             )}
           </div>
-          <div className={styles.detailMetrics}>
-            <MetricCard label="Назначено" value={String(detail.data.assignedCount)} />
-            <MetricCard label="Показано" value={String(detail.data.presentedCount)} />
-            <MetricCard label="Исходов" value={String(detail.data.outcomeCount)} note={reliabilityLabels[detail.data.reliability]} />
-            <MetricCard label="Ответов" value={String(detail.data.responseCount)} />
-            <MetricCard label="Верно" value={percentage(detail.data.successRate)} />
-            <MetricCard label="Timeout" value={percentage(detail.data.timeoutRate)} />
-            <MetricCard label="Завершено" value={percentage(detail.data.completionRate)} />
-            <MetricCard label="Среднее" value={secondsLabel(detail.data.averageSeconds)} />
-            <MetricCard label="Медиана" value={secondsLabel(detail.data.medianSeconds)} />
-            <MetricCard label="Мин. / макс." value={`${secondsLabel(detail.data.minSeconds)} / ${secondsLabel(detail.data.maxSeconds)}`} />
-            <MetricCard label="Дискриминация" value={detail.data.discrimination === null ? '—' : detail.data.discrimination.toFixed(2)} />
-          </div>
-          <div className={styles.lastUseRow}>
-            <span>Последний показ <strong>{dateTimeLabel(detail.data.lastPresentedAt)}</strong></span>
-            <span>Последний ответ <strong>{dateTimeLabel(detail.data.lastAnsweredAt)}</strong></span>
-          </div>
-          <QuestionKindBreakdown base={detail.data.base} additional={detail.data.additional} />
-          {detail.data.quality.enabled && <section className={styles.qualityBox}>
+          <section className={styles.questionDiagnosis} data-tone={questionStatus(data)}>
+            <div>
+              <p className={styles.eyebrow}>Диагноз</p>
+              <h3>{qualityStatusLabel(questionStatus(data))}</h3>
+              <p>{sample.status === 'insufficient'
+                ? 'Факты уже видны, но данных пока недостаточно для оценки качества вопроса.'
+                : sample.status === 'early'
+                  ? 'Это первичный сигнал: решение об изменении вопроса требует дополнительной выборки.'
+                  : sample.status === 'working'
+                    ? 'Данных достаточно для рабочей оценки; разделяющая способность ещё проверяется.'
+                    : 'Оценка опирается на стабильную выборку и полный набор доступных сигналов.'}</p>
+            </div>
+            <QuestionStatusBadge item={data} />
+            {signals.length > 0 && (
+              <ul className={styles.signalList}>
+                {signals.map((signal, index) => (
+                  <li key={`${signal.title}-${index}`} data-severity={signal.severity}>
+                    <strong>{signal.title}</strong>
+                    {signal.explanation !== signal.title && <span>{signal.explanation}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className={styles.readinessCard}>
+            <div>
+              <p className={styles.eyebrow}>Достоверность</p>
+              <h3>n={sample.n} · {questionSampleLabels[sample.status]}</h3>
+              <p>{sample.nextGate === null
+                ? 'Достигнуты все контрольные уровни 30 / 50 / 100.'
+                : `До уровня ${sample.nextGate} осталось ${sample.remaining} результатов.`}</p>
+            </div>
+            <SampleLadder sample={sample} />
+            <dl>
+              <div><dt>Назначено</dt><dd>{counts.assigned}</dd></div>
+              <div><dt>Показано</dt><dd>{counts.presented}</dd></div>
+              <div><dt>Результатов</dt><dd>{sample.n}</dd></div>
+            </dl>
+          </section>
+
+          <section className={styles.evidenceSection}>
+            <div className={styles.cardHeading}>
+              <div><p className={styles.eyebrow}>Доказательства</p><h3>Что произошло при тестировании</h3></div>
+            </div>
+            <div className={styles.detailMetrics}>
+              <MetricCard label="Верно" value={observedRate(counts.correct, sample.n, rates.success)} />
+              <MetricCard label="Неверно" value={`${counts.incorrect} из ${sample.n}`} />
+              <MetricCard label="Тайм-ауты" value={observedRate(counts.timedOut, sample.n, rates.timeout)} />
+              <MetricCard label="Ответ отправлен" value={percentage(rates.response)} note={`${counts.submitted} из ${counts.presented} показов`} />
+              <MetricCard label="Типичное время" value={secondsLabel(data.observed.timing.medianSeconds)} />
+              <MetricCard label="Среднее время" value={secondsLabel(data.observed.timing.averageSeconds)} />
+              <MetricCard label="Диапазон" value={`${secondsLabel(data.observed.timing.minSeconds)} — ${secondsLabel(data.observed.timing.maxSeconds)}`} />
+              <MetricCard label="Разделяющая способность" value={data.discrimination === null ? '—' : data.discrimination.toFixed(2)} />
+            </div>
+            <div className={styles.lastUseRow}>
+              <span>Последний показ <strong>{dateTimeLabel(data.lastPresentedAt)}</strong></span>
+              <span>Последний ответ <strong>{dateTimeLabel(data.lastAnsweredAt)}</strong></span>
+            </div>
+          </section>
+
+          <QuestionKindBreakdown base={data.base} additional={data.additional} />
+
+          {data.quality.enabled && <section className={styles.qualityBox}>
             <div className={styles.qualityHeadline}>
-              <div><p className={styles.eyebrow}>Question Quality Score</p><h3>{qualityStatusLabel(detail.data.quality.status)}</h3></div>
-              <strong>{detail.data.quality.earned} / {detail.data.quality.maxAvailable}</strong>
+              <div><p className={styles.eyebrow}>Индекс качества вопроса</p><h3>{qualityStatusLabel(data.quality.status)}</h3></div>
+              <strong>{data.quality.maxAvailable !== null && data.quality.maxAvailable > 0
+                ? `${data.quality.earned} из доступных ${data.quality.maxAvailable}`
+                : 'Оценка пока недоступна'}</strong>
             </div>
             <div className={styles.qualityComponents}>
-              {detail.data.quality.components.map((component) => (
+              {data.quality.components.map((component) => (
                 <div key={component.key}>
                   <div><span>{qualityComponentLabels[component.key]}</span><strong>{component.available ? `${component.earned}/${component.max}` : 'нет данных'}</strong></div>
                   <span className={styles.barTrack} aria-hidden="true"><i style={{ width: component.available && component.max > 0 ? `${(component.earned / component.max) * 100}%` : '0%' }} /></span>
                 </div>
               ))}
             </div>
-            {detail.data.qualityWarnings.length > 0 && (
+            {data.qualityWarnings.length > 0 && (
               <ul className={styles.qualityWarnings}>
-                {detail.data.qualityWarnings.map((warning) => <li key={warning}>{qualityWarningLabels[warning]}</li>)}
+                {data.qualityWarnings.map((warning) => <li key={warning}>{qualityWarningLabels[warning]}</li>)}
               </ul>
             )}
-            {detail.data.quality.partial && <small>Индекс рассчитан только по доступным компонентам.</small>}
+            {data.quality.partial && <small>Индекс неполный: сравнивайте его только при одинаковом составе доступных компонентов.</small>}
           </section>}
-          {detail.data.recommendation && (
-            <section className={styles.recommendationBox}>
-              <p className={styles.eyebrow}>Рекомендация</p>
-              <h3>{detail.data.recommendation.label}</h3>
-              {detail.data.recommendation.reasons.length > 0 && (
-                <ul>{detail.data.recommendation.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-              )}
-            </section>
-          )}
+
+          <section>
+            <div className={styles.cardHeading}>
+              <div><p className={styles.eyebrow}>Варианты ответа</p><h3>Распределение A / B / C / D</h3></div>
+              <span>{data.responseCount} ответов</span>
+            </div>
+            {data.choices.length === 0 ? (
+              <EmptyState compact title="Нет данных по вариантам" message="Для этого вопроса пока нет отправленных ответов с точным индексом выбранного варианта." />
+            ) : (
+              <ol className={styles.choiceStats} aria-label="Распределение выбора вариантов ответа">
+                {data.choices.map((choice) => {
+                  const label = String.fromCharCode(65 + choice.canonicalIndex);
+                  return (
+                    <li key={choice.canonicalIndex}>
+                      <span className={styles.choiceIndex}>{label}</span>
+                      <div>
+                        <span className={styles.barTrack} aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, choice.selectedRate ?? 0))}%` }} /></span>
+                        <small>{choice.selectedCount} выборов · {percentage(choice.selectedRate)}</small>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </section>
+
+          <section className={styles.recommendationBox}>
+            <p className={styles.eyebrow}>Следующее действие</p>
+            <h3>{action.label}</h3>
+            {action.reasons.length > 0 && (
+              <ul>{action.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            )}
+          </section>
+
           <section className={styles.reviewSection}>
             <div className={styles.cardHeading}>
               <div><p className={styles.eyebrow}>Решение администратора</p><h3>Зафиксировать проверку</h3></div>
-              <span>{detail.data.bankRevision.slice(0, 10)}</span>
+              <span>{data.bankRevision.slice(0, 10)}</span>
             </div>
             <form className={styles.reviewForm} onSubmit={saveReview}>
               <label>
@@ -1337,25 +1788,12 @@ function QuestionDetail({
                 {saving ? 'Сохраняем…' : 'Сохранить решение'}
               </button>
             </form>
-            {detail.data.reviewHistory.length > 0 && (
+            {data.reviewHistory.length > 0 && (
               <ol className={styles.reviewHistory}>
-                {detail.data.reviewHistory.map((review) => (
+                {data.reviewHistory.map((review) => (
                   <li key={review.id}>
                     <div><strong>{reviewDecisionLabel(review.decision)}</strong><time dateTime={review.createdAt}>{dateLabel(review.createdAt)}</time></div>
                     {review.note && <p>{review.note}</p>}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
-          <section>
-            <div className={styles.cardHeading}><div><p className={styles.eyebrow}>Варианты</p><h3>Распределение ответов</h3></div><span>{detail.data.responseCount}</span></div>
-            {detail.data.choices.length === 0 ? <EmptyState compact /> : (
-              <ol className={styles.choiceStats}>
-                {detail.data.choices.map((choice) => (
-                  <li key={choice.canonicalIndex}>
-                    <span className={styles.choiceIndex}>{String.fromCharCode(65 + choice.canonicalIndex)}</span>
-                    <div><strong>Вариант {String.fromCharCode(65 + choice.canonicalIndex)}</strong><small>{choice.selectedCount} выборов · {percentage(choice.selectedRate)}</small></div>
                   </li>
                 ))}
               </ol>
@@ -1418,7 +1856,7 @@ function CandidateDetail({
             <MetricCard label="Точность" value={`${detail.data.accuracy}%`} />
             <MetricCard label="Основные" value={`${detail.data.baseCorrect} / ${detail.data.baseAnswered}`} />
             <MetricCard label="Дополнительные" value={detail.data.additionalAnswered ? `${detail.data.additionalCorrect} / ${detail.data.additionalAnswered}` : 'не задавались'} />
-            <MetricCard label="Timeout" value={String(detail.data.timeoutCount)} />
+            <MetricCard label="Тайм-ауты" value={String(detail.data.timeoutCount)} />
             <MetricCard label="Время" value={durationLabel(detail.data.durationSeconds)} />
             <MetricCard label="Дата" value={dateLabel(detail.data.completedAt)} />
           </div>
@@ -1437,7 +1875,9 @@ function CandidateDetail({
             <div className={styles.cardHeading}>
               <div><p className={styles.eyebrow}>Следующий этап</p><h3>Что проверить на интервью</h3></div>
             </div>
-            {detail.data.interviewerRecommendations.length === 0 ? <EmptyState compact /> : (
+            {detail.data.interviewerRecommendations.length === 0 ? (
+              <EmptyState compact title="Дополнительная проверка не требуется" message="Точных слабых сигналов для отдельной проверки на интервью не обнаружено." />
+            ) : (
               <ol className={styles.interviewList}>
                 {detail.data.interviewerRecommendations.map((item) => (
                   <li key={`${item.code}-${item.title}`}>
@@ -1467,7 +1907,9 @@ function ProfileTable({
   return (
     <section>
       <div className={styles.cardHeading}><div><p className={styles.eyebrow}>Профиль</p><h3>{title}</h3></div></div>
-      {rows.length === 0 ? <EmptyState compact /> : (
+      {rows.length === 0 ? (
+        <EmptyState compact title={`Нет данных: ${title.toLocaleLowerCase('ru-RU')}`} message="Для этого результата недостаточно точных фактов, чтобы построить профиль." />
+      ) : (
         <div className={styles.profileRows}>
           {rows.map((row) => (
             <div key={row.key}>
@@ -1511,10 +1953,10 @@ function QuestionKindBreakdown({
             <dl>
               <div><dt>Назначено</dt><dd>{row.data.assigned}</dd></div>
               <div><dt>Показано</dt><dd>{row.data.presented}</dd></div>
-              <div><dt>Исходов</dt><dd>{row.data.resolved}</dd></div>
+              <div><dt>Учтено</dt><dd>{row.data.resolved}</dd></div>
               <div><dt>Верно</dt><dd>{row.data.correct}</dd></div>
               <div><dt>Неверно</dt><dd>{row.data.incorrect}</dd></div>
-              <div><dt>Timeout</dt><dd>{row.data.timedOut}</dd></div>
+              <div><dt>Тайм-ауты</dt><dd>{row.data.timedOut}</dd></div>
               <div><dt>Баллы</dt><dd>{row.data.earned} / {row.data.max}</dd></div>
             </dl>
           </article>
@@ -1660,7 +2102,7 @@ function MetricCard({ label, value, note }: { label: string; value: string; note
 
 function ScoreHistogram({ items }: { items: Array<{ from: number; to: number; count: number }> }) {
   const maximum = Math.max(1, ...items.map((item) => item.count));
-  if (items.length === 0) return <EmptyState compact />;
+  if (items.length === 0) return <EmptyState compact title="Нет распределения баллов" message="В выбранном периоде нет завершённых тестов для построения диапазонов." />;
   return (
     <div className={styles.histogram} aria-label="Распределение результатов по баллам">
       {items.map((item) => (
@@ -1706,10 +2148,10 @@ function TrendRows({ items }: { items: AnalyticsTrendItemDto[] }) {
               <time dateTime={item.date}>{dateLabel(item.date)}</time>
               <span className={styles.sampleTrack} aria-hidden="true"><i style={{ width: `${(item.attempts / maximum) * 100}%` }} /></span>
               <strong>{item.attempts}</strong>
-              <span className={styles.trendScore}>ср. {item.averageScore ?? '—'} · med {item.medianScore ?? '—'}</span>
+              <span className={styles.trendScore}>среднее {item.averageScore ?? '—'} · типичное {item.medianScore ?? '—'}</span>
               <span className={styles.trendMeta}>
-                PASS {percentage(item.passRate)} · P/R/F {item.verdicts.PASS}/{item.verdicts.REVIEW}/{item.verdicts.FAIL}
-                {' · '}med {item.medianDurationSeconds === null ? '—' : durationLabel(item.medianDurationSeconds)}
+                рекомендованы {percentage(item.passRate)} · решения {item.verdicts.PASS}/{item.verdicts.REVIEW}/{item.verdicts.FAIL}
+                {' · '}типичное время {item.medianDurationSeconds === null ? '—' : durationLabel(item.medianDurationSeconds)}
               </span>
             </div>
           ))}
@@ -1747,18 +2189,6 @@ function TrendRows({ items }: { items: AnalyticsTrendItemDto[] }) {
   );
 }
 
-function RecommendationBadge({ item }: { item: QuestionAnalyticsItemDto }) {
-  if (!item.recommendation) {
-    return <span className={`${styles.badge} ${styles.neutralBadge}`}>только recovery</span>;
-  }
-  const tone = item.recommendation.code === 'keep'
-    ? styles.goodBadge
-    : item.recommendation.code === 'collect_more_data'
-      ? styles.neutralBadge
-      : styles.warningBadge;
-  return <span className={`${styles.badge} ${tone}`}>{item.recommendation.label}</span>;
-}
-
 function ReliabilityBadge({ reliability }: { reliability: AnalyticsReliability }) {
   return <span className={`${styles.badge} ${reliability === 'insufficient' ? styles.neutralBadge : styles.goodBadge}`}>{reliabilityLabels[reliability]}</span>;
 }
@@ -1781,12 +2211,20 @@ function ErrorState({ message, onRetry, compact = false }: { message: string; on
   );
 }
 
-function EmptyState({ compact = false }: { compact?: boolean }) {
+function EmptyState({
+  compact = false,
+  title = 'Недостаточно данных',
+  message = 'Измените фильтры или дождитесь накопления выборки.',
+}: {
+  compact?: boolean;
+  title?: string;
+  message?: string;
+}) {
   return (
     <div className={`${styles.emptyState} ${compact ? styles.compactState : ''}`}>
       <span aria-hidden="true">◇</span>
-      <strong>Недостаточно данных</strong>
-      <p>Измените фильтры или дождитесь накопления выборки.</p>
+      <strong>{title}</strong>
+      <p>{message}</p>
     </div>
   );
 }

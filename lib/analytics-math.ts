@@ -6,7 +6,12 @@ import type {
   QuestionQualityDto,
   QuestionQualityWarning,
   QuestionChoiceAnalyticsDto,
+  QuestionAnalyticsItemDto,
+  QuestionAnalyticsSignalDto,
+  QuestionAnalyticsSummaryDto,
+  QuestionObservedMetricsDto,
   QuestionRecommendationDto,
+  QuestionSampleDto,
 } from './analytics-contract.ts';
 
 export type PointBiserialObservation = {
@@ -50,6 +55,166 @@ export function analyticsReliability(sampleSize: number): AnalyticsReliability {
   if (sampleSize < 50) return 'descriptive';
   if (sampleSize < 100) return 'directional';
   return 'stable';
+}
+
+export function questionSample(sampleSize: number): QuestionSampleDto {
+  if (sampleSize < 30) {
+    return { n: sampleSize, status: 'insufficient', nextGate: 30, remaining: 30 - sampleSize };
+  }
+  if (sampleSize < 50) {
+    return { n: sampleSize, status: 'early', nextGate: 50, remaining: 50 - sampleSize };
+  }
+  if (sampleSize < 100) {
+    return { n: sampleSize, status: 'working', nextGate: 100, remaining: 100 - sampleSize };
+  }
+  return { n: sampleSize, status: 'stable', nextGate: null, remaining: 0 };
+}
+
+export function questionPromptPreview(prompt: string, maxLength = 200) {
+  const normalized = prompt.replace(/\s+/gu, ' ').trim();
+  const characters = Array.from(normalized);
+  if (characters.length <= maxLength) return normalized;
+  return `${characters.slice(0, Math.max(1, maxLength - 1)).join('').trimEnd()}…`;
+}
+
+export function observedQuestionMetrics(input: {
+  assignedCount: number;
+  presentedCount: number;
+  outcomeCount: number;
+  submittedCount: number;
+  correctCount: number;
+  timeoutCount: number;
+  averageSeconds: number | null;
+  medianSeconds: number | null;
+  minSeconds: number | null;
+  maxSeconds: number | null;
+}): QuestionObservedMetricsDto {
+  return {
+    assignedCount: input.assignedCount,
+    presentedCount: input.presentedCount,
+    outcomeCount: input.outcomeCount,
+    submittedCount: input.submittedCount,
+    correctCount: input.correctCount,
+    incorrectCount: Math.max(0, input.outcomeCount - input.correctCount - input.timeoutCount),
+    timeoutCount: input.timeoutCount,
+    presentationRate: roundedRate(input.presentedCount, input.assignedCount),
+    responseRate: roundedRate(input.submittedCount, input.presentedCount),
+    completionRate: roundedRate(input.outcomeCount, input.presentedCount),
+    successRate: roundedRate(input.correctCount, input.outcomeCount),
+    timeoutRate: roundedRate(input.timeoutCount, input.outcomeCount),
+    timing: {
+      sampleSize: input.submittedCount,
+      averageSeconds: input.averageSeconds,
+      medianSeconds: input.medianSeconds,
+      minSeconds: input.minSeconds,
+      maxSeconds: input.maxSeconds,
+    },
+  };
+}
+
+export function questionAnalyticsSignals(input: {
+  difficulty: string;
+  sample: QuestionSampleDto;
+  successRate: number | null;
+  timeoutRate: number | null;
+  medianSeconds: number | null;
+  peerMedianSeconds: number | null;
+  peerCount: number;
+  discrimination: number | null;
+}): QuestionAnalyticsSignalDto[] {
+  const signals: QuestionAnalyticsSignalDto[] = [];
+  if (input.sample.status === 'insufficient') {
+    signals.push({
+      code: 'sample_insufficient',
+      severity: 'info',
+      title: 'Недостаточно данных',
+      explanation: `Нужно ещё ${input.sample.remaining} результатов до первичного сигнала.`,
+      observed: input.sample.n,
+      threshold: 'n ≥ 30',
+    });
+    return signals;
+  }
+  if (input.sample.status === 'early') {
+    signals.push({
+      code: 'sample_early',
+      severity: 'info',
+      title: 'Первичный сигнал',
+      explanation: `Вывод предварительный: нужно ещё ${input.sample.remaining} результатов до рабочей оценки.`,
+      observed: input.sample.n,
+      threshold: 'n ≥ 50',
+    });
+  }
+  const expected = EXPECTED_SUCCESS_RANGES[input.difficulty];
+  if (expected && input.successRate !== null) {
+    if (input.successRate > expected.max) {
+      signals.push({
+        code: 'too_easy',
+        severity: 'warning',
+        title: 'Вопрос проще заявленного',
+        explanation: `Доля верных выше ожидаемого диапазона для сложности «${input.difficulty}».`,
+        observed: input.successRate,
+        threshold: `${expected.min}–${expected.max}%`,
+      });
+    } else if (input.successRate < expected.min) {
+      signals.push({
+        code: 'too_hard',
+        severity: 'warning',
+        title: 'Вопрос сложнее заявленного',
+        explanation: `Доля верных ниже ожидаемого диапазона для сложности «${input.difficulty}».`,
+        observed: input.successRate,
+        threshold: `${expected.min}–${expected.max}%`,
+      });
+    }
+  }
+  if (input.timeoutRate !== null && input.timeoutRate >= 25) {
+    signals.push({
+      code: 'high_timeout',
+      severity: input.timeoutRate >= 40 ? 'critical' : 'warning',
+      title: 'Много тайм-аутов',
+      explanation: 'Кандидаты часто не успевают ответить в установленный лимит.',
+      observed: input.timeoutRate,
+      threshold: '< 25%',
+    });
+  }
+  if (
+    input.peerCount >= 5
+    && input.medianSeconds !== null
+    && input.peerMedianSeconds !== null
+    && input.medianSeconds >= input.peerMedianSeconds * 1.5
+  ) {
+    signals.push({
+      code: 'slow',
+      severity: 'warning',
+      title: 'Ответ занимает больше времени',
+      explanation: `Сравнение выполнено с ${input.peerCount} вопросами той же сложности.`,
+      observed: input.medianSeconds,
+      threshold: `< ${(input.peerMedianSeconds * 1.5).toFixed(1)} сек.`,
+    });
+  }
+  if (input.sample.n >= 100 && input.discrimination !== null && input.discrimination < 0) {
+    signals.push({
+      code: 'negative_discrimination',
+      severity: 'critical',
+      title: 'Отрицательная разделяющая способность',
+      explanation: 'Сильные кандидаты отвечают на вопрос хуже слабых; нужно проверить ключ и формулировку.',
+      observed: input.discrimination,
+      threshold: '≥ 0',
+    });
+  }
+  return signals;
+}
+
+export function questionAnalyticsSummary(
+  items: readonly QuestionAnalyticsItemDto[],
+): QuestionAnalyticsSummaryDto {
+  return {
+    total: items.length,
+    review: items.filter((item) => item.quality.status === 'review').length,
+    observe: items.filter((item) => item.quality.status === 'observe').length,
+    good: items.filter((item) => item.quality.status === 'good').length,
+    insufficient: items.filter((item) => item.quality.status === 'insufficient').length,
+    disabled: items.filter((item) => item.quality.status === 'disabled').length,
+  };
 }
 
 export function pointBiserial(observations: readonly PointBiserialObservation[]) {
@@ -96,11 +261,12 @@ export function questionRecommendation(input: {
   deadDistractors: number;
 }): QuestionRecommendationDto {
   const reasons: string[] = [];
-  if (input.sampleSize < 30) {
+  if (input.sampleSize < 50) {
+    const target = input.sampleSize < 30 ? 30 : 50;
     return {
       code: 'collect_more_data',
       label: 'Накопить данные',
-      reasons: [`Для первичной оценки нужно минимум 30 предъявлений; сейчас ${input.sampleSize}.`],
+      reasons: [`Для ${target === 30 ? 'первичного сигнала' : 'рабочей оценки'} нужно минимум ${target} результатов; сейчас ${input.sampleSize}, осталось ${target - input.sampleSize}.`],
     };
   }
   if (input.sampleSize >= 50 && input.discrimination !== null && input.discrimination < 0) {
@@ -211,6 +377,7 @@ export function questionQuality(input: {
   timeoutRate: number | null;
   medianSeconds: number | null;
   peerMedianSeconds: number | null;
+  peerCount?: number;
   functioningDistractors: number;
   distractorCount: number;
   discrimination: number | null;
@@ -225,6 +392,7 @@ export function questionQuality(input: {
   if (input.sampleSize >= 30 && (input.timeoutRate ?? 0) >= 25) warnings.push('high_timeout');
   if (
     input.sampleSize >= 30 &&
+    (input.peerCount ?? 0) >= 5 &&
     input.medianSeconds !== null &&
     input.peerMedianSeconds !== null &&
     input.medianSeconds >= input.peerMedianSeconds * 1.5
@@ -260,6 +428,7 @@ export function questionQuality(input: {
   components.push({ key: 'timeout_health', earned: timeoutPoints, max: 20, available: timeoutAvailable });
 
   const timingAvailable = qualityAvailable
+    && (input.peerCount ?? 0) >= 5
     && input.medianSeconds !== null
     && input.peerMedianSeconds !== null;
   const timingPoints = timingAvailable && input.medianSeconds! < input.peerMedianSeconds! * 1.5

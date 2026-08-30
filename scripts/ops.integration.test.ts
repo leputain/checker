@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -31,7 +32,57 @@ const now = Date.parse('2026-08-28T12:00:00.000Z');
 const dayMs = 24 * 60 * 60 * 1_000;
 const oldAt = now - (2 * dayMs);
 const freshAt = now - (60 * 60 * 1_000);
-const revision = 'a'.repeat(64);
+const seededBankQuestions = [
+  {
+    id: 1,
+    difficulty: 'easy',
+    topic: 'Ops',
+    prompt: 'Integration question',
+    choices: ['A', 'B'],
+    correctIndex: 0,
+    weight: 1,
+    active: false,
+    dedupeKey: 'ops-integration',
+  },
+  {
+    id: 2,
+    difficulty: 'easy',
+    topic: 'Ops v2',
+    prompt: 'Integration question v2',
+    choices: ['A', 'B'],
+    correctIndex: 0,
+    weight: 1,
+    active: true,
+    dedupeKey: 'ops-integration-v2',
+  },
+] as const;
+function sha256(value: string) {
+  return createHash('sha256').update(value).digest('hex');
+}
+const seededQuestionHashes = new Map(seededBankQuestions.map((question) => [
+  question.id,
+  sha256(JSON.stringify({
+    id: question.id,
+    difficulty: question.difficulty,
+    topic: question.topic,
+    prompt: question.prompt,
+    choices: question.choices,
+    correctIndex: question.correctIndex,
+    weight: question.weight,
+    dedupeKey: question.dedupeKey,
+  })),
+]));
+const revision = sha256(JSON.stringify(seededBankQuestions.map((question) => ({
+  id: question.id,
+  difficulty: question.difficulty,
+  topic: question.topic,
+  prompt: question.prompt,
+  choices: question.choices,
+  correctIndex: question.correctIndex,
+  weight: question.weight,
+  active: question.active,
+  dedupeKey: question.dedupeKey,
+}))));
 const completedId = '11111111-1111-4111-8111-111111111111';
 const oldActiveId = '22222222-2222-4222-8222-222222222222';
 const freshAbortedId = '33333333-3333-4333-8333-333333333333';
@@ -129,6 +180,23 @@ function seedLegacyDatabase(workspace: TestWorkspace) {
     ) VALUES ('legacy-attempt', 1, 0, 1, ${oldAt + 1000})`);
 }
 
+function seedPreAdminUpgradeDatabase(workspace: TestWorkspace) {
+  executeSql(workspace, `INSERT INTO question_bank_revisions (
+      hash, applied_at, total_count, active_count, pools_json
+    ) VALUES (${sqlText(revision)}, ${oldAt}, 1, 1, '{}')`);
+  executeSql(workspace, `INSERT INTO questions (
+      id, difficulty, topic, prompt, choices_json, correct_index, weight, active,
+      content_hash, dedupe_key
+    ) VALUES
+      (1, 'easy', 'Current', 'Current member', '["A","B"]', 0, 1, 1,
+        ${sqlText('b'.repeat(64))}, 'upgrade-current'),
+      (2, 'easy', 'Historical', 'Inactive orphan', '["A","B"]', 0, 1, 0,
+        ${sqlText('c'.repeat(64))}, 'upgrade-orphan')`);
+  executeSql(workspace, `INSERT INTO question_bank_revision_items (
+      revision_hash, question_id, active
+    ) VALUES (${sqlText(revision)}, 1, 1)`);
+}
+
 function seedStaleActiveAttempt(workspace: TestWorkspace) {
   executeSql(workspace, `INSERT INTO attempts (
       id, token_hash, candidate_name, candidate_key, public_alias, bank_revision,
@@ -158,15 +226,33 @@ function seedStaleActiveAttempt(workspace: TestWorkspace) {
 function seedCurrentDatabase(workspace: TestWorkspace) {
   executeSql(workspace, `INSERT INTO question_bank_revisions (
       hash, applied_at, total_count, active_count, pools_json
-    ) VALUES (${sqlText(revision)}, ${oldAt}, 1, 1, '{}')`);
+    ) VALUES (${sqlText(revision)}, ${oldAt}, 2, 1, '{}')`);
   executeSql(workspace, `INSERT INTO questions (
       id, difficulty, topic, prompt, choices_json, correct_index, weight, active,
       content_hash, dedupe_key
-    ) VALUES (1, 'easy', 'Ops', 'Integration question', '["A","B"]', 0, 5, 1,
-      ${sqlText('b'.repeat(64))}, 'ops-integration')`);
+    ) VALUES
+      (1, 'easy', 'Ops', 'Integration question', '["A","B"]', 0, 1, 0,
+        ${sqlText(seededQuestionHashes.get(1)!)}, 'ops-integration'),
+      (2, 'easy', 'Ops v2', 'Integration question v2', '["A","B"]', 0, 1, 1,
+        ${sqlText(seededQuestionHashes.get(2)!)}, 'ops-integration-v2')`);
   executeSql(workspace, `INSERT INTO question_bank_revision_items (
       revision_hash, question_id, active
-    ) VALUES (${sqlText(revision)}, 1, 1)`);
+    ) VALUES
+      (${sqlText(revision)}, 1, 0),
+      (${sqlText(revision)}, 2, 1)`);
+  executeSql(workspace, `INSERT INTO question_bank_state (id, current_revision, updated_at)
+    VALUES (1, ${sqlText(revision)}, ${oldAt})`);
+  executeSql(workspace, `INSERT INTO question_version_links (
+      predecessor_question_id, successor_question_id, created_at, bank_revision
+    ) VALUES (1, 2, ${oldAt}, ${sqlText(revision)})`);
+  executeSql(workspace, `INSERT INTO question_bank_change_events (
+      event_type, question_id, predecessor_question_id, successor_question_id,
+      bank_revision, created_at, note
+    ) VALUES ('revised', 2, 1, 2, ${sqlText(revision)}, ${oldAt}, 'integration')`);
+  executeSql(workspace, `INSERT INTO question_bank_mutations (
+      idempotency_key, operation, expected_revision, request_hash, response_json, created_at
+    ) VALUES ('ops-integration-key', 'revise', ${sqlText(revision)},
+      ${sqlText('d'.repeat(64))}, '{}', ${oldAt})`);
   executeSql(workspace, `INSERT INTO test_config_versions (
       id, scoring_version, config_json, created_at
     ) VALUES (
@@ -497,6 +583,10 @@ try {
     'attempt_questions',
     'test_config_versions',
     'question_bank_revision_items',
+    'question_bank_state',
+    'question_version_links',
+    'question_bank_change_events',
+    'question_bank_mutations',
     'question_review_history',
     'telegram_outbox',
     'analytics_refresh_state',
@@ -506,15 +596,43 @@ try {
   }
   assertLocalDatabaseIntegrity(current.persistPath, current.localD1);
 
+  const adminMigration = journal.entries.find((entry) => entry.tag === '0017_narrow_baron_zemo');
+  assert(adminMigration, 'question bank admin migration must be present');
+  const upgrade = await createWorkspace(integrationRoot, 'admin-upgrade');
+  await applyMigrationChain(upgrade, journal, adminMigration.idx - 1);
+  seedPreAdminUpgradeDatabase(upgrade);
+  executeLocalD1File(
+    path.join(projectRoot, 'drizzle', `${adminMigration.tag}.sql`),
+    upgrade.persistPath,
+    upgrade.localD1,
+  );
+  assert.deepEqual(queryLocalD1<{ question_id: number }>(
+    'SELECT question_id FROM question_bank_change_events ORDER BY question_id',
+    upgrade.persistPath,
+    upgrade.localD1,
+  ), [{ question_id: 1 }], 'upgrade audit must include only current revision members');
+  assert.equal(queryLocalD1<{ count: number }>(
+    `SELECT COUNT(*) AS count
+      FROM question_bank_revision_items items
+      JOIN question_bank_state state ON state.current_revision = items.revision_hash
+      WHERE state.id = 1`,
+    upgrade.persistPath,
+    upgrade.localD1,
+  )[0]?.count, 1, 'upgrade must not pull inactive orphan rows into current membership');
+
   const legacy = await createWorkspace(integrationRoot, 'legacy-v7');
   await applyMigrationChain(legacy, journal, 8);
   seedLegacyDatabase(legacy);
   const legacyBackup = await createBackup(legacy);
   await verifyBackup(legacyBackup.sqlPath, legacy);
-  assert.equal(legacyBackup.manifest.format, 2);
+  assert.equal(legacyBackup.manifest.format, 3);
   assert.equal(legacyBackup.manifest.counts.attempt_questions, 0);
   assert.equal(legacyBackup.manifest.counts.test_config_versions, 0);
   assert.equal(legacyBackup.manifest.counts.bank_revision_items, 0);
+  assert.equal(legacyBackup.manifest.counts.bank_state, 0);
+  assert.equal(legacyBackup.manifest.counts.question_version_links, 0);
+  assert.equal(legacyBackup.manifest.counts.question_bank_change_events, 0);
+  assert.equal(legacyBackup.manifest.counts.question_bank_mutations, 0);
   assert.equal(legacyBackup.manifest.counts.question_reviews, 0);
   assert.equal(legacyBackup.manifest.counts.analytics_refresh_state, 0);
   assert.equal(legacyBackup.manifest.counts.analytics_report_aggregates, 0);
@@ -545,6 +663,10 @@ try {
   assert.equal(sourceBackup.manifest.counts.attempt_questions, 3);
   assert.equal(sourceBackup.manifest.counts.outbox, 3);
   assert.equal(sourceBackup.manifest.counts.question_reviews, 1);
+  assert.equal(sourceBackup.manifest.counts.bank_state, 1);
+  assert.equal(sourceBackup.manifest.counts.question_version_links, 1);
+  assert.equal(sourceBackup.manifest.counts.question_bank_change_events, 1);
+  assert.equal(sourceBackup.manifest.counts.question_bank_mutations, 1);
   assert.equal(sourceBackup.manifest.counts.analytics_refresh_state, 1);
   assert.equal(sourceBackup.manifest.counts.analytics_report_aggregates, 1);
 
@@ -623,6 +745,24 @@ try {
     current.persistPath,
     current.localD1,
   )[0], { answers: 1, ledger: 1 }, 'restore must retain completed facts indefinitely');
+  assert.deepEqual(queryLocalD1<{
+    current_revision: string;
+    links: number;
+    events: number;
+    mutations: number;
+  }>(`SELECT
+      (SELECT current_revision FROM question_bank_state WHERE id = 1) AS current_revision,
+      (SELECT COUNT(*) FROM question_version_links) AS links,
+      (SELECT COUNT(*) FROM question_bank_change_events) AS events,
+      (SELECT COUNT(*) FROM question_bank_mutations) AS mutations`,
+    current.persistPath,
+    current.localD1,
+  )[0], {
+    current_revision: revision,
+    links: 1,
+    events: 1,
+    mutations: 1,
+  }, 'restore must retain the managed bank revision and immutable edit history');
   assert.equal(countRows(current, 'telegram_outbox'), 1);
   await verifyBackup(sourceBackup.sqlPath, current);
 

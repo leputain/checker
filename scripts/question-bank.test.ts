@@ -185,6 +185,7 @@ assert.equal(
 
 const oversized = minimumBank();
 oversized[0].prompt = 'П'.repeat(281);
+oversized[0].topic = 'Т'.repeat(81);
 oversized[1].choices = ['A', 'B', 'C', 'D', 'E', 'F'];
 oversized[2].choices = ['A'.repeat(161), 'B'];
 oversized[3].dedupeKey = 'некорректный ключ';
@@ -193,6 +194,7 @@ assert.throws(
   (error: unknown) => {
     assert.ok(error instanceof QuestionBankValidationError);
     assert.match(error.message, /prompt должен содержать не более 280/);
+    assert.match(error.message, /topic должен содержать не более 80/);
     assert.match(error.message, /choices должен содержать от 2 до 5/);
     assert.match(error.message, /вариант choices должен содержать не более 160/);
     assert.match(error.message, /dedupeKey должен содержать/);

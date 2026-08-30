@@ -1,5 +1,6 @@
 .shell {
   min-height: 100dvh;
+  overflow-x: clip;
   color: #eef7f2;
   background:
     linear-gradient(120deg, rgba(3, 10, 8, .91), rgba(3, 10, 8, .73) 52%, rgba(3, 10, 8, .94)),
@@ -221,21 +222,22 @@
   position: sticky;
   z-index: 20;
   top: max(10px, env(safe-area-inset-top));
-  display: grid;
-  grid-template-columns: repeat(5, minmax(140px, 1fr));
-  align-items: end;
-  gap: 10px;
   margin: 14px 0 26px;
-  padding: 14px;
+  overflow: hidden;
   border: 1px solid rgba(216, 240, 229, .12);
   border-radius: 17px;
   background: rgba(10, 23, 19, .94);
   box-shadow: 0 18px 42px rgba(0, 0, 0, .2);
   backdrop-filter: blur(22px);
 }
-.filterHeading { align-self: center; display: grid; gap: 3px; padding-left: 5px; }
-.filterHeading > span { font-size: 13px; font-weight: 850; }
-.filterHeading small { color: #70847b; font-size: 9px; }
+.cohortFilters > summary { min-height: 58px; display: flex; align-items: center; gap: 10px; padding: 0 16px; color: #e9f5ef; cursor: pointer; list-style: none; }
+.cohortFilters > summary::-webkit-details-marker { display: none; }
+.cohortFilters > summary > span { font-size: 13px; font-weight: 850; }
+.cohortFilters > summary > small { color: #80958b; font-size: 10px; font-weight: 650; }
+.cohortFilters > summary::after { content: '+'; margin-left: auto; color: #8fc4ab; font-size: 20px; font-weight: 500; }
+.cohortFilters[open] > summary { border-bottom: 1px solid rgba(216, 240, 229, .08); }
+.cohortFilters[open] > summary::after { content: '−'; }
+.cohortFilterGrid { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)); align-items: end; gap: 10px; padding: 14px; }
 .modelFilters { grid-column: 1 / -1; overflow: hidden; border: 1px solid rgba(216, 240, 229, .1); border-radius: 13px; background: rgba(255, 255, 255, .022); }
 .modelFilters summary { min-height: 44px; display: flex; align-items: center; gap: 10px; padding: 0 13px; color: #dcebe3; cursor: pointer; list-style: none; font-size: 11px; font-weight: 850; }
 .modelFilters summary::-webkit-details-marker { display: none; }
@@ -247,9 +249,10 @@
 .modelFilterGrid input { min-width: 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .modelFilters > p { margin: -2px 13px 12px; color: #71867c; font-size: 9px; line-height: 1.4; }
 .filterBar input, .filterBar select { min-height: 44px; font-size: 11px; }
+.fieldHint { min-height: 23px; color: #71867c; font-size: 9px; line-height: 1.35; }
 .filterActions { display: flex; align-items: center; gap: 3px; }
 .filterActions .primaryButton { min-height: 44px; padding: 0 16px; }
-.filterError { grid-column: 1 / -1; padding: 2px 5px; }
+.filterError { margin: 0; padding: 0 16px 14px; }
 
 .panel { min-height: 460px; }
 .panelStack { display: grid; gap: 22px; }
@@ -317,17 +320,57 @@
 .localFilters label:first-child { flex: 1; max-width: 420px; }
 .localFilters input, .localFilters select { min-height: 44px; font-size: 11px; }
 .resultCount { margin-left: auto; padding: 0 8px 12px; color: #82968d; font-size: 10px; font-weight: 800; }
+.questionSummaryGrid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.questionSummaryGrid article { min-width: 0; display: grid; gap: 6px; padding: 17px 18px; border: 1px solid rgba(216, 240, 229, .1); border-radius: 16px; background: linear-gradient(145deg, rgba(20, 36, 30, .84), rgba(10, 22, 18, .82)); }
+.questionSummaryGrid strong { font-size: clamp(24px, 3vw, 35px); line-height: 1; letter-spacing: -.05em; }
+.questionSummaryGrid span { color: #82978d; font-size: 9px; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
+.summaryTonecritical { border-color: rgba(239, 143, 123, .24) !important; background: linear-gradient(145deg, rgba(72, 31, 25, .7), rgba(20, 20, 17, .82)) !important; }
+.summaryTonecritical strong { color: #ffad9d; }
+.summaryTonewarning { border-color: rgba(226, 177, 85, .22) !important; }
+.summaryTonewarning strong { color: #f0d39b; }
+.summaryTonegood { border-color: rgba(112, 213, 164, .2) !important; }
+.summaryTonegood strong { color: #b9f2d8; }
+.summaryToneneutral strong { color: #eef7f2; }
+.questionCohortSummary { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 0 2px; color: #a5b8af; font-size: 9px; }
+.questionCohortSummary span { padding: 7px 9px; border: 1px solid rgba(216, 240, 229, .09); border-radius: 999px; background: rgba(255, 255, 255, .022); }
+.questionCohortSummary small { margin-left: auto; color: #6f837a; }
+.questionToolbar { display: grid; grid-template-columns: minmax(240px, 1fr) minmax(180px, .5fr) minmax(230px, .6fr) auto auto; align-items: end; gap: 10px; padding: 13px; border: 1px solid rgba(216, 240, 229, .09); border-radius: 15px; background: rgba(255, 255, 255, .022); }
+.questionToolbar label { min-width: 0; display: grid; gap: 7px; }
+.questionToolbar label > span { color: #b8cbc2; font-size: 10px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.questionToolbar input, .questionToolbar select { width: 100%; min-height: 44px; padding: 0 13px; border: 1px solid rgba(216, 240, 229, .17); border-radius: 12px; color: #eef7f2; background: rgba(255, 255, 255, .045); color-scheme: dark; font-size: 11px; }
+.questionToolbarActions { display: flex; align-items: center; gap: 4px; }
+.questionToolbarActions .primaryButton { min-height: 44px; }
+.questionToolbar .resultCount { align-self: center; margin-left: 0; padding: 0 5px; white-space: nowrap; }
 .tableWrap { overflow: auto; border: 1px solid rgba(216, 240, 229, .1); border-radius: 19px; background: rgba(11, 25, 20, .8); box-shadow: 0 22px 58px rgba(0, 0, 0, .14); }
 .dataTable { width: 100%; border-collapse: collapse; font-size: 11px; }
 .dataTable th { padding: 13px 15px; position: sticky; z-index: 2; top: 0; color: #71867c; background: rgba(13, 29, 23, .98); font-size: 8px; letter-spacing: .09em; text-align: left; text-transform: uppercase; white-space: nowrap; }
 .dataTable td { min-width: 90px; padding: 13px 15px; border-top: 1px solid rgba(216, 240, 229, .075); color: #d7e8df; vertical-align: middle; }
 .dataTable tbody tr { transition: background .2s ease; }
 .dataTable td small { display: block; margin-top: 4px; color: #6f837a; font-size: 8px; line-height: 1.35; }
-.rowLink { min-height: 35px; padding: 0; border: 0; color: #b9f2d8; background: transparent; cursor: pointer; font-weight: 850; text-align: left; }
+.rowLink { min-height: 44px; padding: 0; border: 0; color: #b9f2d8; background: transparent; cursor: pointer; font-weight: 850; text-align: left; }
+.questionTable { table-layout: fixed; }
+.questionTable th:nth-child(1) { width: 31%; }
+.questionTable th:nth-child(2) { width: 14%; }
+.questionTable th:nth-child(3) { width: 12%; }
+.questionTable th:nth-child(4) { width: 18%; }
+.questionTable th:nth-child(5) { width: 12%; }
+.questionTable th:nth-child(6) { width: 13%; }
+.questionTable td { min-width: 0; }
+.questionTitleButton { width: 100%; min-height: 44px; display: grid; align-content: center; gap: 5px; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
+.questionTitleButton strong { display: -webkit-box; overflow: hidden; color: #dff1e8; font-size: 11px; line-height: 1.42; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.questionTitleButton span { overflow: hidden; color: #79a18e; font-size: 8px; font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+.questionIdentityCell > small { margin-top: 2px !important; }
+.questionOutcomeCell { display: grid; gap: 7px; }
+.questionOutcomeCell span { display: flex; justify-content: space-between; gap: 8px; color: #b8cbc2; font-size: 9px; }
+.questionOutcomeCell b { color: #71867c; font-size: 8px; letter-spacing: .04em; text-transform: uppercase; }
+.sampleLadder { width: min(116px, 100%); display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 8px; }
+.sampleLadder span { min-height: 18px; display: grid; place-items: center; border: 1px solid rgba(216, 240, 229, .1); border-radius: 999px; color: #657a70; background: rgba(255, 255, 255, .018); font-size: 7px; font-weight: 850; }
+.sampleLadder span[data-reached='true'] { color: #b9f2d8; border-color: rgba(139, 213, 178, .3); background: rgba(52, 157, 111, .11); }
 .badge { display: inline-flex; align-items: center; min-height: 28px; max-width: 180px; padding: 5px 8px; border: 1px solid rgba(216, 240, 229, .12); border-radius: 999px; font-size: 8px; font-weight: 850; line-height: 1.2; text-align: center; }
 .goodBadge, .verdictPASS { color: #aee6cb; border-color: rgba(91, 196, 148, .22); background: rgba(52, 157, 111, .09); }
 .neutralBadge { color: #a8bbb2; background: rgba(255, 255, 255, .035); }
 .warningBadge, .verdictREVIEW { color: #f0d39b; border-color: rgba(226, 177, 85, .23); background: rgba(191, 129, 39, .09); }
+.criticalBadge { color: #ffad9d; border-color: rgba(233, 112, 87, .25); background: rgba(181, 68, 46, .11); }
 .verdictFAIL { color: #ffad9d; border-color: rgba(233, 112, 87, .22); background: rgba(181, 68, 46, .1); }
 
 .groupGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
@@ -351,6 +394,24 @@
 .detailBadges > span { padding: 6px 8px; border: 1px solid rgba(216, 240, 229, .12); border-radius: 999px; color: #9cb1a7; background: rgba(255, 255, 255, .03); font-size: 8px; font-weight: 800; text-transform: uppercase; }
 .detailLead h3 { margin: 17px 0 0; font-size: clamp(22px, 4vw, 31px); line-height: 1.28; letter-spacing: -.04em; }
 .contextBlock { max-height: 240px; margin: 17px 0 0; padding: 16px; overflow: auto; border: 1px solid rgba(216, 240, 229, .1); border-radius: 13px; color: #cde7da; background: rgba(0, 0, 0, .25); font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+.questionDiagnosis { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 15px; padding: 19px; border: 1px solid rgba(216, 240, 229, .11); border-radius: 17px; background: rgba(255, 255, 255, .024); }
+.questionDiagnosis[data-tone='review'], .questionDiagnosis[data-tone='disabled'] { border-color: rgba(239, 143, 123, .22); background: rgba(181, 68, 46, .065); }
+.questionDiagnosis[data-tone='observe'] { border-color: rgba(226, 177, 85, .2); background: rgba(191, 129, 39, .055); }
+.questionDiagnosis h3, .readinessCard h3, .evidenceSection h3 { margin: 0; font-size: 19px; letter-spacing: -.035em; }
+.questionDiagnosis > div > p:last-child, .readinessCard > div > p:last-child { margin: 8px 0 0; color: #a7bab1; font-size: 11px; line-height: 1.52; }
+.signalList { grid-column: 1 / -1; display: grid; gap: 7px; margin: 2px 0 0; padding: 0; list-style: none; }
+.signalList li { display: grid; gap: 3px; padding: 10px 11px; border-left: 3px solid #789b8b; border-radius: 0 10px 10px 0; color: #c7d8d0; background: rgba(255, 255, 255, .025); font-size: 9px; }
+.signalList li[data-severity='warning'] { border-left-color: #d4ad64; }
+.signalList li[data-severity='critical'] { border-left-color: #e97c66; }
+.signalList li span { color: #83978e; line-height: 1.45; }
+.readinessCard { display: grid; grid-template-columns: minmax(0, 1fr) 150px; align-items: center; gap: 15px 24px; padding: 19px; border: 1px solid rgba(139, 213, 178, .14); border-radius: 17px; background: rgba(52, 157, 111, .045); }
+.readinessCard .sampleLadder { width: 100%; margin: 0; }
+.readinessCard dl { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0; }
+.readinessCard dl > div { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border: 1px solid rgba(216, 240, 229, .07); border-radius: 9px; background: rgba(0, 0, 0, .08); }
+.readinessCard dt { color: #789086; font-size: 8px; }
+.readinessCard dd { margin: 0; font-size: 9px; font-weight: 850; }
+.evidenceSection { display: grid; gap: 11px; }
+.evidenceSection .cardHeading { margin-bottom: 3px; }
 .detailMetrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .detailMetrics .metricCard { padding: 14px; }
 .detailMetrics .metricCard > strong { font-size: 19px; }
@@ -368,7 +429,7 @@
 .qualityBox { padding: 19px; border: 1px solid rgba(139, 213, 178, .14); border-radius: 17px; background: rgba(52, 157, 111, .045); }
 .qualityHeadline { display: flex; align-items: start; justify-content: space-between; gap: 18px; }
 .qualityHeadline h3 { margin: 0; font-size: 19px; }
-.qualityHeadline > strong { font-size: 24px; letter-spacing: -.04em; }
+.qualityHeadline > strong { max-width: 230px; font-size: 19px; letter-spacing: -.04em; text-align: right; }
 .qualityComponents { display: grid; grid-template-columns: 1fr 1fr; gap: 13px 18px; margin-top: 18px; }
 .qualityComponents > div { display: grid; gap: 7px; }
 .qualityComponents > div > div { display: flex; justify-content: space-between; gap: 10px; color: #9cafA6; font-size: 9px; }
@@ -401,6 +462,7 @@
 .choiceStats li > div { min-width: 0; display: grid; gap: 5px; }
 .choiceStats li > div strong { overflow-wrap: anywhere; font-size: 11px; line-height: 1.4; }
 .choiceStats li > div small { color: #788c83; font-size: 8px; }
+.choiceStats .barTrack { height: 7px; }
 .choiceIndex { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid rgba(216, 240, 229, .12); border-radius: 9px; color: #b2d8c6; font-size: 9px; font-weight: 900; }
 .correctChoice { border-color: rgba(91, 196, 148, .21) !important; background: rgba(52, 157, 111, .07) !important; }
 .candidateHero { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding-bottom: 20px; border-bottom: 1px solid rgba(216, 240, 229, .09); }
@@ -420,6 +482,176 @@
 .interviewList strong { font-size: 12px; line-height: 1.4; }
 .interviewList p { margin: 0; color: #83978e; font-size: 10px; line-height: 1.5; }
 .generatedAt { margin: 0; color: #6f837a; font-size: 9px; text-align: center; }
+
+/* Question workspace and bank management */
+.questionWorkspace { display: grid; gap: 22px; }
+.questionWorkspaceSwitcher {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 12px 14px 12px 18px;
+  border: 1px solid rgba(216, 240, 229, .11);
+  border-radius: 17px;
+  background: rgba(10, 23, 18, .82);
+}
+.questionWorkspaceSwitcher > div:first-child { display: grid; gap: 4px; }
+.questionWorkspaceSwitcher > div:first-child span { color: #789086; font-size: 10px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.questionWorkspaceSwitcher > div:first-child strong { font-size: 14px; }
+.questionWorkspaceSwitcher > div:last-child { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid rgba(216, 240, 229, .1); border-radius: 13px; background: rgba(0, 0, 0, .15); }
+.questionWorkspaceSwitcher button { min-width: 142px; min-height: 44px; padding: 0 15px; border: 0; border-radius: 10px; color: #91a69c; background: transparent; cursor: pointer; font-size: 12px; font-weight: 850; }
+.questionWorkspaceSwitcher button[aria-selected='true'] { color: #092016; background: #b9f2d8; box-shadow: 0 8px 22px rgba(44, 165, 112, .13); }
+.questionWorkspace > section[role='tabpanel'] { min-width: 0; }
+.questionWorkspace > section[role='tabpanel'] > .panelStack { height: 100%; }
+.bankWorkspace { display: grid; gap: 22px; }
+.bankWorkspaceHeading { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.bankWorkspaceHeading h2 { margin: 0; font-size: clamp(28px, 3vw, 42px); letter-spacing: -.05em; }
+.bankWorkspaceHeading > div > p:last-child { max-width: 760px; margin: 9px 0 0; color: #9cafa6; font-size: 13px; line-height: 1.55; }
+.bankStack, .bankDetailStack { display: grid; gap: 18px; }
+.bankSummary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.bankSummary article { min-width: 0; display: grid; gap: 7px; padding: 17px 18px; border: 1px solid rgba(216, 240, 229, .1); border-radius: 16px; background: linear-gradient(145deg, rgba(20, 36, 30, .84), rgba(10, 22, 18, .82)); }
+.bankSummary strong { overflow: hidden; font-size: clamp(22px, 2.5vw, 32px); line-height: 1; letter-spacing: -.045em; text-overflow: ellipsis; }
+.bankSummary span { color: #82978d; font-size: 9px; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
+.bankToolbar { display: grid; grid-template-columns: minmax(240px, 1.2fr) repeat(4, minmax(130px, .52fr)) auto auto; align-items: end; gap: 10px; padding: 13px; border: 1px solid rgba(216, 240, 229, .1); border-radius: 16px; background: rgba(255, 255, 255, .024); }
+.bankToolbar label, .bankEditor label { min-width: 0; display: grid; gap: 7px; }
+.bankToolbar label > span, .bankEditor label > span, .bankEditorSection > label > span { color: #b8cbc2; font-size: 10px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+.bankToolbar input, .bankToolbar select, .bankEditor input:not([type='checkbox']):not([type='radio']), .bankEditor select, .bankEditor textarea {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 13px;
+  border: 1px solid rgba(216, 240, 229, .17);
+  border-radius: 12px;
+  color: #eef7f2;
+  background: rgba(255, 255, 255, .045);
+  color-scheme: dark;
+}
+.bankToolbar input:focus, .bankToolbar select:focus, .bankEditor input:focus, .bankEditor select:focus, .bankEditor textarea:focus { border-color: rgba(174, 242, 212, .55); background: rgba(255, 255, 255, .07); }
+.bankToolbarActions { display: flex; align-items: center; gap: 4px; }
+.bankToolbarActions .primaryButton { min-height: 46px; }
+.bankCreateButton { min-height: 46px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 17px; border: 1px solid rgba(185, 242, 216, .32); border-radius: 12px; color: #c9f5df; background: rgba(62, 167, 119, .1); cursor: pointer; font-size: 12px; font-weight: 850; white-space: nowrap; }
+.bankCreateButton > span { font-size: 19px; font-weight: 400; }
+.bankCreateButton:disabled { opacity: .45; cursor: default; }
+.bankInlineError { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 13px; border: 1px solid rgba(255, 160, 137, .2); border-radius: 13px; color: #ffb2a2; background: rgba(172, 65, 43, .08); font-size: 12px; }
+.bankInlineError button { min-height: 44px; padding: 0 14px; border: 1px solid rgba(255, 187, 171, .18); border-radius: 10px; color: inherit; background: transparent; cursor: pointer; font-weight: 800; }
+.bankMutationNotice { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 13px 11px 15px; border: 1px solid rgba(113, 218, 170, .19); border-radius: 13px; color: #c4edda; background: rgba(51, 156, 107, .07); }
+.bankMutationNotice > div { min-width: 0; display: grid; gap: 3px; }
+.bankMutationNotice strong { font-size: 12px; }
+.bankMutationNotice span { color: #91ae9f; font-size: 10px; }
+.bankMutationNotice small { color: #cbb987; font-size: 9px; line-height: 1.4; }
+.bankMutationNotice button { width: 44px; height: 44px; flex: none; border: 0; border-radius: 10px; color: #9cb9aa; background: transparent; cursor: pointer; font-size: 20px; }
+.bankGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.bankQuestionCard { min-width: 0; display: grid; align-content: start; gap: 14px; padding: 19px; border: 1px solid rgba(216, 240, 229, .11); border-radius: 19px; background: linear-gradient(145deg, rgba(18, 34, 28, .9), rgba(10, 22, 18, .86)); box-shadow: 0 15px 40px rgba(0, 0, 0, .1); }
+.bankQuestionCard[data-active='false'] { opacity: .76; border-color: rgba(216, 240, 229, .07); }
+.bankQuestionCard > header { min-width: 0; display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.bankQuestionIdentity { min-width: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.bankQuestionIdentity > span { max-width: 100%; overflow: hidden; padding: 6px 8px; border: 1px solid rgba(216, 240, 229, .11); border-radius: 999px; color: #9eb4a9; background: rgba(255, 255, 255, .027); font-size: 9px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+.bankActive, .bankInactive { flex: none; padding: 6px 8px; border-radius: 999px; font-size: 9px; font-weight: 850; }
+.bankActive { color: #a7ebca; background: rgba(55, 169, 113, .12); }
+.bankInactive { color: #ffc0b1; background: rgba(190, 75, 48, .1); }
+.bankQuestionOpen { min-width: 0; display: grid; gap: 11px; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
+.bankQuestionOpen > strong { overflow-wrap: anywhere; font-size: 17px; line-height: 1.4; letter-spacing: -.025em; }
+.bankQuestionOpen pre, .bankDetailLead pre { max-height: 160px; margin: 0; padding: 12px; overflow: auto; border: 1px solid rgba(216, 240, 229, .08); border-radius: 11px; color: #b8d9c8; background: rgba(0, 0, 0, .19); font-size: 11px; line-height: 1.5; white-space: pre-wrap; }
+.bankChoicePreview { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.bankChoicePreview li { min-width: 0; display: grid; grid-template-columns: 27px minmax(0, 1fr); align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid rgba(216, 240, 229, .07); border-radius: 10px; color: #b9cbc2; background: rgba(255, 255, 255, .018); font-size: 12px; line-height: 1.4; }
+.bankChoicePreview li > span { width: 27px; height: 27px; display: grid; place-items: center; border: 1px solid rgba(216, 240, 229, .12); border-radius: 8px; color: #9ecbb6; font-size: 9px; font-weight: 900; }
+.bankQuestionCard > footer { display: flex; align-items: end; justify-content: space-between; gap: 14px; padding-top: 13px; border-top: 1px solid rgba(216, 240, 229, .07); }
+.bankQuestionCard > footer > div { min-width: 0; display: flex; flex-wrap: wrap; gap: 5px 12px; color: #70857b; font-size: 9px; }
+.bankQuestionCard > footer > div span, .bankQuestionCard > footer > div b { max-width: 100%; overflow-wrap: anywhere; }
+.bankQuestionCard > footer > div b { color: #9eb1a8; }
+.bankQuestionCard > footer .secondaryButton { flex: none; }
+
+.bankDialog { width: min(840px, 100%); position: relative; }
+.dialogEyebrow { display: block; margin-bottom: 3px; color: #8dc8ad; font-size: 8px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; }
+.bankDetailLead { display: grid; gap: 17px; }
+.bankDetailLead h3 { margin: 0; overflow-wrap: anywhere; font-size: clamp(23px, 4vw, 32px); line-height: 1.3; letter-spacing: -.04em; }
+.bankEditorChoices { display: grid; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.bankEditorChoices li { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 11px; min-height: 58px; padding: 10px 12px; border: 1px solid rgba(216, 240, 229, .09); border-radius: 13px; background: rgba(255, 255, 255, .022); }
+.bankEditorChoices li > span { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid rgba(216, 240, 229, .12); border-radius: 9px; color: #a7cbbb; font-size: 10px; font-weight: 900; }
+.bankEditorChoices li > strong { min-width: 0; overflow-wrap: anywhere; font-size: 12px; line-height: 1.45; }
+.bankEditorChoices li > small { color: #aef0d0; font-size: 9px; font-weight: 850; }
+.bankEditorChoices .bankCorrectChoice { border-color: rgba(81, 193, 142, .27); background: rgba(49, 155, 106, .08); }
+.bankMetadata { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.bankMetadata > div { min-width: 0; display: grid; gap: 4px; padding: 12px; border: 1px solid rgba(216, 240, 229, .08); border-radius: 11px; background: rgba(255, 255, 255, .018); }
+.bankMetadata dt { color: #758a80; font-size: 9px; }
+.bankMetadata dd { margin: 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 800; }
+.bankActionsCard, .bankHistorySection { display: grid; gap: 15px; padding: 18px; border: 1px solid rgba(216, 240, 229, .1); border-radius: 17px; background: rgba(255, 255, 255, .022); }
+.bankActionsCard h3, .bankHistorySection h3 { margin: 0; font-size: 19px; letter-spacing: -.03em; }
+.bankActionsCard p { margin: 7px 0 0; color: #98aba2; font-size: 12px; line-height: 1.5; }
+.bankActionButtons { display: flex; flex-wrap: wrap; gap: 8px; }
+.bankNotice { margin: 0 !important; padding: 10px 12px; border: 1px solid rgba(255, 209, 136, .15); border-radius: 11px; color: #e9cb92 !important; background: rgba(181, 123, 36, .065); font-size: 11px !important; }
+.bankConfirm { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 14px; border: 1px solid rgba(255, 164, 143, .19); border-radius: 13px; background: rgba(172, 65, 43, .07); }
+.bankConfirm strong { font-size: 13px; }
+.bankConfirm p { margin: 4px 0 0; font-size: 10px; }
+.dangerButton { min-height: 44px; padding: 0 15px; border: 1px solid rgba(255, 160, 137, .3); border-radius: 12px; color: #ffd0c5; background: rgba(184, 67, 43, .16); cursor: pointer; font-size: 12px; font-weight: 850; }
+.dangerButton:disabled { opacity: .5; cursor: default; }
+.bankHistorySection > header { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
+.bankHistorySection > header > span { color: #74887f; font-size: 10px; }
+.bankLineage { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.bankLineage span { display: inline-flex; align-items: center; gap: 5px; }
+.bankLineage i { color: #61766c; font-style: normal; }
+.bankLineage button { min-width: 44px; min-height: 44px; padding: 0 10px; border: 1px solid rgba(216, 240, 229, .11); border-radius: 10px; color: #b9cfc4; background: rgba(255, 255, 255, .025); cursor: pointer; font-size: 11px; font-weight: 800; }
+.bankLineage button[aria-current='page'] { color: #092016; background: #b9f2d8; }
+.bankHistory { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.bankHistory li { min-width: 0; display: grid; grid-template-columns: 13px minmax(0, 1fr); gap: 11px; padding: 0 0 18px; }
+.bankHistory li:last-child { padding-bottom: 0; }
+.bankHistory li > span { width: 11px; height: 11px; margin-top: 3px; border: 3px solid #173b2d; border-radius: 50%; background: #8ed3b1; box-shadow: 0 0 0 1px rgba(142, 211, 177, .3); }
+.bankHistory li > div { min-width: 0; display: grid; gap: 4px; padding-bottom: 15px; border-bottom: 1px solid rgba(216, 240, 229, .07); }
+.bankHistory li:last-child > div { padding-bottom: 0; border-bottom: 0; }
+.bankHistory strong { font-size: 12px; }
+.bankHistory small { color: #70857b; font-size: 9px; line-height: 1.4; }
+.bankHistory p { margin: 2px 0 0; color: #a0b2a9; font-size: 11px; line-height: 1.45; }
+
+.bankEditor { display: grid; gap: 17px; }
+.bankRevisionWarning { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 12px; padding: 14px; border: 1px solid rgba(255, 209, 136, .2); border-radius: 14px; color: #f1d7a5; background: rgba(181, 123, 36, .08); }
+.bankRevisionWarning > span { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid rgba(255, 209, 136, .23); border-radius: 11px; font-weight: 900; }
+.bankRevisionWarning strong { font-size: 13px; }
+.bankRevisionWarning p { margin: 5px 0 0; color: #c8b58e; font-size: 11px; line-height: 1.5; }
+.bankEditorSection { min-width: 0; display: grid; gap: 15px; margin: 0; padding: 18px; border: 1px solid rgba(216, 240, 229, .09); border-radius: 16px; background: rgba(255, 255, 255, .02); }
+.bankEditorSection > header, .bankEditorSection > legend { width: 100%; display: flex; align-items: start; gap: 11px; margin: 0; padding: 0; border: 0; }
+.bankEditorSection > header > span, .bankEditorSection > legend > span:first-child { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid rgba(139, 213, 178, .17); border-radius: 9px; color: #98d4b8; background: rgba(50, 151, 106, .05); font-size: 9px; font-weight: 900; }
+.bankEditorSection h3, .bankEditorSection legend b { display: block; margin: 0; font-size: 16px; letter-spacing: -.02em; }
+.bankEditorSection header p, .bankEditorSection legend small { display: block; margin: 4px 0 0; color: #80948a; font-size: 10px; line-height: 1.45; }
+.bankEditor textarea { min-height: 96px; padding: 12px 13px; resize: vertical; line-height: 1.5; }
+.bankEditor label > small { color: #6f837a; font-size: 9px; line-height: 1.4; }
+.bankEditorGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.bankWideField { grid-column: 1 / -1; }
+.bankChoiceEditor { display: grid; gap: 9px; }
+.bankChoiceEditor > div { min-width: 0; display: grid; grid-template-columns: 104px minmax(0, 1fr) 44px; align-items: center; gap: 9px; padding: 9px; border: 1px solid rgba(216, 240, 229, .08); border-radius: 12px; background: rgba(0, 0, 0, .08); }
+.bankChoiceEditor > div[data-correct='true'] { border-color: rgba(81, 193, 142, .25); background: rgba(49, 155, 106, .065); }
+.bankCorrectRadio { min-height: 44px; display: grid !important; grid-template-columns: 28px minmax(0, 1fr); grid-template-rows: 1fr 1fr; align-items: center; gap: 0 7px !important; cursor: pointer; }
+.bankCorrectRadio input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.bankCorrectRadio > span { grid-row: 1 / -1; width: 28px; height: 28px; display: grid; place-items: center; border: 1px solid rgba(216, 240, 229, .15); border-radius: 8px; color: #a8caba; font-size: 9px; font-weight: 900; }
+.bankCorrectRadio > small { color: #74887f; font-size: 8px; }
+.bankCorrectRadio input:checked + span { color: #092016; background: #b9f2d8; }
+.bankCorrectRadio input:focus-visible + span { outline: 2px solid #c8f4df; outline-offset: 3px; }
+.bankCorrectRadio input:checked ~ small { color: #a9eacb; }
+.bankChoiceEditor > div > button { width: 44px; height: 44px; border: 1px solid rgba(216, 240, 229, .11); border-radius: 10px; color: #aac0b5; background: transparent; cursor: pointer; font-size: 19px; }
+.bankChoiceEditor > div > button:disabled { opacity: .25; cursor: default; }
+.bankAddChoice { min-height: 44px; justify-self: start; padding: 0 13px; border: 1px dashed rgba(185, 242, 216, .22); border-radius: 11px; color: #b6e5cf; background: rgba(50, 151, 106, .04); cursor: pointer; font-size: 11px; font-weight: 800; }
+.bankSwitch { grid-template-columns: auto 42px minmax(0, 1fr); align-items: center; gap: 11px !important; min-height: 54px; padding: 8px 11px; border: 1px solid rgba(216, 240, 229, .08); border-radius: 12px; cursor: pointer; }
+.bankSwitch input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.bankSwitch > span { grid-column: 2; width: 42px; height: 24px; position: relative; border-radius: 999px; background: #34463e; transition: background .2s ease; }
+.bankSwitch > span::after { content: ''; width: 18px; height: 18px; position: absolute; top: 3px; left: 3px; border-radius: 50%; background: #a7b8b0; transition: transform .2s ease, background .2s ease; }
+.bankSwitch input:checked + span { background: rgba(72, 185, 133, .45); }
+.bankSwitch input:focus-visible + span { outline: 2px solid #c8f4df; outline-offset: 3px; }
+.bankSwitch input:checked + span::after { transform: translateX(18px); background: #c8f4df; }
+.bankSwitch > div { grid-column: 3; display: grid; gap: 3px; }
+.bankSwitch strong { font-size: 12px; }
+.bankSwitch small { color: #74887f; font-size: 9px; }
+.bankFormError { padding: 13px 15px; border: 1px solid rgba(255, 160, 137, .2); border-radius: 13px; color: #ffc2b4; background: rgba(172, 65, 43, .08); }
+.bankFormError strong { font-size: 12px; }
+.bankFormError ul { display: grid; gap: 5px; margin: 9px 0 0; padding-left: 18px; color: #d7aaa0; font-size: 10px; line-height: 1.45; }
+.bankFormErrorCompact { padding: 10px 12px; }
+.bankEditorFooter { position: sticky; z-index: 3; bottom: calc(-1 * max(36px, env(safe-area-inset-bottom))); display: flex; justify-content: flex-end; gap: 8px; margin: 0 -24px calc(-1 * max(36px, env(safe-area-inset-bottom))); padding: 14px max(22px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) 24px; border-top: 1px solid rgba(216, 240, 229, .1); background: rgba(8, 19, 15, .96); backdrop-filter: blur(18px); }
+.bankDiscardOverlay { position: absolute; z-index: 5; inset: 0; display: grid; place-items: center; padding: 22px; background: rgba(2, 8, 6, .78); backdrop-filter: blur(8px); }
+.bankDiscardOverlay > div { width: min(480px, 100%); display: grid; justify-items: center; gap: 12px; padding: 26px; border: 1px solid rgba(255, 175, 155, .22); border-radius: 19px; background: linear-gradient(145deg, #172a23, #0b1813); box-shadow: 0 30px 90px rgba(0, 0, 0, .4); text-align: center; }
+.bankDiscardOverlay > div > span { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid rgba(255, 175, 155, .24); border-radius: 12px; color: #ffc4b6; background: rgba(180, 68, 44, .1); font-weight: 900; }
+.bankDiscardOverlay h3 { margin: 3px 0 0; font-size: 20px; }
+.bankDiscardOverlay p { margin: 0; color: #9eb0a7; font-size: 12px; line-height: 1.5; }
+.bankDiscardOverlay > div > div { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 5px; }
+.groupObservationNote { margin: 13px 0 0; padding: 9px 10px; border: 1px solid rgba(255, 209, 136, .12); border-radius: 10px; color: #c9b98f; background: rgba(181, 123, 36, .045); font-size: 10px; line-height: 1.45; }
+.groupDrilldown { width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 15px; padding: 0 12px; border: 1px solid rgba(216, 240, 229, .1); border-radius: 11px; color: #b9dfcd; background: rgba(255, 255, 255, .025); cursor: pointer; font-size: 11px; font-weight: 800; }
+.groupDrilldown span { font-size: 17px; font-weight: 400; }
 
 .loadingState, .errorState, .emptyState { min-height: 340px; display: grid; place-content: center; justify-items: center; gap: 11px; padding: 32px; border: 1px dashed rgba(216, 240, 229, .12); border-radius: 19px; color: #9cafA6; text-align: center; }
 .loadingState i { width: 24px; height: 24px; border: 2px solid rgba(185, 242, 216, .16); border-top-color: #b9f2d8; border-radius: 50%; animation: spin .8s linear infinite; }
@@ -441,10 +673,21 @@
 }
 
 @media (max-width: 1220px) {
-  .filterBar { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .filterHeading { grid-column: 1 / -1; grid-template-columns: auto 1fr; align-items: center; gap: 12px; }
+  .cohortFilterGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .filterActions { justify-content: flex-end; }
   .kpiGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .bankToolbar { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .bankSearch { grid-column: 1 / -1; }
+}
+
+@media (max-width: 900px) {
+  .questionWorkspaceSwitcher { align-items: stretch; flex-direction: column; }
+  .questionWorkspaceSwitcher > div:last-child { width: 100%; }
+  .questionWorkspaceSwitcher button { min-width: 0; }
+  .bankSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bankToolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bankSearch { grid-column: 1 / -1; }
+  .bankGrid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 820px) {
@@ -455,7 +698,7 @@
   .hero h1 { font-size: clamp(38px, 8vw, 58px); }
   .exportGroup { align-self: stretch; grid-template-columns: 1fr 1fr; }
   .exportGroup a { min-height: 48px; }
-  .filterBar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cohortFilterGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .filterActions { grid-column: 1 / -1; }
   .filterActions .primaryButton { flex: 1; }
   .panelHeading { grid-template-columns: 1fr; }
@@ -471,18 +714,18 @@
   .hero h1 { font-size: 40px; }
   .refreshBanner { align-items: stretch; flex-direction: column; gap: 14px; }
   .tabs button { min-width: 105px; }
-  .filterBar { top: max(6px, env(safe-area-inset-top)); display: flex; align-items: end; margin-left: -4px; margin-right: -4px; padding: 11px; overflow-x: auto; scrollbar-width: none; }
-  .filterBar::-webkit-scrollbar { display: none; }
-  .filterHeading { flex: 0 0 92px; grid-template-columns: 1fr; }
-  .filterHeading small { display: none; }
-  .filterBar label { flex: 0 0 150px; }
-  .filterBar label:nth-of-type(3) { flex-basis: 190px; }
-  .modelFilters { flex: 0 0 min(620px, calc(100vw - 40px)); }
-  .modelFilterGrid { grid-template-columns: 120px minmax(250px, 1.5fr) minmax(180px, 1fr); overflow-x: auto; }
-  .modelFilterGrid label:last-child { grid-column: 3; }
-  .filterActions { flex: 0 0 205px; display: grid; grid-template-columns: 1fr auto; }
-  .filterError { flex: 0 0 260px; padding-bottom: 12px; }
+  .filterBar { top: max(6px, env(safe-area-inset-top)); margin-left: -4px; margin-right: -4px; }
+  .cohortFilters > summary { min-height: 54px; }
+  .cohortFilterGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px; }
+  .modelFilterGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .filterActions { display: flex; }
   .kpiGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .questionSummaryGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .questionCohortSummary small { width: 100%; margin: 2px 0 0; }
+  .questionToolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .questionToolbar .questionSearch { grid-column: 1 / -1; }
+  .questionToolbarActions { min-height: 44px; }
+  .questionToolbar .resultCount { justify-self: end; white-space: normal; text-align: right; }
   .metricCard { padding: 15px; }
   .kindComparison { grid-template-columns: 1fr; }
   .localFilters { align-items: stretch; flex-direction: column; }
@@ -495,6 +738,12 @@
   .dataTable td { min-width: 0; display: grid; align-content: start; gap: 3px; padding: 12px; border-top: 1px solid rgba(216, 240, 229, .065); }
   .dataTable td::before { content: attr(data-label); color: #71867c; font-size: 7px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
   .dataTable td:nth-child(-n+2) { border-top: 0; }
+  .questionTableWrap { overflow: visible; }
+  .questionTable tr { grid-template-columns: 1fr 1fr; }
+  .questionTable td:first-child { grid-column: 1 / -1; border-top: 0; }
+  .questionTable td:nth-child(2) { border-top: 1px solid rgba(216, 240, 229, .065); }
+  .questionTitleButton strong { font-size: 12px; }
+  .questionOutcomeCell span { display: grid; justify-content: start; }
   .groupGrid { grid-template-columns: 1fr; }
   .groupMetrics { grid-template-columns: repeat(2, 1fr); gap: 13px; }
   .detailBackdrop { padding: 0; align-items: end; }
@@ -503,12 +752,32 @@
   .detailMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kindBreakdown { grid-template-columns: 1fr; }
   .qualityComponents { grid-template-columns: 1fr; }
+  .questionDiagnosis, .readinessCard { grid-template-columns: 1fr; }
+  .questionDiagnosis > .badge { justify-self: start; }
+  .readinessCard .sampleLadder { width: min(180px, 100%); }
+  .readinessCard dl { grid-column: 1; }
   .candidateHero { align-items: stretch; flex-direction: column; }
   .detailActions button { flex: 1; }
   .trendRows > div { grid-template-columns: 76px minmax(70px, 1fr) 30px; }
   .trendScore, .trendMeta { grid-column: 1 / -1; text-align: left; }
   .trendDimensionRows > section { grid-template-columns: 1fr; }
   .trendDimensionRows header { display: flex; align-items: center; justify-content: space-between; }
+  .questionWorkspaceSwitcher { align-items: stretch; flex-direction: column; }
+  .questionWorkspaceSwitcher > div:last-child { width: 100%; }
+  .questionWorkspaceSwitcher button { min-width: 0; }
+  .bankSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bankToolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bankSearch { grid-column: 1 / -1; }
+  .bankToolbarActions { min-height: 46px; }
+  .bankCreateButton { align-self: stretch; }
+  .bankGrid { grid-template-columns: 1fr; }
+  .bankQuestionCard { padding: 17px; }
+  .bankQuestionOpen > strong { font-size: 16px; }
+  .bankDialog { width: 100%; }
+  .bankConfirm { grid-template-columns: 1fr 1fr; }
+  .bankConfirm > div { grid-column: 1 / -1; }
+  .bankConfirm button { width: 100%; }
+  .bankEditorFooter { margin-left: -24px; margin-right: calc(-1 * max(22px, env(safe-area-inset-right))); }
 }
 
 @media (max-width: 420px) {
@@ -517,19 +786,45 @@
   .brand > span:last-child { display: none; }
   .headerActions { gap: 5px; }
   .headerButton { padding: 0 11px; }
-  .filterBar { grid-template-columns: 1fr; }
-  .filterBar label, .filterBar label:nth-of-type(3), .filterBar label:nth-of-type(6), .filterActions { grid-column: 1; }
-  .modelFilterGrid { grid-template-columns: minmax(120px, .7fr) minmax(250px, 1.4fr) minmax(180px, 1fr); }
+  .cohortFilters > summary > small { display: none; }
+  .cohortFilterGrid, .modelFilterGrid { grid-template-columns: 1fr; }
+  .filterActions { grid-column: 1; }
   .panelHeading h2 { font-size: 30px; }
   .kpiGrid { grid-template-columns: 1fr 1fr; }
+  .questionToolbar { grid-template-columns: 1fr; }
+  .questionToolbar .questionSearch, .questionToolbar .resultCount { grid-column: 1; }
+  .questionToolbar .resultCount { justify-self: start; text-align: left; }
+  .questionToolbarActions .primaryButton { flex: 1; }
   .dataTable tr { grid-template-columns: 1fr; }
   .dataTable td:nth-child(2) { border-top: 1px solid rgba(216, 240, 229, .065); }
+  .questionTable tr { grid-template-columns: 1fr; }
+  .questionTable td:first-child { grid-column: 1; }
   .detailMetrics { grid-template-columns: 1fr 1fr; }
+  .readinessCard dl { grid-template-columns: 1fr; }
+  .questionWorkspaceSwitcher > div:last-child { grid-template-columns: 1fr; }
+  .bankSummary, .bankToolbar, .bankEditorGrid, .bankMetadata { grid-template-columns: 1fr; }
+  .bankSearch, .bankWideField { grid-column: 1; }
+  .bankToolbarActions { width: 100%; }
+  .bankToolbarActions .primaryButton { flex: 1; }
+  .bankCreateButton { width: 100%; }
+  .bankQuestionCard > header, .bankQuestionCard > footer { align-items: stretch; flex-direction: column; }
+  .bankQuestionCard > footer .secondaryButton { width: 100%; }
+  .bankEditorChoices li { grid-template-columns: 34px minmax(0, 1fr); }
+  .bankEditorChoices li > small { grid-column: 2; }
+  .bankChoiceEditor > div { grid-template-columns: 84px minmax(0, 1fr) 44px; }
+  .bankCorrectRadio { grid-template-columns: 28px minmax(0, 1fr); }
+  .bankConfirm { grid-template-columns: 1fr; }
+  .bankConfirm > div { grid-column: 1; }
+  .bankEditorFooter { flex-direction: column-reverse; }
+  .bankEditorFooter button { width: 100%; }
+  .bankDiscardOverlay > div > div { width: 100%; flex-direction: column; }
+  .bankDiscardOverlay button { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .detailBackdrop, .detailDialog, .loadingState i { animation: none; }
   .primaryButton, .secondaryButton, .quietButton, .headerButton, .dataTable tbody tr { transition: none; }
+  .bankSwitch > span, .bankSwitch > span::after, .questionWorkspaceSwitcher button { transition: none; }
 }
 
 @media print {

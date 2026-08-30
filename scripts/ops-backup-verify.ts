@@ -54,7 +54,12 @@ export async function verifyBackup(
       questions: count('questions'),
       outbox: count('telegram_outbox'),
       test_config_versions: count('test_config_versions'),
+      bank_revisions: count('question_bank_revisions'),
       bank_revision_items: count('question_bank_revision_items'),
+      bank_state: count('question_bank_state'),
+      question_version_links: count('question_version_links'),
+      question_bank_change_events: count('question_bank_change_events'),
+      question_bank_mutations: count('question_bank_mutations'),
       question_reviews: count('question_review_history'),
       analytics_refresh_state: count('analytics_refresh_state'),
       analytics_report_aggregates: count('analytics_report_aggregates'),
@@ -66,8 +71,10 @@ export async function verifyBackup(
       schema_version: tables.has('schema_migrations')
         ? '(SELECT COALESCE(MAX(version), 0) FROM schema_migrations)'
         : '0',
-      bank_revision: tables.has('question_bank_revisions')
-        ? '(SELECT hash FROM question_bank_revisions ORDER BY applied_at DESC LIMIT 1)'
+      bank_revision: tables.has('question_bank_state')
+        ? '(SELECT current_revision FROM question_bank_state WHERE id = 1)'
+        : tables.has('question_bank_revisions')
+          ? '(SELECT hash FROM question_bank_revisions ORDER BY applied_at DESC LIMIT 1)'
         : 'NULL',
     };
     const keys = Object.keys(manifest.counts).filter((key) => key in expressions);
@@ -160,6 +167,154 @@ export function assertLocalDatabaseIntegrity(
         'idx_telegram_outbox_attempt_status',
       ]) {
         if (!indexes.has(indexName)) throw new Error(`Operational index is missing: ${indexName}.`);
+      }
+    }
+    if (schemaVersion >= 16) {
+      for (const table of [
+        'question_bank_state',
+        'question_version_links',
+        'question_bank_change_events',
+        'question_bank_mutations',
+      ]) {
+        if (!tables.has(table)) throw new Error(`Question bank admin table is missing: ${table}.`);
+      }
+      const bankIntegrity = queryLocalD1<{
+        state_count: number;
+        current_bank_count: number;
+        question_count: number;
+        revision_count: number;
+        snapshot_count_mismatch: number;
+        snapshot_active_mismatch: number;
+        current_membership_mismatch: number;
+        invalid_links: number;
+        invalid_events: number;
+        invalid_mutations: number;
+      }>(`WITH current_bank AS (
+          SELECT state.current_revision, revisions.total_count, revisions.active_count
+          FROM question_bank_state AS state
+          JOIN question_bank_revisions AS revisions ON revisions.hash = state.current_revision
+          WHERE state.id = 1
+        )
+        SELECT
+          (SELECT COUNT(*) FROM question_bank_state) AS state_count,
+          (SELECT COUNT(*) FROM current_bank) AS current_bank_count,
+          (SELECT COUNT(*) FROM questions) AS question_count,
+          (SELECT COUNT(*) FROM question_bank_revisions) AS revision_count,
+          (SELECT COUNT(*) FROM current_bank
+            WHERE (SELECT COUNT(*) FROM question_bank_revision_items AS items
+              WHERE items.revision_hash = current_bank.current_revision) != current_bank.total_count
+          ) AS snapshot_count_mismatch,
+          (SELECT COUNT(*) FROM current_bank
+            WHERE (SELECT COALESCE(SUM(items.active), 0) FROM question_bank_revision_items AS items
+              WHERE items.revision_hash = current_bank.current_revision) != current_bank.active_count
+          ) AS snapshot_active_mismatch,
+          (SELECT COUNT(*) FROM current_bank
+            JOIN question_bank_revision_items AS items
+              ON items.revision_hash = current_bank.current_revision
+            JOIN questions ON questions.id = items.question_id
+            WHERE questions.active != items.active
+          ) AS current_membership_mismatch,
+          (SELECT COUNT(*) FROM question_version_links
+            WHERE predecessor_question_id = successor_question_id
+              OR successor_question_id <= predecessor_question_id
+          ) AS invalid_links,
+          (SELECT COUNT(*) FROM question_bank_change_events
+            WHERE event_type NOT IN ('created', 'revised', 'activated', 'deactivated')
+              OR LENGTH(COALESCE(note, '')) > 500
+          ) AS invalid_events,
+          (SELECT COUNT(*) FROM question_bank_mutations AS mutations
+            LEFT JOIN question_bank_revisions AS expected
+              ON expected.hash = mutations.expected_revision
+            WHERE mutations.operation NOT IN ('create', 'revise', 'toggle')
+              OR expected.hash IS NULL
+              OR LENGTH(mutations.idempotency_key) NOT BETWEEN 8 AND 128
+              OR LENGTH(mutations.request_hash) != 64
+              OR NOT json_valid(mutations.response_json)
+          ) AS invalid_mutations`, persistTo, localD1)[0];
+      if (
+        !(
+          (
+            bankIntegrity?.state_count === 1
+            && bankIntegrity.current_bank_count === 1
+          )
+          || (
+            bankIntegrity?.state_count === 0
+            && bankIntegrity.current_bank_count === 0
+            && bankIntegrity.question_count === 0
+            && bankIntegrity.revision_count === 0
+          )
+        )
+        || bankIntegrity.snapshot_count_mismatch !== 0
+        || bankIntegrity.snapshot_active_mismatch !== 0
+        || bankIntegrity.current_membership_mismatch !== 0
+        || bankIntegrity.invalid_links !== 0
+        || bankIntegrity.invalid_events !== 0
+        || bankIntegrity.invalid_mutations !== 0
+      ) {
+        throw new Error('Question bank admin integrity failed.');
+      }
+      type IntegrityQuestion = {
+        id: number;
+        difficulty: string;
+        topic: string;
+        prompt: string;
+        context_type: string | null;
+        context_text: string | null;
+        choices_json: string;
+        correct_index: number;
+        weight: number;
+        active?: number;
+        content_hash: string | null;
+        dedupe_key: string;
+      };
+      const canonicalQuestion = (row: IntegrityQuestion) => ({
+        id: row.id,
+        difficulty: row.difficulty,
+        topic: row.topic,
+        prompt: row.prompt,
+        ...(row.context_type && row.context_text !== null
+          ? { contextType: row.context_type, context: row.context_text }
+          : {}),
+        choices: JSON.parse(row.choices_json) as unknown,
+        correctIndex: row.correct_index,
+        weight: row.weight,
+      });
+      const questionRows = queryLocalD1<IntegrityQuestion>(`SELECT id, difficulty, topic,
+          prompt, context_type, context_text, choices_json, correct_index, weight,
+          content_hash, dedupe_key
+        FROM questions ORDER BY id`, persistTo, localD1);
+      for (const row of questionRows) {
+        const expected = createHash('sha256').update(JSON.stringify({
+          ...canonicalQuestion(row),
+          dedupeKey: row.dedupe_key,
+        })).digest('hex');
+        if (row.content_hash !== expected) {
+          throw new Error(`Question content hash mismatch: ${row.id}.`);
+        }
+      }
+      if (bankIntegrity.current_bank_count === 1) {
+        const currentRows = queryLocalD1<IntegrityQuestion & { active: number }>(`SELECT
+            questions.id, questions.difficulty, questions.topic, questions.prompt,
+            questions.context_type, questions.context_text, questions.choices_json,
+            questions.correct_index, questions.weight, questions.content_hash,
+            questions.dedupe_key, membership.active
+          FROM question_bank_state state
+          JOIN question_bank_revision_items membership
+            ON membership.revision_hash = state.current_revision
+          JOIN questions ON questions.id = membership.question_id
+          WHERE state.id = 1
+          ORDER BY questions.id`, persistTo, localD1);
+        const expectedRevision = createHash('sha256').update(JSON.stringify(currentRows.map((row) => ({
+          ...canonicalQuestion(row),
+          active: row.active === 1,
+          dedupeKey: row.dedupe_key,
+        })))).digest('hex');
+        const storedRevision = queryLocalD1<{ current_revision: string }>(
+          'SELECT current_revision FROM question_bank_state WHERE id = 1',
+          persistTo,
+          localD1,
+        )[0]?.current_revision;
+        if (storedRevision !== expectedRevision) throw new Error('Question bank revision hash mismatch.');
       }
     }
   }

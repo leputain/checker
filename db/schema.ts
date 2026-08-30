@@ -176,6 +176,77 @@ export const questionBankRevisionItems = sqliteTable(
   (table) => [primaryKey({ columns: [table.revisionHash, table.questionId] })],
 );
 
+export const questionBankState = sqliteTable('question_bank_state', {
+  id: integer('id').primaryKey(),
+  currentRevision: text('current_revision')
+    .notNull()
+    .references(() => questionBankRevisions.hash, { onDelete: 'restrict' }),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const questionVersionLinks = sqliteTable(
+  'question_version_links',
+  {
+    predecessorQuestionId: integer('predecessor_question_id')
+      .primaryKey()
+      .references(() => questions.id, { onDelete: 'restrict' }),
+    successorQuestionId: integer('successor_question_id')
+      .notNull()
+      .references(() => questions.id, { onDelete: 'restrict' }),
+    createdAt: integer('created_at').notNull(),
+    bankRevision: text('bank_revision')
+      .notNull()
+      .references(() => questionBankRevisions.hash, { onDelete: 'restrict' }),
+    adminSessionFingerprint: text('admin_session_fingerprint'),
+  },
+  (table) => [uniqueIndex('idx_question_version_links_successor').on(table.successorQuestionId)],
+);
+
+export const questionBankChangeEvents = sqliteTable(
+  'question_bank_change_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    eventType: text('event_type').notNull(),
+    questionId: integer('question_id')
+      .notNull()
+      .references(() => questions.id, { onDelete: 'restrict' }),
+    predecessorQuestionId: integer('predecessor_question_id')
+      .references(() => questions.id, { onDelete: 'restrict' }),
+    successorQuestionId: integer('successor_question_id')
+      .references(() => questions.id, { onDelete: 'restrict' }),
+    bankRevision: text('bank_revision')
+      .notNull()
+      .references(() => questionBankRevisions.hash, { onDelete: 'restrict' }),
+    createdAt: integer('created_at').notNull(),
+    note: text('note'),
+    adminSessionFingerprint: text('admin_session_fingerprint'),
+  },
+  (table) => [
+    index('idx_question_bank_change_events_question').on(table.questionId, table.createdAt),
+    index('idx_question_bank_change_events_predecessor').on(
+      table.predecessorQuestionId,
+      table.createdAt,
+    ),
+    index('idx_question_bank_change_events_successor').on(
+      table.successorQuestionId,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const questionBankMutations = sqliteTable(
+  'question_bank_mutations',
+  {
+    idempotencyKey: text('idempotency_key').primaryKey(),
+    operation: text('operation').notNull(),
+    expectedRevision: text('expected_revision').notNull(),
+    requestHash: text('request_hash').notNull(),
+    responseJson: text('response_json').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [index('idx_question_bank_mutations_created_at').on(table.createdAt)],
+);
+
 export const questionReviewHistory = sqliteTable(
   'question_review_history',
   {

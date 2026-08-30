@@ -6,6 +6,7 @@ import type {
   AnalyticsExportFormat,
   AnalyticsExportRowDto,
 } from '@/lib/analytics-contract.ts';
+import { QUESTION_ANALYTICS_MODEL_VERSION } from '@/lib/analytics-contract.ts';
 import { fetchDerivedQuestionListReport } from '@/lib/analytics-derived.ts';
 import { semicolonCsv } from '@/lib/analytics-math.ts';
 import {
@@ -15,6 +16,7 @@ import {
 
 function exportRows(items: Awaited<ReturnType<typeof fetchDerivedQuestionListReport>>['items']): AnalyticsExportRowDto[] {
   return items.map((item) => ({
+    questionAnalyticsModelVersion: QUESTION_ANALYTICS_MODEL_VERSION,
     questionId: item.questionId,
     topic: item.topic,
     difficulty: item.difficulty,
@@ -37,6 +39,17 @@ function exportRows(items: Awaited<ReturnType<typeof fetchDerivedQuestionListRep
     qualityWarnings: item.qualityWarnings,
     reliability: item.reliability,
     recommendation: item.recommendation?.code ?? null,
+    observedSubmittedCount: item.observed.submittedCount,
+    observedCorrectCount: item.observed.correctCount,
+    observedIncorrectCount: item.observed.incorrectCount,
+    observedTimeoutCount: item.observed.timeoutCount,
+    observedPresentationRate: item.observed.presentationRate,
+    observedResponseRate: item.observed.responseRate,
+    observedSuccessRate: item.observed.successRate,
+    observedTimeoutRate: item.observed.timeoutRate,
+    sampleStatus: item.sample.status,
+    nextSampleGate: item.sample.nextGate,
+    signalCodes: item.signals.map((signal) => signal.code),
   }));
 }
 
@@ -61,6 +74,7 @@ export async function GET(request: Request) {
     const date = new Date().toISOString().slice(0, 10);
     if (format === 'json') {
       return new Response(JSON.stringify({
+        questionAnalyticsModelVersion: report.questionAnalyticsModelVersion,
         cohort: report.cohort,
         rows,
       }), {
@@ -73,19 +87,25 @@ export async function GET(request: Request) {
     }
     const csv = semicolonCsv(
       [
-        'question_id', 'topic', 'difficulty', 'kind', 'assigned', 'presented',
+        'analytics_model_version', 'question_id', 'topic', 'difficulty', 'kind', 'assigned', 'presented',
         'outcomes', 'completion_rate', 'success_rate', 'timeout_rate', 'avg_seconds',
         'median_seconds', 'min_seconds', 'max_seconds', 'discrimination',
         'quality_score', 'quality_max', 'quality_status', 'quality_warnings',
-        'reliability', 'recommendation',
+        'reliability', 'recommendation', 'observed_submitted', 'observed_correct',
+        'observed_incorrect', 'observed_timeout', 'observed_presentation_rate',
+        'observed_response_rate', 'observed_success_rate', 'observed_timeout_rate',
+        'sample_status', 'next_sample_gate', 'signals',
       ],
       rows.map((row) => [
-        row.questionId, row.topic, row.difficulty, row.kind, row.assignedCount,
+        row.questionAnalyticsModelVersion, row.questionId, row.topic, row.difficulty, row.kind, row.assignedCount,
         row.presentedCount, row.outcomeCount, row.completionRate, row.successRate,
         row.timeoutRate, row.averageSeconds, row.medianSeconds, row.minSeconds,
         row.maxSeconds, row.discrimination, row.qualityScore, row.qualityMaxAvailable,
         row.qualityStatus, row.qualityWarnings.join(','), row.reliability,
-        row.recommendation,
+        row.recommendation, row.observedSubmittedCount, row.observedCorrectCount,
+        row.observedIncorrectCount, row.observedTimeoutCount, row.observedPresentationRate,
+        row.observedResponseRate, row.observedSuccessRate, row.observedTimeoutRate,
+        row.sampleStatus, row.nextSampleGate, row.signalCodes.join(','),
       ]),
     );
     return new Response(csv, {

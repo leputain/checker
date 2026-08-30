@@ -67,8 +67,8 @@ export async function resolveCurrentBankRevision(
   query: ParsedAnalyticsQuery,
 ) {
   if (query.bankRevision) return query;
-  const row = await db.prepare(`SELECT hash FROM question_bank_revisions
-    ORDER BY applied_at DESC LIMIT 1`).first<{ hash: string }>();
+  const row = await db.prepare(`SELECT current_revision AS hash
+    FROM question_bank_state WHERE id = 1`).first<{ hash: string }>();
   return row?.hash ? { ...query, bankRevision: row.hash } : null;
 }
 

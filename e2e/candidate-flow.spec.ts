@@ -868,6 +868,109 @@ test('общий таймаут не считает незаданный доп�
   }
 });
 
+test('активная попытка берёт дополнительный вопрос из своей замороженной ревизии', async ({ request }, testInfo) => {
+  test.skip(testInfo.project.name.includes('landscape'), 'API/D1 integration не зависит от orientation.');
+  const startKey = randomUUID();
+  const token = randomBytes(32).toString('base64url');
+  const replacementRevision = randomBytes(32).toString('hex');
+  let attemptId = '';
+  let originalRevision = '';
+  let replacementQuestionId = 0;
+
+  try {
+    const start = await request.post('/api/attempts', {
+      data: { name: `E2E frozen revision ${Date.now()}`, startKey, token },
+      headers: { 'Idempotency-Key': startKey },
+    });
+    expect(start.status()).toBe(201);
+    const payload = await start.json() as StartedAttempt;
+    attemptId = payload.attemptId;
+    const state = queryLocalD1<{
+      bankRevision: string;
+      difficulty: CurrentQuestionState['difficulty'];
+      weight: number;
+      nextId: number;
+    }>(`SELECT attempts.bank_revision AS bankRevision, questions.difficulty,
+        questions.weight, (SELECT MAX(id) + 1 FROM questions) AS nextId
+      FROM attempts JOIN questions ON questions.id = attempts.current_question_id
+      WHERE attempts.id = '${attemptId}'`, E2E_STATE_PATH)[0];
+    expect(state?.bankRevision).toMatch(/^[a-f0-9]{64}$/u);
+    originalRevision = state.bankRevision;
+    replacementQuestionId = Math.max(2_000_000, state.nextId);
+
+    runWrangler([
+      'd1', 'execute', 'DB', '--command',
+      `UPDATE questions SET active = 0 WHERE difficulty = '${state.difficulty}';
+       INSERT INTO questions (
+         id, difficulty, topic, prompt, choices_json, correct_index, weight,
+         active, content_hash, dedupe_key
+       ) VALUES (
+         ${replacementQuestionId}, '${state.difficulty}', 'Frozen revision E2E',
+         'Question from a newer bank revision', '["New A","New B"]', 0, ${state.weight},
+         1, '${randomBytes(32).toString('hex')}', 'e2e:frozen-new-${replacementQuestionId}'
+       );
+       INSERT INTO question_bank_revisions (
+         hash, applied_at, total_count, active_count, pools_json
+       ) SELECT '${replacementRevision}', ${Date.now()}, COUNT(*), SUM(active), '{}'
+         FROM questions;
+       INSERT INTO question_bank_revision_items (revision_hash, question_id, active)
+         SELECT '${replacementRevision}', id, active FROM questions;
+       UPDATE question_bank_state SET current_revision = '${replacementRevision}',
+         updated_at = ${Date.now()} WHERE id = 1;`,
+    ], E2E_STATE_PATH);
+
+    const choices = payload.question.choices ?? [];
+    const correctChoice = correctChoiceForAttempt(attemptId);
+    const correctDisplayedIndex = choices.indexOf(correctChoice);
+    expect(correctDisplayedIndex).toBeGreaterThanOrEqual(0);
+    const answer = await request.post(`/api/attempts/${attemptId}/answer`, {
+      data: {
+        questionId: payload.question.id,
+        choiceIndex: (correctDisplayedIndex + 1) % choices.length,
+      },
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(answer.status()).toBe(200);
+
+    const scheduled = queryLocalD1<{ id: number; frozenMembership: number }>(`
+      SELECT pending.value AS id,
+        EXISTS (
+          SELECT 1 FROM question_bank_revision_items AS membership
+          WHERE membership.revision_hash = '${originalRevision}'
+            AND membership.question_id = pending.value AND membership.active = 1
+        ) AS frozenMembership
+      FROM attempts, json_each(attempts.pending_question_ids) AS pending
+      WHERE attempts.id = '${attemptId}'
+        AND NOT EXISTS (
+          SELECT 1 FROM json_each(attempts.base_question_ids) AS base
+          WHERE base.value = pending.value
+        )
+      LIMIT 1
+    `, E2E_STATE_PATH)[0];
+    expect(scheduled?.id).toBeTruthy();
+    expect(scheduled.id).not.toBe(replacementQuestionId);
+    expect(scheduled.frozenMembership).toBe(1);
+  } finally {
+    if (attemptId) cleanupAttempt(attemptId);
+    if (originalRevision && replacementQuestionId) {
+      runWrangler([
+        'd1', 'execute', 'DB', '--command',
+        `UPDATE question_bank_state SET current_revision = '${originalRevision}',
+           updated_at = ${Date.now()} WHERE id = 1;
+         UPDATE questions SET active = COALESCE((
+           SELECT membership.active FROM question_bank_revision_items AS membership
+           WHERE membership.revision_hash = '${originalRevision}'
+             AND membership.question_id = questions.id
+         ), 0) WHERE id != ${replacementQuestionId};
+         DELETE FROM question_bank_revision_items
+           WHERE revision_hash = '${replacementRevision}';
+         DELETE FROM questions WHERE id = ${replacementQuestionId};
+         DELETE FROM question_bank_revisions WHERE hash = '${replacementRevision}';`,
+      ], E2E_STATE_PATH);
+    }
+  }
+});
+
 test('сессия восстанавливается при значительном сдвиге часов iPad', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('landscape'), 'Clock-skew логика не зависит от orientation.');
   let attemptId = '';

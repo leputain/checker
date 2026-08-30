@@ -2,15 +2,22 @@ import { calculateAccuracy } from './scoring.ts';
 import {
   analyticsCursor,
   eligibleAttemptsCte,
+  questionAnalyticsMatches,
+  sortQuestionAnalyticsItems,
   type AnalyticsSql,
   type ParsedAnalyticsQuery,
 } from './analytics-query.ts';
 import {
   analyticsReliability,
   median,
+  observedQuestionMetrics,
   pointBiserialFromSums,
+  questionAnalyticsSignals,
+  questionAnalyticsSummary,
+  questionPromptPreview,
   questionQuality,
   questionRecommendation,
+  questionSample,
   roundedRate,
 } from './analytics-math.ts';
 import {
@@ -40,9 +47,11 @@ import type {
   GroupAnalyticsItemDto,
   QuestionAnalyticsDetailDto,
   QuestionAnalyticsItemDto,
+  QuestionAnalyticsListDto,
   QuestionChoiceAnalyticsDto,
   QuestionKindSplitDto,
 } from './analytics-contract.ts';
+import { QUESTION_ANALYTICS_MODEL_VERSION } from './analytics-contract.ts';
 
 const PRESENTED_ORIGINS_SQL = "'submitted','question_timeout','total_timeout_presented'";
 const RESOLVED_ORIGINS_SQL = `${PRESENTED_ORIGINS_SQL},'total_timeout_unshown'`;
@@ -361,13 +370,6 @@ function questionDiscrimination(row: RawQuestionAggregate) {
   });
 }
 
-function qualityMatches(query: ParsedAnalyticsQuery, item: QuestionAnalyticsItemDto) {
-  if (query.qualityStatus === 'all') return true;
-  if (query.qualityStatus === 'insufficient') return item.quality.status === 'insufficient';
-  if (query.qualityStatus === 'healthy') return item.quality.status === 'good';
-  return item.quality.status === 'observe' || item.quality.status === 'review';
-}
-
 async function directQuestionItems(
   db: D1Database,
   query: ParsedAnalyticsQuery,
@@ -387,7 +389,7 @@ async function directQuestionItems(
       ),
     ]);
     const baseById = new Map(baseItems.map((item) => [item.questionId, item]));
-    return displayItems.map((item) => {
+    return sortQuestionAnalyticsItems(query, displayItems.map((item) => {
       const calibration = baseById.get(item.questionId);
       return calibration ? {
         ...item,
@@ -395,8 +397,9 @@ async function directQuestionItems(
         quality: calibration.quality,
         qualityWarnings: calibration.qualityWarnings,
         recommendation: calibration.recommendation,
+        signals: calibration.signals,
       } : item;
-    }).filter((item) => qualityMatches(query, item));
+    }).filter((item) => questionAnalyticsMatches({ ...query, q: null }, item, item.prompt)));
   }
   const [aggregateResult, choiceResult] = await Promise.all([
     bind(db, questionAggregateStatement(query)).all<RawQuestionAggregate>(),
@@ -425,18 +428,17 @@ export function buildQuestionItemsFromAggregates(
     counts.set(row.canonical_index, row.selected_count);
     choicesByQuestion.set(row.question_id, counts);
   }
-  const peerMedians = new Map<string, number>();
+  const peerGroups = new Map<string, Array<{ questionId: number; value: number }>>();
   for (const difficulty of new Set(aggregateRows.map((row) => row.difficulty))) {
     const values = aggregateRows.flatMap((row) => (
       row.difficulty === difficulty && row.outcome_count >= 30 && row.median_seconds !== null
-        ? [row.median_seconds]
+        ? [{ questionId: row.question_id, value: row.median_seconds }]
         : []
     ));
-    const value = median(values);
-    if (value !== null) peerMedians.set(`${difficulty}\u0000${query.questionKind}`, value);
+    peerGroups.set(`${difficulty}\u0000${query.questionKind}`, values);
   }
 
-  return aggregateRows.map((row) => {
+  const items = aggregateRows.map((row) => {
     const counts = choicesByQuestion.get(row.question_id) ?? new Map<number, number>();
     const choices: QuestionChoiceAnalyticsDto[] = Array.from(
       { length: row.choice_count },
@@ -458,6 +460,11 @@ export function buildQuestionItemsFromAggregates(
     const discrimination = effectiveCalibration ? questionDiscrimination(row) : null;
     const rawSuccessRate = roundedRate(row.correct_count, row.outcome_count);
     const rawTimeoutRate = roundedRate(row.timeout_count, row.outcome_count);
+    const peers = (peerGroups.get(`${row.difficulty}\u0000${query.questionKind}`) ?? [])
+      .filter((peer) => peer.questionId !== row.question_id)
+      .map((peer) => peer.value);
+    const peerMedianSeconds = median(peers);
+    const sample = questionSample(row.outcome_count);
     const qualityResult = effectiveCalibration
       ? questionQuality({
           difficulty: row.difficulty,
@@ -465,7 +472,8 @@ export function buildQuestionItemsFromAggregates(
           successRate: rawSuccessRate,
           timeoutRate: rawTimeoutRate,
           medianSeconds: round1(row.median_seconds),
-          peerMedianSeconds: peerMedians.get(`${row.difficulty}\u0000${query.questionKind}`) ?? null,
+          peerMedianSeconds,
+          peerCount: peers.length,
           functioningDistractors,
           distractorCount: distractorRates.length,
           discrimination,
@@ -473,6 +481,7 @@ export function buildQuestionItemsFromAggregates(
       : null;
     const item: RawQuestionAnalyticsItem = {
       questionId: row.question_id,
+      promptPreview: questionPromptPreview(row.prompt),
       topic: row.topic,
       difficulty: row.difficulty,
       active: row.active === 1,
@@ -513,6 +522,38 @@ export function buildQuestionItemsFromAggregates(
           discrimination,
           deadDistractors,
         }) : null,
+      observed: observedQuestionMetrics({
+        assignedCount: row.assigned_count,
+        presentedCount: row.presented_count,
+        outcomeCount: row.outcome_count,
+        submittedCount: row.response_count,
+        correctCount: row.correct_count,
+        timeoutCount: row.timeout_count,
+        averageSeconds: round1(row.average_seconds),
+        medianSeconds: round1(row.median_seconds),
+        minSeconds: row.min_seconds,
+        maxSeconds: row.max_seconds,
+      }),
+      sample,
+      signals: effectiveCalibration ? questionAnalyticsSignals({
+        difficulty: row.difficulty,
+        sample,
+        successRate: rawSuccessRate,
+        timeoutRate: rawTimeoutRate,
+        medianSeconds: round1(row.median_seconds),
+        peerMedianSeconds,
+        peerCount: peers.length,
+        discrimination,
+      }) : questionAnalyticsSignals({
+        difficulty: row.difficulty,
+        sample,
+        successRate: null,
+        timeoutRate: null,
+        medianSeconds: null,
+        peerMedianSeconds: null,
+        peerCount: 0,
+        discrimination: null,
+      }),
       prompt: row.prompt,
       contextType: row.context_type,
       context: row.context_text,
@@ -520,16 +561,27 @@ export function buildQuestionItemsFromAggregates(
       choices,
     };
     return item;
-  }).filter((item) => qualityMatches(query, item));
+  });
+  return sortQuestionAnalyticsItems(
+    query,
+    items.filter((item) => questionAnalyticsMatches(
+      query,
+      item,
+      `${item.prompt}\n${item.context ?? ''}`,
+    )),
+  );
 }
 
 export async function fetchQuestionListReport(
   db: D1Database,
   query: ParsedAnalyticsQuery,
   calibrationEnabled = true,
-) {
-  const [allItems, counts] = await Promise.all([
+): Promise<QuestionAnalyticsListDto> {
+  const [allItems, summaryItems, counts] = await Promise.all([
     directQuestionItems(db, query, calibrationEnabled),
+    query.qualityStatus === 'all'
+      ? Promise.resolve(null)
+      : directQuestionItems(db, { ...query, qualityStatus: 'all' }, calibrationEnabled),
     fetchCohortCounts(db, query),
   ]);
   const items = allItems.slice(query.cursorOffset, query.cursorOffset + query.limit)
@@ -540,8 +592,11 @@ export async function fetchQuestionListReport(
     });
   const nextOffset = query.cursorOffset + items.length;
   return {
+    questionAnalyticsModelVersion: QUESTION_ANALYTICS_MODEL_VERSION,
     cohort: buildAnalyticsCohort(query, counts, calibrationEnabled),
     items,
+    totalCount: allItems.length,
+    summary: questionAnalyticsSummary(summaryItems ?? allItems),
     nextCursor: nextOffset < allItems.length ? analyticsCursor(nextOffset) : null,
   };
 }
@@ -811,11 +866,9 @@ async function fetchGroupReport(
       key: row.group_key,
       kind: query.questionKind,
       sampleSize: row.sample_size,
-      successRate: row.sample_size >= query.minSample
-        ? roundedRate(row.correct_count, row.sample_size) : null,
-      timeoutRate: row.sample_size >= query.minSample
-        ? roundedRate(row.timeout_count, row.sample_size) : null,
-      medianSeconds: row.sample_size >= query.minSample ? round1(row.median_seconds) : null,
+      successRate: roundedRate(row.correct_count, row.sample_size),
+      timeoutRate: roundedRate(row.timeout_count, row.sample_size),
+      medianSeconds: round1(row.median_seconds),
       reliability: analyticsReliability(row.sample_size),
     })),
   };

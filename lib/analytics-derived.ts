@@ -2,6 +2,8 @@ import { calculateAccuracy } from './scoring.ts';
 import { analyticsAggregateState } from './analytics-aggregate-store.ts';
 import {
   analyticsCursor,
+  questionAnalyticsMatches,
+  sortQuestionAnalyticsItems,
   type AnalyticsSql,
   type ParsedAnalyticsQuery,
 } from './analytics-query.ts';
@@ -15,6 +17,7 @@ import {
 import {
   analyticsReliability,
   median,
+  questionAnalyticsSummary,
   roundedRate,
 } from './analytics-math.ts';
 import {
@@ -41,7 +44,9 @@ import type {
   CandidatePrintDto,
   GroupAnalyticsItemDto,
   QuestionAnalyticsDetailDto,
+  QuestionAnalyticsListDto,
 } from './analytics-contract.ts';
+import { QUESTION_ANALYTICS_MODEL_VERSION } from './analytics-contract.ts';
 
 function bind(db: D1Database, statement: AnalyticsSql) {
   const prepared = db.prepare(statement.sql);
@@ -310,7 +315,7 @@ async function derivedQuestionItems(
       ),
     ]);
     const baseById = new Map(baseItems.map((item) => [item.questionId, item]));
-    return displayItems.map((item) => {
+    return sortQuestionAnalyticsItems(query, displayItems.map((item) => {
       const calibration = baseById.get(item.questionId);
       return calibration ? {
         ...item,
@@ -318,13 +323,9 @@ async function derivedQuestionItems(
         quality: calibration.quality,
         qualityWarnings: calibration.qualityWarnings,
         recommendation: calibration.recommendation,
+        signals: calibration.signals,
       } : item;
-    }).filter((item) => {
-      if (query.qualityStatus === 'all') return true;
-      if (query.qualityStatus === 'insufficient') return item.quality.status === 'insufficient';
-      if (query.qualityStatus === 'healthy') return item.quality.status === 'good';
-      return item.quality.status === 'observe' || item.quality.status === 'review';
-    });
+    }).filter((item) => questionAnalyticsMatches({ ...query, q: null }, item, item.prompt)));
   }
   const [aggregateResult, timingResult, choiceResult] = await Promise.all([
     bind(db, derivedQuestionAggregateStatement(query)).all<RawQuestionAggregate>(),
@@ -349,9 +350,12 @@ export async function fetchDerivedQuestionListReport(
   db: D1Database,
   query: ParsedAnalyticsQuery,
   calibrationEnabled = true,
-) {
-  const [allItems, counts] = await Promise.all([
+): Promise<QuestionAnalyticsListDto> {
+  const [allItems, summaryItems, counts] = await Promise.all([
     derivedQuestionItems(db, query, calibrationEnabled),
+    query.qualityStatus === 'all'
+      ? Promise.resolve(null)
+      : derivedQuestionItems(db, { ...query, qualityStatus: 'all' }, calibrationEnabled),
     fetchDerivedCohortCounts(db, query),
   ]);
   const items = allItems.slice(query.cursorOffset, query.cursorOffset + query.limit)
@@ -362,8 +366,11 @@ export async function fetchDerivedQuestionListReport(
     });
   const nextOffset = query.cursorOffset + items.length;
   return {
+    questionAnalyticsModelVersion: QUESTION_ANALYTICS_MODEL_VERSION,
     cohort: await derivedCohort(db, query, counts, calibrationEnabled),
     items,
+    totalCount: allItems.length,
+    summary: questionAnalyticsSummary(summaryItems ?? allItems),
     nextCursor: nextOffset < allItems.length ? analyticsCursor(nextOffset) : null,
   };
 }
@@ -547,12 +554,9 @@ async function fetchDerivedGroupReport(
       key: row.group_key,
       kind: query.questionKind,
       sampleSize: row.sample_size,
-      successRate: row.sample_size >= query.minSample
-        ? roundedRate(row.correct_count, row.sample_size) : null,
-      timeoutRate: row.sample_size >= query.minSample
-        ? roundedRate(row.timeout_count, row.sample_size) : null,
-      medianSeconds: row.sample_size >= query.minSample
-        ? weightedMedian(timings.get(row.group_key) ?? []) : null,
+      successRate: roundedRate(row.correct_count, row.sample_size),
+      timeoutRate: roundedRate(row.timeout_count, row.sample_size),
+      medianSeconds: weightedMedian(timings.get(row.group_key) ?? []),
       reliability: analyticsReliability(row.sample_size),
     })),
   };
@@ -669,10 +673,8 @@ export async function fetchDerivedTrendsReport(
       [...groups].map(([key, aggregate]): AnalyticsTrendDimensionDto => ({
         key,
         outcomeCount: aggregate.outcomes,
-        successRate: aggregate.outcomes >= query.minSample
-          ? roundedRate(aggregate.correct, aggregate.outcomes) : null,
-        timeoutRate: aggregate.outcomes >= query.minSample
-          ? roundedRate(aggregate.timeout, aggregate.outcomes) : null,
+        successRate: roundedRate(aggregate.correct, aggregate.outcomes),
+        timeoutRate: roundedRate(aggregate.timeout, aggregate.outcomes),
       })).toSorted((left, right) => left.key.localeCompare(right.key, 'ru')),
     ]));
   };

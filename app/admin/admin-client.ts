@@ -77,6 +77,11 @@ export function adminErrorMessage(error: unknown) {
     rate_limited: 'Слишком много попыток. Подождите немного и повторите вход.',
     csrf_invalid: 'Защитный токен устарел. Войдите снова.',
     not_found: 'Запрошенные данные больше недоступны.',
+    bank_revision_conflict: 'Банк вопросов изменился в другой вкладке. Обновите данные и повторите действие.',
+    idempotency_conflict: 'Повтор операции не совпадает с исходным запросом. Обновите страницу.',
+    question_has_successor: 'У вопроса уже есть новая редакция. Откройте актуальную версию.',
+    question_validation_failed: 'Проверьте текст вопроса, варианты и правильный ответ.',
+    question_bank_not_ready: 'Изменение нарушит рабочие квоты теста. Сначала добавьте резервный вопрос.',
     analytics_unavailable: 'Аналитика временно недоступна. Тестирование продолжает работать.',
     analytics_refresh_required: 'Данные аналитики устарели. Обновите их перед просмотром.',
   }[error.code];
@@ -90,6 +95,11 @@ function isAdminErrorCode(value: unknown): value is AdminApiErrorCode {
     'rate_limited',
     'csrf_invalid',
     'not_found',
+    'bank_revision_conflict',
+    'idempotency_conflict',
+    'question_has_successor',
+    'question_validation_failed',
+    'question_bank_not_ready',
     'analytics_unavailable',
     'analytics_refresh_required',
   ].includes(value);

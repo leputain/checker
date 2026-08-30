@@ -3,7 +3,11 @@ import {
   type AnalyticsCandidatePolicy,
   type AnalyticsQualityStatus,
   type AnalyticsQuestionKind,
+  type AnalyticsSortDirection,
   type AnalyticsSampleGate,
+  type QuestionAnalyticsItemDto,
+  type QuestionAnalyticsSort,
+  type QuestionSampleStatus,
 } from './analytics-contract.ts';
 import {
   ANALYTICS_FACTS_VERSION,
@@ -18,6 +22,8 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const IDENTIFIER_PATTERN = /^[a-zA-Z0-9._:-]{1,96}$/u;
 const MAX_PAGE_SIZE = 100;
+const MAX_SEARCH_LENGTH = 160;
+const MAX_MIN_N = 1_000_000;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const moscowDateFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Europe/Moscow',
@@ -48,6 +54,11 @@ export type ParsedAnalyticsQuery = {
   questionKind: AnalyticsQuestionKind;
   qualityStatus: AnalyticsQualityStatus;
   minSample: AnalyticsSampleGate;
+  q: string | null;
+  minN: number;
+  sampleStatus: QuestionSampleStatus | 'all';
+  sort: QuestionAnalyticsSort;
+  direction: AnalyticsSortDirection;
   candidatePolicy: AnalyticsCandidatePolicy;
   cursorOffset: number;
   limit: number;
@@ -176,6 +187,29 @@ export function parseAnalyticsQuery(input: URL | string, now = Date.now()): Pars
     throw new AnalyticsQueryError('invalid_topic');
   }
   const difficulty = optionalIdentifier(one(params, 'difficulty'), 'difficulty');
+  const q = one(params, 'q');
+  if (q && (q.length > MAX_SEARCH_LENGTH || /[\u0000-\u001f]/u.test(q))) {
+    throw new AnalyticsQueryError('invalid_q');
+  }
+  const minN = Number(one(params, 'minN') ?? 0);
+  if (!Number.isInteger(minN) || minN < 0 || minN > MAX_MIN_N) {
+    throw new AnalyticsQueryError('invalid_minN');
+  }
+  const sampleStatus = (one(params, 'sampleStatus') ?? 'all') as QuestionSampleStatus | 'all';
+  if (!['all', 'insufficient', 'early', 'working', 'stable'].includes(sampleStatus)) {
+    throw new AnalyticsQueryError('invalid_sampleStatus');
+  }
+  const sort = (one(params, 'sort') ?? 'priority') as QuestionAnalyticsSort;
+  if (!['priority', 'timeout', 'success', 'sample', 'lastPresented', 'id'].includes(sort)) {
+    throw new AnalyticsQueryError('invalid_sort');
+  }
+  const explicitDirection = one(params, 'direction');
+  const direction = (
+    explicitDirection ?? (sort === 'priority' || sort === 'id' ? 'asc' : 'desc')
+  ) as AnalyticsSortDirection;
+  if (direction !== 'asc' && direction !== 'desc') {
+    throw new AnalyticsQueryError('invalid_direction');
+  }
   const limit = Number(one(params, 'limit') ?? 50);
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE_SIZE) {
     throw new AnalyticsQueryError('invalid_limit');
@@ -196,11 +230,98 @@ export function parseAnalyticsQuery(input: URL | string, now = Date.now()): Pars
     questionKind,
     qualityStatus,
     minSample: minSampleValue as AnalyticsSampleGate,
+    q,
+    minN,
+    sampleStatus,
+    sort,
+    direction,
     candidatePolicy,
     cursorOffset: parseCursor(one(params, 'cursor')),
     limit,
     warnings,
   };
+}
+
+function normalizedSearch(value: string) {
+  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim().toLocaleLowerCase('ru-RU');
+}
+
+function qualityMatches(query: ParsedAnalyticsQuery, item: QuestionAnalyticsItemDto) {
+  if (query.qualityStatus === 'all') return true;
+  if (query.qualityStatus === 'insufficient') return item.quality.status === 'insufficient';
+  if (query.qualityStatus === 'healthy') return item.quality.status === 'good';
+  return item.quality.status === 'observe' || item.quality.status === 'review';
+}
+
+/** Applies question-list-only filters after exact cohort aggregation and before pagination. */
+export function questionAnalyticsMatches(
+  query: ParsedAnalyticsQuery,
+  item: QuestionAnalyticsItemDto,
+  fullPrompt: string,
+) {
+  if (!qualityMatches(query, item)) return false;
+  if (item.sample.n < query.minN) return false;
+  if (query.sampleStatus !== 'all' && item.sample.status !== query.sampleStatus) return false;
+  if (!query.q) return true;
+  const needle = normalizedSearch(query.q);
+  const haystack = normalizedSearch([
+    String(item.questionId),
+    item.topic,
+    item.difficulty,
+    fullPrompt,
+  ].join('\n'));
+  return haystack.includes(needle);
+}
+
+function priorityRank(item: QuestionAnalyticsItemDto) {
+  if (item.quality.critical) return 0;
+  if (item.quality.status === 'review') return 1;
+  if (item.quality.status === 'observe') return 2;
+  if (item.quality.status === 'insufficient') return 3;
+  if (item.quality.status === 'good') return 4;
+  return 5;
+}
+
+function nullableNumber(left: number | null, right: number | null, direction: AnalyticsSortDirection) {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+  return direction === 'asc' ? left - right : right - left;
+}
+
+export function sortQuestionAnalyticsItems<T extends QuestionAnalyticsItemDto>(
+  query: ParsedAnalyticsQuery,
+  items: readonly T[],
+) {
+  const directionFactor = query.direction === 'asc' ? 1 : -1;
+  return items.toSorted((left, right) => {
+    let order = 0;
+    switch (query.sort) {
+      case 'priority':
+        order = directionFactor * (priorityRank(left) - priorityRank(right));
+        break;
+      case 'timeout':
+        order = nullableNumber(left.observed.timeoutRate, right.observed.timeoutRate, query.direction);
+        break;
+      case 'success':
+        order = nullableNumber(left.observed.successRate, right.observed.successRate, query.direction);
+        break;
+      case 'sample':
+        order = directionFactor * (left.sample.n - right.sample.n);
+        break;
+      case 'lastPresented':
+        order = nullableNumber(
+          left.lastPresentedAt === null ? null : Date.parse(left.lastPresentedAt),
+          right.lastPresentedAt === null ? null : Date.parse(right.lastPresentedAt),
+          query.direction,
+        );
+        break;
+      case 'id':
+        order = directionFactor * (left.questionId - right.questionId);
+        break;
+    }
+    return order || left.questionId - right.questionId;
+  });
 }
 
 export function applyCurrentModelDefaults(
