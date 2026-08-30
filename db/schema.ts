@@ -8,10 +8,31 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/sqlite-core';
 
+export const questionCategories = sqliteTable(
+  'question_categories',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    name: text('name').notNull(),
+    normalizedName: text('normalized_name').notNull(),
+    selectionKey: text('selection_key').notNull(),
+    active: integer('active').notNull().default(1),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_question_categories_normalized_name').on(table.normalizedName),
+    uniqueIndex('idx_question_categories_selection_key').on(table.selectionKey),
+    index('idx_question_categories_active_name').on(table.active, table.name),
+  ],
+);
+
 export const questions = sqliteTable(
   'questions',
   {
     id: integer('id').primaryKey(),
+    // Application-enforced reference. Keeping this additive column free of a
+    // SQLite FK preserves logical backup restore order for the legacy questions table.
+    categoryId: integer('category_id'),
     difficulty: text('difficulty').notNull(),
     topic: text('topic').notNull().default('general'),
     prompt: text('prompt').notNull(),
@@ -245,6 +266,49 @@ export const questionBankMutations = sqliteTable(
     createdAt: integer('created_at').notNull(),
   },
   (table) => [index('idx_question_bank_mutations_created_at').on(table.createdAt)],
+);
+
+export const questionBankChangeSets = sqliteTable(
+  'question_bank_change_sets',
+  {
+    id: text('id').primaryKey(),
+    title: text('title').notNull(),
+    note: text('note'),
+    status: text('status').notNull(),
+    baseRevision: text('base_revision')
+      .notNull()
+      .references(() => questionBankRevisions.hash, { onDelete: 'restrict' }),
+    publishedRevision: text('published_revision')
+      .references(() => questionBankRevisions.hash, { onDelete: 'restrict' }),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    publishedAt: integer('published_at'),
+    adminSessionFingerprint: text('admin_session_fingerprint'),
+  },
+  (table) => [
+    index('idx_question_bank_change_sets_status_updated').on(table.status, table.updatedAt),
+    index('idx_question_bank_change_sets_base_revision').on(table.baseRevision),
+  ],
+);
+
+export const questionBankChangeSetItems = sqliteTable(
+  'question_bank_change_set_items',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    changeSetId: text('change_set_id')
+      .notNull()
+      .references(() => questionBankChangeSets.id, { onDelete: 'cascade' }),
+    questionId: integer('question_id')
+      .notNull()
+      .references(() => questions.id, { onDelete: 'restrict' }),
+    patchJson: text('patch_json').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_question_bank_change_set_items_question')
+      .on(table.changeSetId, table.questionId),
+    index('idx_question_bank_change_set_items_change_set').on(table.changeSetId, table.id),
+  ],
 );
 
 export const questionReviewHistory = sqliteTable(

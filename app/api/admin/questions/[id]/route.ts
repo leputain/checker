@@ -5,6 +5,7 @@ import {
   isGuardFailure,
 } from '@/lib/admin-request.ts';
 import {
+  questionAdminBody,
   questionAdminErrorResponse,
   questionAdminJson,
 } from '@/lib/question-admin-http.ts';
@@ -21,19 +22,6 @@ function questionId(value: string) {
     throw new QuestionAdminServiceError('invalid_request', 400);
   }
   return id;
-}
-
-async function body(request: Request) {
-  try {
-    const value = await request.json() as unknown;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new QuestionAdminServiceError('invalid_request', 400);
-    }
-    return value as Record<string, unknown>;
-  } catch (error) {
-    if (error instanceof QuestionAdminServiceError) throw error;
-    throw new QuestionAdminServiceError('invalid_request', 400);
-  }
 }
 
 export async function GET(
@@ -68,7 +56,7 @@ export async function PUT(
     const result = await reviseAdminQuestion(
       database(),
       questionId(id),
-      await body(request),
+      await questionAdminBody(request),
       await adminSessionFingerprint(guard.session.csrfToken),
     );
     return questionAdminJson(result, { status: 201 });
@@ -93,7 +81,7 @@ export async function PATCH(
     return questionAdminJson(await toggleAdminQuestion(
       database(),
       questionId(id),
-      await body(request),
+      await questionAdminBody(request),
       await adminSessionFingerprint(guard.session.csrfToken),
     ));
   } catch (error) {

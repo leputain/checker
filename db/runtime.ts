@@ -17,6 +17,7 @@ import migration0014 from '../drizzle/0014_supreme_domino.sql?raw';
 import migration0015 from '../drizzle/0015_mighty_adam_destine.sql?raw';
 import migration0016 from '../drizzle/0016_free_khan.sql?raw';
 import migration0017 from '../drizzle/0017_narrow_baron_zemo.sql?raw';
+import migration0018 from '../drizzle/0018_abnormal_captain_midlands.sql?raw';
 import {
   BASE_MAX_SCORE,
   calculateAccuracy,
@@ -48,13 +49,19 @@ import {
 } from '@/lib/analytics-facts-integrity.ts';
 import { summarizeQuestionBank, type QuestionDefinition } from '@/lib/question-bank-validation.ts';
 import { loadQuestionBank } from './question-bank';
+import {
+  normalizeQuestionCategoryName,
+  planQuestionCategoryBootstrap,
+  validateQuestionCategoryName,
+} from '@/lib/question-categories.ts';
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 16;
+export const CURRENT_SCHEMA_VERSION = 17;
 
 export type QuestionRow = {
   id: number;
+  category_id: number | null;
   difficulty: Difficulty;
   topic: string;
   prompt: string;
@@ -140,6 +147,7 @@ const MANAGED_MIGRATIONS = [
   { version: 14, name: 'runtime-and-readiness-indexes-0015', sql: migration0015 },
   { version: 15, name: 'analytics-refresh-lease-0016', sql: migration0016 },
   { version: 16, name: 'question-bank-admin-0017-narrow-baron-zemo', sql: migration0017 },
+  { version: 17, name: 'question-bank-workflow-0018-abnormal-captain-midlands', sql: migration0018 },
 ] as const;
 
 async function ensureCurrentTestConfigVersion() {
@@ -334,18 +342,192 @@ async function storedQuestionBankRevision(db: D1Database) {
   return current?.current_revision ?? null;
 }
 
+async function ensureQuestionCategories(db: D1Database) {
+  const [topicResult, categoryResult] = await Promise.all([
+    db.prepare(`SELECT questions.topic,
+        MAX(CASE WHEN membership.question_id IS NOT NULL
+          AND successors.successor_question_id IS NULL THEN 1 ELSE 0 END) AS current_leaf
+      FROM questions
+      LEFT JOIN question_bank_state state ON state.id = 1
+      LEFT JOIN question_bank_revision_items membership
+        ON membership.revision_hash = state.current_revision
+        AND membership.question_id = questions.id
+      LEFT JOIN question_version_links successors
+        ON successors.predecessor_question_id = questions.id
+      WHERE questions.category_id IS NULL
+      GROUP BY questions.topic
+      ORDER BY questions.topic`).all<{ topic: string; current_leaf: number }>(),
+    db.prepare(`SELECT id, name, normalized_name, selection_key, active
+      FROM question_categories ORDER BY id`)
+      .all<{
+        id: number;
+        name: string;
+        normalized_name: string;
+        selection_key: string;
+        active: number;
+      }>(),
+  ]);
+  const bootstrapPlan = planQuestionCategoryBootstrap(topicResult.results.map((row, index) => ({
+    id: index + 1,
+    topic: row.topic,
+    currentLeaf: row.current_leaf === 1,
+  })));
+  const desiredByNormalized = new Map(bootstrapPlan.categories.map((category) => [
+    category.normalizedName,
+    { name: category.name, active: category.active },
+  ]));
+  const storedByNormalized = new Map<string, typeof categoryResult.results[number]>();
+  const normalizedRows = categoryResult.results.map((category) => ({
+    ...category,
+    normalized_name: normalizeQuestionCategoryName(category.name),
+  }));
+  if (normalizedRows.some((category) => (
+    !validateQuestionCategoryName(category.name)
+    || !validateQuestionCategoryName(category.selection_key)
+  ))) {
+    throw new Error('question_category_catalog_invalid_identity');
+  }
+  for (const category of normalizedRows) {
+    if (storedByNormalized.has(category.normalized_name)) {
+      throw new Error('question_category_catalog_collision');
+    }
+    storedByNormalized.set(category.normalized_name, category);
+  }
+  if (new Set(normalizedRows.map((category) => (
+    normalizeQuestionCategoryName(category.selection_key)
+  ))).size !== normalizedRows.length) {
+    throw new Error('question_category_selection_key_collision');
+  }
+  if (normalizedRows.some((category) => normalizedRows.some((other) => (
+    other.id !== category.id
+    && normalizeQuestionCategoryName(category.selection_key) === other.normalized_name
+  )))) {
+    throw new Error('question_category_identity_cross_collision');
+  }
+  const missing = [...desiredByNormalized].filter(([normalized]) => !storedByNormalized.has(normalized))
+    .map(([normalizedName, category]) => ({
+      name: category.name,
+      normalizedName,
+      selectionKey: category.name,
+      active: category.active,
+    }));
+  const mismatched = normalizedRows.filter((category) => (
+    category.normalized_name !== categoryResult.results.find((row) => row.id === category.id)!.normalized_name
+  ));
+  const inactiveCurrent = [...desiredByNormalized].find(([normalized, desired]) => (
+    desired.active === 1 && storedByNormalized.get(normalized)?.active === 0
+  ));
+  if (inactiveCurrent) throw new Error('question_category_current_topic_inactive');
+  const now = Date.now();
+  const statements: D1PreparedStatement[] = [];
+  if (mismatched.length > 0) {
+    const payload = JSON.stringify(mismatched.map((category) => ({
+      id: category.id,
+      normalizedName: `__category_migration_${category.id}`,
+    })));
+    statements.push(db.prepare(`UPDATE question_categories
+      SET normalized_name = (
+        SELECT json_extract(value, '$.normalizedName') FROM json_each(?)
+        WHERE json_extract(value, '$.id') = question_categories.id
+      )
+      WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))`)
+      .bind(payload, payload));
+    const finalPayload = JSON.stringify(mismatched.map((category) => ({
+      id: category.id,
+      normalizedName: category.normalized_name,
+    })));
+    statements.push(db.prepare(`UPDATE question_categories
+      SET normalized_name = (
+        SELECT json_extract(value, '$.normalizedName') FROM json_each(?)
+        WHERE json_extract(value, '$.id') = question_categories.id
+      ), updated_at = ?
+      WHERE id IN (SELECT json_extract(value, '$.id') FROM json_each(?))`)
+      .bind(finalPayload, now, finalPayload));
+  }
+  if (missing.length > 0) {
+    statements.push(db.prepare(`INSERT OR IGNORE INTO question_categories (
+        name, normalized_name, selection_key, active, created_at, updated_at
+      )
+      SELECT json_extract(value, '$.name'), json_extract(value, '$.normalizedName'),
+        json_extract(value, '$.selectionKey'), CAST(json_extract(value, '$.active') AS INTEGER), ?, ?
+      FROM json_each(?)`)
+      .bind(now, now, JSON.stringify(missing)));
+  }
+  if (statements.length > 0) await db.batch(statements);
+  const [resolvedCategories, uncategorized] = await Promise.all([
+    db.prepare(`SELECT id, name, normalized_name FROM question_categories`)
+      .all<{ id: number; name: string; normalized_name: string }>(),
+    db.prepare(`SELECT id, topic FROM questions WHERE category_id IS NULL ORDER BY id`)
+      .all<{ id: number; topic: string }>(),
+  ]);
+  const categoryIdByNormalized = new Map(resolvedCategories.results.map((category) => [
+    category.normalized_name,
+    category.id,
+  ]));
+  const assignments = uncategorized.results.map((question) => ({
+    id: question.id,
+    categoryId: categoryIdByNormalized.get(normalizeQuestionCategoryName(question.topic)) ?? null,
+  }));
+  if (assignments.some((assignment) => assignment.categoryId === null)) {
+    throw new Error('question_category_backfill_missing');
+  }
+  if (assignments.length > 0) {
+    const payload = JSON.stringify(assignments);
+    await db.prepare(`UPDATE questions
+      SET category_id = (
+        SELECT CAST(json_extract(value, '$.categoryId') AS INTEGER)
+        FROM json_each(?)
+        WHERE CAST(json_extract(value, '$.id') AS INTEGER) = questions.id
+      )
+      WHERE id IN (
+        SELECT CAST(json_extract(value, '$.id') AS INTEGER) FROM json_each(?)
+      )`).bind(payload, payload).run();
+  }
+  const integrity = await db.prepare(`SELECT questions.topic, category.name AS category_name,
+      category.active AS category_active, category.id AS category_id
+    FROM questions
+    JOIN question_bank_state state ON state.id = 1
+    JOIN question_bank_revision_items membership
+      ON membership.revision_hash = state.current_revision
+      AND membership.question_id = questions.id
+    LEFT JOIN question_version_links successors
+      ON successors.predecessor_question_id = questions.id
+    LEFT JOIN question_categories category ON category.id = questions.category_id
+    WHERE successors.successor_question_id IS NULL`)
+    .all<{
+      topic: string;
+      category_name: string | null;
+      category_active: number | null;
+      category_id: number | null;
+    }>();
+  if (integrity.results.some((row) => (
+    row.category_id === null
+    || row.category_active !== 1
+    || row.category_name === null
+    || normalizeQuestionCategoryName(row.topic) !== normalizeQuestionCategoryName(row.category_name)
+  ))) {
+    throw new Error('question_category_current_leaf_integrity');
+  }
+}
+
 export async function ensureQuestionBankReady() {
   await ensureSchema();
   const db = database();
   const current = await storedQuestionBankRevision(db);
-  if (current) return current;
+  if (current) {
+    await ensureQuestionCategories(db);
+    return current;
+  }
   if (bankInitialization) return bankInitialization;
 
   // Cache only the one-time bootstrap work. The current revision itself must
   // always come from D1: another Worker isolate may have changed the bank.
   const initialization = (async () => {
     const refreshed = await storedQuestionBankRevision(db);
-    if (refreshed) return refreshed;
+    if (refreshed) {
+      await ensureQuestionCategories(db);
+      return refreshed;
+    }
 
     // The bundled JSON is a one-time bootstrap source. Once question_bank_state
     // exists, D1 is authoritative so administrative edits survive restarts.
@@ -439,6 +621,7 @@ export async function ensureQuestionBankReady() {
         .bind(revision, Date.now()),
     );
     await db.batch(statements);
+    await ensureQuestionCategories(db);
     return revision;
   })();
   bankInitialization = initialization;

@@ -101,10 +101,13 @@ export async function POST(request: Request) {
     for (const difficulty of DIFFICULTIES) {
       const result = await db
         .prepare(
-          `SELECT questions.id, questions.weight, questions.dedupe_key, questions.topic
+          `SELECT questions.id, questions.weight, questions.dedupe_key,
+             category.selection_key AS topic
            FROM questions
            JOIN question_bank_revision_items membership
              ON membership.question_id = questions.id
+           JOIN question_categories category
+             ON category.id = questions.category_id
            WHERE membership.revision_hash = ? AND membership.active = 1
              AND questions.difficulty = ?
            ORDER BY RANDOM()`,

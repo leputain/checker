@@ -1,6 +1,6 @@
 {
   "name": "candidate-check",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -30,7 +30,7 @@
     "test:scoring": "node --experimental-strip-types scripts/scoring.test.ts",
     "test:attempts": "node --experimental-strip-types scripts/attempt-policy.test.ts",
     "test:model": "node --experimental-strip-types scripts/model-identity.test.ts && node --experimental-strip-types scripts/balanced-selection.test.ts && node --experimental-strip-types scripts/candidate-insights.test.ts",
-    "test:bank": "node --experimental-strip-types scripts/question-bank.test.ts && node --experimental-strip-types scripts/question-bank-readiness.test.ts",
+    "test:bank": "node --experimental-strip-types scripts/question-bank.test.ts && node --experimental-strip-types scripts/question-bank-readiness.test.ts && node --experimental-strip-types scripts/question-bank-workflow.test.ts",
     "test:leaderboard": "node --experimental-strip-types scripts/leaderboard.test.ts",
     "test:telegram": "node --experimental-strip-types scripts/telegram-config.test.ts && node --experimental-strip-types scripts/telegram-client.test.ts && node --experimental-strip-types scripts/telegram-outbox-policy.test.ts",
     "test:admin": "node --experimental-strip-types scripts/admin-config.test.ts && node --experimental-strip-types scripts/admin-auth.test.ts",

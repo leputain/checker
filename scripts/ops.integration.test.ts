@@ -251,8 +251,26 @@ function seedCurrentDatabase(workspace: TestWorkspace) {
     ) VALUES ('revised', 2, 1, 2, ${sqlText(revision)}, ${oldAt}, 'integration')`);
   executeSql(workspace, `INSERT INTO question_bank_mutations (
       idempotency_key, operation, expected_revision, request_hash, response_json, created_at
-    ) VALUES ('ops-integration-key', 'revise', ${sqlText(revision)},
-      ${sqlText('d'.repeat(64))}, '{}', ${oldAt})`);
+    ) VALUES
+      ('ops-integration-key', 'revise', ${sqlText(revision)},
+        ${sqlText('d'.repeat(64))}, '{}', ${oldAt}),
+      ('ops-integration-v13-key', 'change-set-update', ${sqlText(revision)},
+        ${sqlText('e'.repeat(64))}, '{}', ${oldAt})`);
+  executeSql(workspace, `INSERT INTO question_categories (
+      id, name, normalized_name, selection_key, active, created_at, updated_at
+    ) VALUES
+      (1, 'Ops', 'ops', 'Ops', 0, ${oldAt}, ${oldAt}),
+      (2, 'Ops v2', 'ops v2', 'Ops v2', 1, ${oldAt}, ${oldAt}),
+      (3, 'Сети', 'сети', 'Сети', 1, ${oldAt}, ${oldAt})`);
+  executeSql(workspace, `INSERT INTO question_bank_change_sets (
+      id, title, note, status, base_revision, created_at, updated_at
+    ) VALUES ('ops-draft', 'Ops draft', 'integration', 'draft',
+      ${sqlText(revision)}, ${oldAt}, ${oldAt})`);
+  executeSql(workspace, `INSERT INTO question_bank_change_set_items (
+      change_set_id, question_id, patch_json, created_at
+    ) VALUES ('ops-draft', 2, '{"difficulty":"medium"}', ${oldAt})`);
+  executeSql(workspace, `UPDATE questions SET category_id = CASE id
+      WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE category_id END WHERE id IN (1, 2)`);
   executeSql(workspace, `INSERT INTO test_config_versions (
       id, scoring_version, config_json, created_at
     ) VALUES (
@@ -587,6 +605,9 @@ try {
     'question_version_links',
     'question_bank_change_events',
     'question_bank_mutations',
+    'question_categories',
+    'question_bank_change_sets',
+    'question_bank_change_set_items',
     'question_review_history',
     'telegram_outbox',
     'analytics_refresh_state',
@@ -620,6 +641,22 @@ try {
     upgrade.localD1,
   )[0]?.count, 1, 'upgrade must not pull inactive orphan rows into current membership');
 
+  const workflowMigration = journal.entries.find(
+    (entry) => entry.tag.startsWith('0018_'),
+  );
+  assert(workflowMigration, 'question bank workflow migration must be present');
+  executeLocalD1File(
+    path.join(projectRoot, 'drizzle', `${workflowMigration.tag}.sql`),
+    upgrade.persistPath,
+    upgrade.localD1,
+  );
+  assert.deepEqual(queryLocalD1<{ name: string; normalized_name: string }>(
+    'SELECT name, normalized_name FROM question_categories ORDER BY id',
+    upgrade.persistPath,
+    upgrade.localD1,
+  ), [], 'raw DDL migration must leave Unicode-aware category seeding to runtime bootstrap');
+  assertLocalDatabaseIntegrity(upgrade.persistPath, upgrade.localD1);
+
   const legacy = await createWorkspace(integrationRoot, 'legacy-v7');
   await applyMigrationChain(legacy, journal, 8);
   seedLegacyDatabase(legacy);
@@ -633,6 +670,9 @@ try {
   assert.equal(legacyBackup.manifest.counts.question_version_links, 0);
   assert.equal(legacyBackup.manifest.counts.question_bank_change_events, 0);
   assert.equal(legacyBackup.manifest.counts.question_bank_mutations, 0);
+  assert.equal(legacyBackup.manifest.counts.question_categories, 0);
+  assert.equal(legacyBackup.manifest.counts.question_bank_change_sets, 0);
+  assert.equal(legacyBackup.manifest.counts.question_bank_change_set_items, 0);
   assert.equal(legacyBackup.manifest.counts.question_reviews, 0);
   assert.equal(legacyBackup.manifest.counts.analytics_refresh_state, 0);
   assert.equal(legacyBackup.manifest.counts.analytics_report_aggregates, 0);
@@ -666,9 +706,44 @@ try {
   assert.equal(sourceBackup.manifest.counts.bank_state, 1);
   assert.equal(sourceBackup.manifest.counts.question_version_links, 1);
   assert.equal(sourceBackup.manifest.counts.question_bank_change_events, 1);
-  assert.equal(sourceBackup.manifest.counts.question_bank_mutations, 1);
+  assert.equal(sourceBackup.manifest.counts.question_bank_mutations, 2);
+  assert.equal(sourceBackup.manifest.counts.question_categories, 3);
+  assert.equal(sourceBackup.manifest.counts.question_bank_change_sets, 1);
+  assert.equal(sourceBackup.manifest.counts.question_bank_change_set_items, 1);
   assert.equal(sourceBackup.manifest.counts.analytics_refresh_state, 1);
   assert.equal(sourceBackup.manifest.counts.analytics_report_aggregates, 1);
+  executeSql(current, "UPDATE question_categories SET normalized_name = 'Сети' WHERE id = 3");
+  assert.throws(
+    () => assertLocalDatabaseIntegrity(current.persistPath, current.localD1),
+    /category identity is invalid/u,
+    'backup integrity must enforce Unicode category identity, not SQLite ASCII lower()',
+  );
+  executeSql(current, "UPDATE question_categories SET normalized_name = 'сети' WHERE id = 3");
+  assertLocalDatabaseIntegrity(current.persistPath, current.localD1);
+  executeSql(current, "UPDATE question_categories SET selection_key = 'сети' WHERE id = 1");
+  assert.throws(
+    () => assertLocalDatabaseIntegrity(current.persistPath, current.localD1),
+    /selection identity conflicts|category identity is invalid/u,
+    'backup integrity must reject normalized selection-key collisions',
+  );
+  executeSql(current, "UPDATE question_categories SET selection_key = 'Ops' WHERE id = 1");
+  assertLocalDatabaseIntegrity(current.persistPath, current.localD1);
+  executeSql(current, 'UPDATE questions SET category_id = 999999 WHERE id = 1');
+  assert.throws(
+    () => assertLocalDatabaseIntegrity(current.persistPath, current.localD1),
+    /workflow integrity failed|category assignment is missing/u,
+    'backup integrity must reject dangling application-enforced category references',
+  );
+  executeSql(current, 'UPDATE questions SET category_id = 1 WHERE id = 1');
+  assertLocalDatabaseIntegrity(current.persistPath, current.localD1);
+  executeSql(current, 'UPDATE questions SET category_id = 3 WHERE id = 2');
+  assert.throws(
+    () => assertLocalDatabaseIntegrity(current.persistPath, current.localD1),
+    /current category does not match topic/u,
+    'backup integrity must reject a current leaf assigned to the wrong active category',
+  );
+  executeSql(current, 'UPDATE questions SET category_id = 2 WHERE id = 2');
+  assertLocalDatabaseIntegrity(current.persistPath, current.localD1);
 
   const liveRuntime = await registerRuntimeLock({
     workspaceRoot: current.workspaceRoot,
@@ -761,8 +836,36 @@ try {
     current_revision: revision,
     links: 1,
     events: 1,
-    mutations: 1,
+    mutations: 2,
   }, 'restore must retain the managed bank revision and immutable edit history');
+  assert.deepEqual(queryLocalD1<{
+    categories: number;
+    change_sets: number;
+    change_set_items: number;
+  }>(`SELECT
+      (SELECT COUNT(*) FROM question_categories) AS categories,
+      (SELECT COUNT(*) FROM question_bank_change_sets) AS change_sets,
+      (SELECT COUNT(*) FROM question_bank_change_set_items) AS change_set_items`,
+    current.persistPath,
+    current.localD1,
+  )[0], {
+    categories: 3,
+    change_sets: 1,
+    change_set_items: 1,
+  }, 'restore must retain categories and unpublished atomic change sets');
+  assert.deepEqual(queryLocalD1<{
+    status: string;
+    patch_json: string;
+  }>(`SELECT sets.status, items.patch_json
+      FROM question_bank_change_sets AS sets
+      JOIN question_bank_change_set_items AS items ON items.change_set_id = sets.id
+      WHERE sets.id = 'ops-draft'`,
+    current.persistPath,
+    current.localD1,
+  )[0], {
+    status: 'draft',
+    patch_json: '{"difficulty":"medium"}',
+  });
   assert.equal(countRows(current, 'telegram_outbox'), 1);
   await verifyBackup(sourceBackup.sqlPath, current);
 

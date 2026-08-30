@@ -251,6 +251,7 @@ export default function AdminAnalyticsPage() {
   const [sessionError, setSessionError] = useState('');
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('overview');
   const [questionView, setQuestionView] = useState<'analytics' | 'bank'>('analytics');
+  const [bankQuestionId, setBankQuestionId] = useState<number | null>(null);
   const [draftFilters, setDraftFilters] = useState<AdminFilters>(DEFAULT_ADMIN_FILTERS);
   const [filters, setFilters] = useState<AdminFilters>(DEFAULT_ADMIN_FILTERS);
   const [revisions, setRevisions] = useState<AnalyticsRevisionItemDto[]>([]);
@@ -285,6 +286,18 @@ export default function AdminAnalyticsPage() {
         setSessionError(adminErrorMessage(error));
       });
     return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('tab') !== 'questions' || params.get('view') !== 'bank') return;
+      const questionId = Number(params.get('questionId'));
+      setActiveTab('questions');
+      setQuestionView('bank');
+      if (Number.isInteger(questionId) && questionId > 0) setBankQuestionId(questionId);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const handleAdminError = useCallback((error: unknown) => {
@@ -387,6 +400,24 @@ export default function AdminAnalyticsPage() {
     setFiltersRevision((revision) => revision + 1);
     setQuestionView('analytics');
     setActiveTab('questions');
+  }
+
+  function openQuestionEditor(questionId: number) {
+    setBankQuestionId(questionId);
+    setQuestionView('bank');
+    setActiveTab('questions');
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', 'questions');
+    url.searchParams.set('view', 'bank');
+    url.searchParams.set('questionId', String(questionId));
+    window.history.replaceState(null, '', url);
+  }
+
+  function clearQuestionEditorLink() {
+    setBankQuestionId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('questionId');
+    window.history.replaceState(null, '', url);
   }
 
   function moveTab(event: ReactKeyboardEvent<HTMLElement>) {
@@ -521,6 +552,9 @@ export default function AdminAnalyticsPage() {
               onAdminError={handleAdminError}
               view={questionView}
               onViewChange={setQuestionView}
+              bankQuestionId={bankQuestionId}
+              onOpenQuestionEditor={openQuestionEditor}
+              onQuestionEditorClosed={clearQuestionEditorLink}
             />
           )}
           {activeTab === 'candidates' && (
@@ -1078,6 +1112,9 @@ function QuestionsPanel({
   csrfToken: string;
   view: 'analytics' | 'bank';
   onViewChange: (view: 'analytics' | 'bank') => void;
+  bankQuestionId: number | null;
+  onOpenQuestionEditor: (questionId: number) => void;
+  onQuestionEditorClosed: () => void;
 }) {
   const questionViews = ['analytics', 'bank'] as const;
   function handleQuestionViewKey(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -1126,7 +1163,7 @@ function QuestionsPanel({
       </div>
       {view === 'analytics' ? (
         <section id="question-analytics-workspace" role="tabpanel" aria-labelledby="question-view-analytics">
-          <QuestionAnalyticsPanel {...props} />
+          <QuestionAnalyticsPanel {...props} onOpenQuestionEditor={props.onOpenQuestionEditor} />
         </section>
       ) : (
         <section id="question-bank-workspace" role="tabpanel" aria-labelledby="question-view-bank" className={styles.bankWorkspace}>
@@ -1137,7 +1174,12 @@ function QuestionsPanel({
               <p>Изменение текста, темы или сложности создаёт новую редакцию: уже собранные результаты остаются достоверными.</p>
             </div>
           </div>
-          <QuestionBankPanel csrfToken={props.csrfToken} onAdminError={props.onAdminError} />
+          <QuestionBankPanel
+            csrfToken={props.csrfToken}
+            onAdminError={props.onAdminError}
+            initialQuestionId={props.bankQuestionId}
+            onQuestionClosed={props.onQuestionEditorClosed}
+          />
         </section>
       )}
     </div>
@@ -1149,7 +1191,8 @@ function QuestionAnalyticsPanel({
   revision,
   csrfToken,
   onAdminError,
-}: PanelProps & { csrfToken: string }) {
+  onOpenQuestionEditor,
+}: PanelProps & { csrfToken: string; onOpenQuestionEditor: (questionId: number) => void }) {
   const [searchDraft, setSearchDraft] = useState('');
   const [search, setSearch] = useState('');
   const [sampleStatus, setSampleStatus] = useState<QuestionSampleStatus | 'all'>('all');
@@ -1330,6 +1373,7 @@ function QuestionAnalyticsPanel({
           csrfToken={csrfToken}
           onClose={() => setSelected(null)}
           onAdminError={onAdminError}
+          onOpenQuestionEditor={onOpenQuestionEditor}
         />
       )}
     </div>
@@ -1564,12 +1608,14 @@ function QuestionDetail({
   csrfToken,
   onClose,
   onAdminError,
+  onOpenQuestionEditor,
 }: {
   summary: QuestionAnalyticsItemDto;
   filters: AdminFilters;
   csrfToken: string;
   onClose: () => void;
   onAdminError: (error: unknown) => void;
+  onOpenQuestionEditor: (questionId: number) => void;
 }) {
   const detail = useDetailResource<QuestionAnalyticsDetailDto>(
     `questions/${encodeURIComponent(String(summary.questionId))}`,
@@ -1639,6 +1685,12 @@ function QuestionDetail({
             {data.context && (
               <pre className={styles.contextBlock}><code>{data.context}</code></pre>
             )}
+            <div className={styles.detailActions}>
+              <button className={styles.primaryButton} type="button" onClick={() => {
+                onClose();
+                onOpenQuestionEditor(data.questionId);
+              }}>Открыть вопрос в банке</button>
+            </div>
           </div>
           <section className={styles.questionDiagnosis} data-tone={questionStatus(data)}>
             <div>

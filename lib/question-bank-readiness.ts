@@ -7,6 +7,7 @@ export type ReadinessQuestion = {
   id: number;
   difficulty: Difficulty;
   topic: string;
+  selectionTopic?: string;
   dedupeKey: string;
   active: boolean;
 };
@@ -196,7 +197,10 @@ function activeKeys(
 export function evaluateQuestionBankReadiness(
   questions: readonly ReadinessQuestion[],
 ): QuestionBankReadiness {
-  const active = questions.filter((question) => question.active);
+  const active = questions.map((question) => ({
+    ...question,
+    topic: question.selectionTopic ?? question.topic,
+  })).filter((question) => question.active);
   const topicPlan = GENERAL_TOPIC_PLAN as Readonly<Record<string, number>>;
   const baseLegacy = solveQuotaPlan(active, TEST_CONFIG.plan, null);
   const reservePlan = Object.fromEntries(

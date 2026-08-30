@@ -23,6 +23,9 @@ type Counts = {
   question_version_links: number;
   question_bank_change_events: number;
   question_bank_mutations: number;
+  question_categories: number;
+  question_bank_change_sets: number;
+  question_bank_change_set_items: number;
   question_reviews: number;
   analytics_refresh_state: number;
   analytics_report_aggregates: number;
@@ -88,6 +91,9 @@ export async function createBackup(options: BackupOptions = {}) {
       ${count('question_version_links')} AS question_version_links,
       ${count('question_bank_change_events')} AS question_bank_change_events,
       ${count('question_bank_mutations')} AS question_bank_mutations,
+      ${count('question_categories')} AS question_categories,
+      ${count('question_bank_change_sets')} AS question_bank_change_sets,
+      ${count('question_bank_change_set_items')} AS question_bank_change_set_items,
       ${count('question_review_history')} AS question_reviews,
       ${count('analytics_refresh_state')} AS analytics_refresh_state,
       ${count('analytics_report_aggregates')} AS analytics_report_aggregates,

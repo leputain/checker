@@ -37,6 +37,10 @@ import type {
   QuestionBankHistoryEventDto,
   QuestionBankReadinessDto,
 } from './question-admin-contract.ts';
+import {
+  activeQuestionCategory,
+  questionCategoryDependencyGuardStatement,
+} from './question-categories.ts';
 
 export const ADMIN_QUESTION_ID_FLOOR = 1_000_000;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
@@ -49,6 +53,7 @@ type QuestionAdminRow = QuestionRow & {
   successor_id: number | null;
   usage_count: number;
   in_current_revision: number;
+  selection_topic: string | null;
 };
 
 type MutationRecord = {
@@ -163,9 +168,10 @@ function parseChoices(row: Pick<QuestionRow, 'choices_json'>) {
   return value as string[];
 }
 
-function definitionFromRow(row: QuestionRow): QuestionDefinition {
+function definitionFromRow(row: QuestionAdminRow): QuestionDefinition {
   return {
     id: row.id,
+    categoryId: row.category_id,
     difficulty: row.difficulty,
     topic: row.topic,
     prompt: row.prompt,
@@ -176,6 +182,7 @@ function definitionFromRow(row: QuestionRow): QuestionDefinition {
     correctIndex: row.correct_index,
     active: row.active === 1,
     dedupeKey: row.dedupe_key,
+    selectionTopic: row.selection_topic ?? row.topic,
   };
 }
 
@@ -220,12 +227,14 @@ async function allQuestionRows(db: D1Database) {
       predecessor.predecessor_question_id AS predecessor_id,
       successor.successor_question_id AS successor_id,
       COALESCE(usage.usage_count, 0) AS usage_count,
-      CASE WHEN current_membership.question_id IS NULL THEN 0 ELSE 1 END AS in_current_revision
+      CASE WHEN current_membership.question_id IS NULL THEN 0 ELSE 1 END AS in_current_revision,
+      category.selection_key AS selection_topic
     FROM questions
     LEFT JOIN question_bank_state current_state ON current_state.id = 1
     LEFT JOIN question_bank_revision_items current_membership
       ON current_membership.revision_hash = current_state.current_revision
       AND current_membership.question_id = questions.id
+    LEFT JOIN question_categories category ON category.id = questions.category_id
     LEFT JOIN question_version_links predecessor
       ON predecessor.successor_question_id = questions.id
     LEFT JOIN question_version_links successor
@@ -266,8 +275,9 @@ export async function listAdminQuestions(
     .filter((row) => row.in_current_revision === 1)
     .map(definitionFromRow);
   const activeCount = definitions.filter((question) => question.active).length;
-  const topics = [...new Set(rows.map((row) => row.topic))]
-    .sort((left, right) => left.localeCompare(right, 'ru-RU'));
+  const categoryResult = await db.prepare(`SELECT name FROM question_categories
+    WHERE active = 1 ORDER BY name`).all<{ name: string }>();
+  const topics = categoryResult.results.map((category) => category.name);
   const needle = query.q.toLocaleLowerCase('ru-RU');
   const items = rows.map(itemFromRow).filter((item) => (
     (!query.topic || item.topic === query.topic)
@@ -507,6 +517,18 @@ async function ensureExpectedRevision(db: D1Database, expected: string) {
   }
 }
 
+async function ensureActiveQuestionCategory(db: D1Database, topic: string) {
+  const category = await activeQuestionCategory(db, topic);
+  if (!category) {
+    throw new QuestionAdminServiceError(
+      'question_validation_failed',
+      422,
+      [`Категория «${topic}» не существует или отключена`],
+    );
+  }
+  return category;
+}
+
 async function nextAdminQuestionId(db: D1Database) {
   const row = await db.prepare('SELECT COALESCE(MAX(id), 0) AS max_id FROM questions')
     .first<{ max_id: number }>();
@@ -520,6 +542,7 @@ function syntheticRow(
 ): QuestionAdminRow {
   return {
     id: question.id,
+    category_id: question.categoryId ?? null,
     difficulty: question.difficulty,
     topic: question.topic,
     prompt: question.prompt,
@@ -535,6 +558,7 @@ function syntheticRow(
     successor_id: null,
     usage_count: 0,
     in_current_revision: 1,
+    selection_topic: question.selectionTopic ?? question.topic,
   };
 }
 
@@ -618,6 +642,15 @@ async function persistRevision(
     currentBankRevision: revision,
     readiness,
   };
+  const categoryId = options.question.categoryId;
+  const selectionKey = options.question.selectionTopic;
+  if (!Number.isInteger(categoryId) || !selectionKey) {
+    throw new QuestionAdminServiceError(
+      'question_validation_failed',
+      422,
+      [`Вопрос ${options.question.id} не связан со справочником категорий`],
+    );
+  }
   const statements: D1PreparedStatement[] = [
     db.prepare(`INSERT INTO question_bank_mutations (
       idempotency_key, operation, expected_revision, request_hash, response_json, created_at
@@ -631,17 +664,24 @@ async function persistRevision(
         now,
       ),
   ];
+  const categoryDependencyGuard = questionCategoryDependencyGuardStatement(db, [{
+    id: categoryId as number,
+    name: options.question.topic,
+    selectionKey,
+  }]);
+  if (categoryDependencyGuard) statements.push(categoryDependencyGuard);
   if (options.operation === 'create' || options.operation === 'revise') {
     if (options.operation === 'revise' && options.originalQuestionId !== null) {
       statements.push(db.prepare('UPDATE questions SET active = 0 WHERE id = ?')
         .bind(options.originalQuestionId));
     }
     statements.push(db.prepare(`INSERT INTO questions (
-      id, difficulty, topic, prompt, context_type, context_text, choices_json,
+      id, category_id, difficulty, topic, prompt, context_type, context_text, choices_json,
       correct_index, weight, active, content_hash, dedupe_key
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(
         options.question.id,
+        options.question.categoryId ?? null,
         options.question.difficulty,
         options.question.topic,
         options.question.prompt,
@@ -708,9 +748,10 @@ async function persistRevision(
       options.adminSessionFingerprint,
     ));
   statements.push(db.prepare(`UPDATE question_bank_state
-    SET current_revision = ?, updated_at = ?
-    WHERE id = 1 AND current_revision = ?`)
-    .bind(revision, now, options.expectedRevision));
+    SET current_revision = CASE WHEN current_revision = ? THEN ? ELSE NULL END,
+      updated_at = ?
+    WHERE id = 1`)
+    .bind(options.expectedRevision, revision, now));
 
   try {
     await db.batch(statements);
@@ -724,6 +765,12 @@ async function persistRevision(
     if (replay) return replay;
     if (await currentRevision(db) !== options.expectedRevision) {
       throw new QuestionAdminServiceError('bank_revision_conflict', 409);
+    }
+    if (
+      String(error).includes('question_categories.active')
+      || (error instanceof Error && String(error.cause).includes('question_categories.active'))
+    ) {
+      throw new QuestionAdminServiceError('category_conflict', 409);
     }
     throw error;
   }
@@ -747,7 +794,14 @@ export async function createAdminQuestion(
   const replay = await replayMutation(db, meta.idempotencyKey, 'create', requestHash);
   if (replay) return replay;
   await ensureExpectedRevision(db, meta.expectedBankRevision);
-  const question = { ...normalized.question, id: await nextAdminQuestionId(db) };
+  const category = await ensureActiveQuestionCategory(db, normalized.question.topic);
+  const question = {
+    ...normalized.question,
+    id: await nextAdminQuestionId(db),
+    topic: category.name,
+    selectionTopic: category.selection_key,
+    categoryId: category.id,
+  };
   return persistRevision(db, {
     operation: 'create',
     eventType: 'created',
@@ -795,7 +849,14 @@ export async function reviseAdminQuestion(
     throw new QuestionAdminServiceError('question_has_successor', 409);
   }
   await ensureExpectedRevision(db, meta.expectedBankRevision);
-  const question = { ...normalized.question, id: await nextAdminQuestionId(db) };
+  const category = await ensureActiveQuestionCategory(db, normalized.question.topic);
+  const question = {
+    ...normalized.question,
+    id: await nextAdminQuestionId(db),
+    topic: category.name,
+    selectionTopic: category.selection_key,
+    categoryId: category.id,
+  };
   return persistRevision(db, {
     operation: 'revise',
     eventType: 'revised',
@@ -832,6 +893,16 @@ export async function toggleAdminQuestion(
   if (raw.active === true && row.successor_id !== null) {
     throw new QuestionAdminServiceError('question_has_successor', 409);
   }
+  if (raw.active === true) {
+    const category = await ensureActiveQuestionCategory(db, row.topic);
+    if (row.category_id !== category.id) {
+      throw new QuestionAdminServiceError(
+        'question_validation_failed',
+        422,
+        ['Категория вопроса не соответствует активному справочнику'],
+      );
+    }
+  }
   await ensureExpectedRevision(db, meta.expectedBankRevision);
   if (row.active === (raw.active ? 1 : 0)) {
     const result: QuestionAdminMutationDto = {
@@ -841,17 +912,22 @@ export async function toggleAdminQuestion(
       readiness: validateEffectiveBank(rows.map(definitionFromRow)),
     };
     try {
-      await db.prepare(`INSERT INTO question_bank_mutations (
-        idempotency_key, operation, expected_revision, request_hash, response_json, created_at
-      ) VALUES (?, 'toggle', ?, ?, ?, ?)`)
-        .bind(
-          meta.idempotencyKey,
-          meta.expectedBankRevision,
-          requestHash,
-          JSON.stringify(result),
-          Date.now(),
-        )
-        .run();
+      await db.batch([
+        db.prepare(`INSERT INTO question_bank_mutations (
+          idempotency_key, operation, expected_revision, request_hash, response_json, created_at
+        ) VALUES (?, 'toggle', ?, ?, ?, ?)`)
+          .bind(
+            meta.idempotencyKey,
+            meta.expectedBankRevision,
+            requestHash,
+            JSON.stringify(result),
+            Date.now(),
+          ),
+        db.prepare(`UPDATE question_bank_state
+          SET current_revision = CASE
+            WHEN current_revision = ? THEN current_revision ELSE NULL END
+          WHERE id = 1`).bind(meta.expectedBankRevision),
+      ]);
     } catch {
       const concurrentReplay = await replayMutation(db, meta.idempotencyKey, 'toggle', requestHash);
       if (concurrentReplay) return concurrentReplay;

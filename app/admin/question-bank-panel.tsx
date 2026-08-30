@@ -18,7 +18,19 @@ import type {
   QuestionAdminListDto as QuestionBankListDto,
   QuestionAdminMutationDto as QuestionBankMutationDto,
   QuestionAdminStatusFilter as QuestionStatus,
+  QuestionBankBatchMutationDto as BulkResponse,
+  QuestionBankBatchPatchDto as BulkPatch,
+  QuestionBankChangeSetDetailDto,
+  QuestionBankChangeSetDto as ChangeSetSummary,
+  QuestionBankChangeSetListDto as ChangeSetList,
+  QuestionBankChangeSetPreviewDto,
+  QuestionBankCoverageDto as CoverageResponse,
   QuestionBankHistoryEventDto as QuestionBankHistoryEvent,
+  QuestionCategoryDto as CategoryItem,
+  QuestionCategoryListDto as CategoryList,
+  QuestionImportDraftDto as ImportQuestion,
+  QuestionImportPreviewDto as ImportPreview,
+  QuestionQualityQueueDto as QualityQueueResponse,
 } from '@/lib/question-admin-contract.ts';
 import { AdminRequestError, adminErrorMessage } from './admin-client.ts';
 import styles from './admin.module.css';
@@ -26,6 +38,8 @@ import styles from './admin.module.css';
 type Difficulty = QuestionAdminItem['difficulty'];
 type ContextType = Exclude<QuestionAdminDetail['contextType'], null>;
 type EditorMode = 'view' | 'create' | 'revise';
+type BankWorkspace = 'questions' | 'categories' | 'transfer' | 'drafts' | 'quality';
+const QUESTION_BANK_MUTATION_LIMIT = 250;
 
 const difficultyLabels: Record<Difficulty, string> = {
   easy: 'Базовый',
@@ -41,6 +55,55 @@ const contextTypeLabels: Record<ContextType, string> = {
   log: 'Журнал',
   config: 'Конфигурация',
 };
+
+const importActionLabels: Record<ImportPreview['items'][number]['action'], string> = {
+  added: 'Будет добавлен',
+  revised: 'Новая редакция',
+  unchanged: 'Без изменений',
+  invalid: 'Ошибка',
+};
+
+const importFieldLabels: Record<string, string> = {
+  topic: 'категория',
+  difficulty: 'сложность',
+  prompt: 'текст вопроса',
+  contextType: 'тип контекста',
+  context: 'контекст',
+  choices: 'варианты ответа',
+  correctIndex: 'правильный ответ',
+  dedupeKey: 'смысловая группа',
+  active: 'состояние',
+};
+
+function readableDifficultyList(value: string) {
+  return value.split(',').map((entry) => {
+    const [topic, difficulty] = entry.split('/');
+    const label = difficultyLabels[(difficulty ?? topic) as Difficulty] ?? (difficulty ?? topic);
+    return difficulty ? `${topic} / ${label}` : label;
+  }).join(', ');
+}
+
+function readinessMessage(code: string) {
+  const exact: Record<string, string> = {
+    'legacy:base_plan_infeasible': 'Недостаточно уникальных вопросов, чтобы собрать обязательные 20 вопросов по уровням сложности.',
+    'legacy:minimum_remedial_reserve_infeasible': 'Не хватает резерва для дополнительных вопросов после ошибок кандидата.',
+    'balanced:topic_difficulty_dedupe_plan_infeasible': 'Невозможно одновременно выполнить квоты категорий и сложности без повторения смысловых групп.',
+  };
+  if (exact[code]) return exact[code];
+  const separator = code.indexOf(':');
+  const prefix = separator < 0 ? code : code.slice(0, separator);
+  const payload = separator < 0 ? '' : code.slice(separator + 1);
+  if (prefix === 'legacy_low_remedial_reserve') {
+    return `Малый резерв дополнительных вопросов по сложности: ${readableDifficultyList(payload)}.`;
+  }
+  if (prefix === 'balanced_low_remedial_reserve') {
+    return `Малый резерв в категориях и уровнях: ${readableDifficultyList(payload)}.`;
+  }
+  if (prefix === 'unexpected_topics') {
+    return `Категории без тематической квоты balanced-профиля: ${payload.split(',').join(', ')}.`;
+  }
+  return code;
+}
 
 type QuestionDraft = {
   topic: string;
@@ -107,6 +170,11 @@ function questionBankError(error: unknown): RequestIssue {
       question_has_successor: 'У вопроса уже есть более новая редакция. Откройте её из истории.',
       question_validation_failed: 'Вопрос не прошёл проверку структуры или защиты от дубликатов.',
       question_bank_not_ready: 'Изменение нарушит обязательные пулы банка. Сначала добавьте резервный вопрос.',
+      change_set_conflict: 'Черновик или банк уже изменился. Обновите данные и повторите проверку.',
+      category_conflict: 'Категория с таким названием уже существует или была объединена. Обновите справочник.',
+      import_preview_conflict: 'Банк изменился после предпросмотра. Проверьте файл заново перед публикацией.',
+      validation_failed: 'Данные не прошли проверку. Исправьте отмеченные элементы.',
+      mutation_too_large: `Превышен размер пакета: за один раз допускается до ${QUESTION_BANK_MUTATION_LIMIT} вопросов или операций.`,
       request_timeout: 'Сервер не ответил за 12 секунд. Проверьте локальное соединение и повторите действие.',
       invalid_request: 'Сервер отклонил изменения. Исправьте отмеченные поля.',
       not_found: 'Вопрос больше не найден в текущем банке.',
@@ -199,9 +267,13 @@ function idempotencyKey(
 export function QuestionBankPanel({
   csrfToken,
   onAdminError,
+  initialQuestionId,
+  onQuestionClosed,
 }: {
   csrfToken: string;
   onAdminError: (error: unknown) => void;
+  initialQuestionId?: number | null;
+  onQuestionClosed?: () => void;
 }) {
   const [queryDraft, setQueryDraft] = useState('');
   const [query, setQuery] = useState('');
@@ -219,9 +291,22 @@ export function QuestionBankPanel({
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  const [operationNotice, setOperationNotice] = useState('');
   const [mutationNotice, setMutationNotice] = useState<QuestionBankMutationDto | null>(null);
   const [reloadRevision, setReloadRevision] = useState(0);
   const [editor, setEditor] = useState<{ mode: EditorMode; id?: number } | null>(null);
+  const [workspace, setWorkspace] = useState<BankWorkspace>('questions');
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(() => new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (!initialQuestionId || !Number.isInteger(initialQuestionId) || initialQuestionId <= 0) return;
+      setWorkspace('questions');
+      setEditor({ mode: 'view', id: initialQuestionId });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [initialQuestionId]);
 
   const queryString = useMemo(() => {
     const [sort, direction] = sortValue.split(':');
@@ -247,6 +332,10 @@ export function QuestionBankPanel({
       setReadiness(payload.readiness);
       setNextCursor(payload.nextCursor);
       setCurrentBankRevision(payload.currentBankRevision);
+      setSelectedIds((current) => {
+        const available = new Set(payload.items.filter((item) => !item.successorId).map((item) => item.id));
+        return new Set([...current].filter((id) => available.has(id)));
+      });
     } catch (requestError) {
       if (requestError instanceof DOMException && requestError.name === 'AbortError') return;
       onAdminError(requestError);
@@ -314,6 +403,32 @@ export function QuestionBankPanel({
     else setEditor(null);
   }
 
+  function operationComplete(revision: string, message?: string) {
+    setCurrentBankRevision(revision);
+    setError('');
+    setSelectedIds(new Set());
+    setBulkOpen(false);
+    setMutationNotice(null);
+    setOperationNotice(message ?? 'Изменения опубликованы. Список и контроль покрытия обновлены.');
+    setReloadRevision((value) => value + 1);
+  }
+
+  function toggleSelection(id: number) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function selectLoaded() {
+    const eligible = items.filter((item) => !item.successorId);
+    setSelectedIds((current) => current.size === eligible.length
+      ? new Set()
+      : new Set(eligible.map((item) => item.id)));
+  }
+
   const hasFilters = Boolean(query || topic || difficulty || status !== 'all' || sortValue !== 'id:desc');
   return (
     <div className={styles.bankStack}>
@@ -329,6 +444,59 @@ export function QuestionBankPanel({
           </span>
         </article>
       </section>
+
+      <BankWorkspaceNavigation value={workspace} onChange={setWorkspace} />
+
+      {operationNotice && (
+        <div className={styles.bankOperationNotice} role="status" aria-live="polite">
+          <span aria-hidden="true">✓</span><strong>{operationNotice}</strong>
+          <button type="button" onClick={() => setOperationNotice('')} aria-label="Скрыть уведомление">×</button>
+        </div>
+      )}
+
+      <section
+        id={`bank-panel-${workspace}`}
+        role="tabpanel"
+        aria-labelledby={`bank-workspace-${workspace}`}
+        className={styles.bankWorkspacePanel}
+      >
+
+      {workspace === 'categories' && (
+        <CategoryManager
+          csrfToken={csrfToken}
+          currentBankRevision={currentBankRevision}
+          onAdminError={onAdminError}
+          onComplete={operationComplete}
+        />
+      )}
+      {workspace === 'transfer' && (
+        <ImportExportPanel
+          csrfToken={csrfToken}
+          currentBankRevision={currentBankRevision}
+          topics={topics}
+          onAdminError={onAdminError}
+          onComplete={operationComplete}
+        />
+      )}
+      {workspace === 'drafts' && (
+        <ChangeSetsPanel
+          csrfToken={csrfToken}
+          currentBankRevision={currentBankRevision}
+          onAdminError={onAdminError}
+          onComplete={operationComplete}
+        />
+      )}
+      {workspace === 'quality' && (
+        <BankQualityPanel
+          onAdminError={onAdminError}
+          onOpenQuestion={(id) => {
+            setWorkspace('questions');
+            setEditor({ mode: 'view', id });
+          }}
+        />
+      )}
+
+      {workspace === 'questions' && <>
 
       <form className={styles.bankToolbar} role="search" onSubmit={submitSearch}>
         <label className={styles.bankSearch}>
@@ -384,6 +552,26 @@ export function QuestionBankPanel({
         </button>
       </form>
 
+      {!loading && items.length > 0 && (
+        <div className={styles.bankSelectionBar} data-active={selectedIds.size > 0}>
+          <label>
+            <input
+              type="checkbox"
+              checked={items.some((item) => !item.successorId) && selectedIds.size === items.filter((item) => !item.successorId).length}
+              ref={(input) => { if (input) input.indeterminate = selectedIds.size > 0 && selectedIds.size < items.filter((item) => !item.successorId).length; }}
+              onChange={selectLoaded}
+            />
+            <span>{selectedIds.size ? `Выбрано: ${selectedIds.size}` : `Выбрать загруженные актуальные: ${items.filter((item) => !item.successorId).length}`}</span>
+          </label>
+          <div>
+            {selectedIds.size > 0 && <button className={styles.quietButton} type="button" onClick={() => setSelectedIds(new Set())}>Снять выбор</button>}
+            <button className={styles.secondaryButton} type="button" disabled={selectedIds.size === 0} onClick={() => setBulkOpen(true)}>
+              Массовое изменение
+            </button>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div className={styles.bankInlineError} role="alert">
           <span>{error}</span>
@@ -416,8 +604,13 @@ export function QuestionBankPanel({
       ) : (
         <div className={styles.bankGrid}>
           {items.map((item) => (
-            <article className={styles.bankQuestionCard} key={item.id} data-active={item.active}>
+            <article className={styles.bankQuestionCard} key={item.id} data-active={item.active} data-selected={selectedIds.has(item.id)}>
               <header>
+                <label className={styles.bankCardSelect}>
+                  <input type="checkbox" checked={selectedIds.has(item.id)} disabled={Boolean(item.successorId)} onChange={() => toggleSelection(item.id)} />
+                  <span aria-hidden="true" />
+                  <b>{item.successorId ? `Вопрос #${item.id} заменён и недоступен для массового изменения` : `Выбрать вопрос #${item.id}`}</b>
+                </label>
                 <div className={styles.bankQuestionIdentity}>
                   <span>#{item.id}</span>
                   <span>{difficultyLabels[item.difficulty]}</span>
@@ -464,6 +657,21 @@ export function QuestionBankPanel({
         </div>
       )}
 
+      </>}
+      </section>
+
+      {bulkOpen && (
+        <BulkOperationDialog
+          questionIds={[...selectedIds]}
+          topics={topics}
+          csrfToken={csrfToken}
+          currentBankRevision={currentBankRevision}
+          onClose={() => setBulkOpen(false)}
+          onAdminError={onAdminError}
+          onComplete={operationComplete}
+        />
+      )}
+
       {editor && (
         <QuestionBankDialog
           key={`${editor.mode}-${editor.id ?? 'new'}`}
@@ -472,13 +680,751 @@ export function QuestionBankPanel({
           csrfToken={csrfToken}
           currentBankRevision={currentBankRevision}
           topics={topics}
-          onClose={() => setEditor(null)}
+          onClose={() => { setEditor(null); onQuestionClosed?.(); }}
           onAdminError={onAdminError}
           onComplete={mutationComplete}
           onOpenQuestion={(id) => setEditor({ mode: 'view', id })}
           onChangeMode={(mode, id) => setEditor({ mode, id })}
         />
       )}
+    </div>
+  );
+}
+
+const workspaceLabels: Record<BankWorkspace, { title: string; description: string }> = {
+  questions: { title: 'Вопросы', description: 'Поиск, просмотр и точечные редакции' },
+  categories: { title: 'Категории', description: 'Состав, переименование и объединение' },
+  transfer: { title: 'Импорт и экспорт', description: 'Проверка файла до публикации' },
+  drafts: { title: 'Черновики', description: 'Пакеты изменений и единая ревизия' },
+  quality: { title: 'Контроль', description: 'Покрытие и очередь качества' },
+};
+
+function BankWorkspaceNavigation({ value, onChange }: {
+  value: BankWorkspace;
+  onChange: (value: BankWorkspace) => void;
+}) {
+  const tabs = Object.keys(workspaceLabels) as BankWorkspace[];
+  function move(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const index = tabs.indexOf(value);
+    const next = event.key === 'Home'
+      ? tabs[0]
+      : event.key === 'End'
+        ? tabs.at(-1)!
+        : tabs[(index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
+    onChange(next);
+    window.requestAnimationFrame(() => document.getElementById(`bank-workspace-${next}`)?.focus());
+  }
+  return (
+    <div className={styles.bankWorkspaceNav} role="tablist" aria-label="Разделы банка вопросов" onKeyDown={move}>
+      {tabs.map((tab) => (
+        <button
+          id={`bank-workspace-${tab}`}
+          key={tab}
+          type="button"
+          role="tab"
+          aria-selected={value === tab}
+          aria-controls={`bank-panel-${tab}`}
+          tabIndex={value === tab ? 0 : -1}
+          onClick={() => onChange(tab)}
+        >
+          <strong>{workspaceLabels[tab].title}</strong>
+          <span>{workspaceLabels[tab].description}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function mutationRevision(payload: unknown, fallback: string) {
+  if (payload && typeof payload === 'object' && 'currentBankRevision' in payload) {
+    const value = (payload as { currentBankRevision?: unknown }).currentBankRevision;
+    if (typeof value === 'string' && value) return value;
+  }
+  return fallback;
+}
+
+function CategoryManager({ csrfToken, currentBankRevision, onAdminError, onComplete }: {
+  csrfToken: string;
+  currentBankRevision: string;
+  onAdminError: (error: unknown) => void;
+  onComplete: (revision: string, message?: string) => void;
+}) {
+  const [data, setData] = useState<CategoryList | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [newName, setNewName] = useState('');
+  const [editing, setEditing] = useState<CategoryItem | null>(null);
+  const [editName, setEditName] = useState('');
+  const [mergeSource, setMergeSource] = useState<CategoryItem | null>(null);
+  const [mergeTarget, setMergeTarget] = useState('');
+  const mutationRef = useRef<{ fingerprint: string; key: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      setData(await questionBankRequest<CategoryList>('/api/admin/questions/categories'));
+    } catch (requestError) {
+      onAdminError(requestError);
+      setError(questionBankError(requestError).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [onAdminError]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+
+  async function mutate(path: string, method: 'POST' | 'PUT', body: Record<string, unknown>, notice: string) {
+    if (saving) return;
+    setSaving(true);
+    setError('');
+    const revision = data?.currentBankRevision || currentBankRevision;
+    const fingerprint = JSON.stringify({ path, body, revision });
+    try {
+      const result = await questionBankRequest<unknown>(path, {
+        method,
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({
+          ...body,
+          expectedBankRevision: revision,
+          idempotencyKey: idempotencyKey(mutationRef, fingerprint),
+        }),
+      });
+      mutationRef.current = null;
+      setNewName('');
+      setEditing(null);
+      setMergeSource(null);
+      setMergeTarget('');
+      onComplete(mutationRevision(result, revision), notice);
+      await load();
+    } catch (requestError) {
+      onAdminError(requestError);
+      setError(questionBankError(requestError).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return <BankLoading />;
+  if (!data) return <BankError error={{ message: error || 'Не удалось загрузить категории.', issues: [] }} />;
+  const activeTotal = data.items.reduce((sum, item) => sum + item.activeQuestionCount, 0);
+  return (
+    <section className={styles.bankOperationWorkspace} aria-labelledby="category-manager-title">
+      <header className={styles.bankOperationHeading}>
+        <div><p className={styles.eyebrow}>Справочник</p><h3 id="category-manager-title">Категории вопросов</h3><p>Переименование и объединение выполняются одной ревизией, с сохранением истории старых вопросов.</p></div>
+        <span>{data.items.length} категорий · {activeTotal} активных</span>
+      </header>
+      <form className={styles.bankInlineForm} onSubmit={(event) => {
+        event.preventDefault();
+        const name = newName.trim();
+        if (name) void mutate('/api/admin/questions/categories', 'POST', { name }, `Категория «${name}» создана.`);
+      }}>
+        <label><span>Новая категория</span><input value={newName} maxLength={80} onChange={(event) => setNewName(event.target.value)} placeholder="Например, Виртуализация" /></label>
+        <button className={styles.primaryButton} type="submit" disabled={saving || !newName.trim()}>Добавить</button>
+      </form>
+      {error && <div className={styles.bankInlineError} role="alert"><span>{error}</span><button type="button" onClick={() => void load()}>Обновить</button></div>}
+      <div className={styles.categoryGrid}>
+        {data.items.map((item) => {
+          const total = item.activeQuestionCount + item.inactiveQuestionCount;
+          return (
+            <article key={item.id} className={styles.categoryCard}>
+              <header><div><strong>{item.name}</strong><span>{item.activeQuestionCount} активных актуальных вопросов · {item.inactiveQuestionCount} выключенных актуальных редакций</span>{!item.active && <em>Объединена · архивная категория</em>}</div><b>{total}</b></header>
+              <dl>
+                {(Object.keys(difficultyLabels) as Difficulty[]).map((difficulty) => (
+                  <div key={difficulty}><dt>{difficultyLabels[difficulty]}</dt><dd>{item.difficultyCounts[difficulty] ?? 0}</dd></div>
+                ))}
+              </dl>
+              {editing?.id === item.id ? (
+                <form className={styles.categoryEditForm} onSubmit={(event) => {
+                  event.preventDefault();
+                  const name = editName.trim();
+                  if (name && name !== item.name) void mutate(`/api/admin/questions/categories/${item.id}`, 'PUT', { name, expectedCategoryName: item.name, note: 'Переименование категории из панели' }, `Категория переименована в «${name}».`);
+                }}>
+                  <label><span>Новое название</span><input value={editName} maxLength={80} onChange={(event) => setEditName(event.target.value)} /></label>
+                  <div><button className={styles.primaryButton} type="submit" disabled={saving || !editName.trim() || editName.trim() === item.name}>Сохранить</button><button className={styles.quietButton} type="button" onClick={() => setEditing(null)}>Отмена</button></div>
+                </form>
+              ) : mergeSource?.id === item.id ? (
+                <form className={styles.categoryEditForm} onSubmit={(event) => {
+                  event.preventDefault();
+                  if (mergeTarget) void mutate(`/api/admin/questions/categories/${item.id}/merge`, 'POST', { targetCategoryId: Number(mergeTarget), expectedCategoryName: item.name, note: 'Объединение категорий из панели' }, `Категория «${item.name}» объединена.`);
+                }}>
+                  <label><span>Объединить с</span><select value={mergeTarget} onChange={(event) => setMergeTarget(event.target.value)}><option value="">Выберите категорию</option>{data.items.filter((candidate) => candidate.id !== item.id && candidate.active).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></label>
+                  <p>Все актуальные вопросы получат новые редакции в выбранной категории. Отменить публикацию задним числом нельзя.</p>
+                  <div><button className={styles.dangerButton} type="submit" disabled={saving || !mergeTarget}>Объединить</button><button className={styles.quietButton} type="button" onClick={() => setMergeSource(null)}>Отмена</button></div>
+                </form>
+              ) : (
+                <footer><button className={styles.secondaryButton} type="button" disabled={!item.active} onClick={() => { setEditing(item); setEditName(item.name); }}>Переименовать</button><button className={styles.quietButton} type="button" disabled={!item.active || data.items.filter((candidate) => candidate.active).length < 2} onClick={() => setMergeSource(item)}>Объединить</button></footer>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function BulkOperationDialog({ questionIds, topics, csrfToken, currentBankRevision, onClose, onAdminError, onComplete }: {
+  questionIds: number[];
+  topics: string[];
+  csrfToken: string;
+  currentBankRevision: string;
+  onClose: () => void;
+  onAdminError: (error: unknown) => void;
+  onComplete: (revision: string, message?: string) => void;
+}) {
+  const dialogRef = useRef<HTMLElement>(null);
+  const [field, setField] = useState<'topic' | 'difficulty' | 'active'>('topic');
+  const [topic, setTopic] = useState(topics[0] ?? '');
+  const [difficulty, setDifficulty] = useState<Difficulty>('easy');
+  const [active, setActive] = useState(true);
+  const [note, setNote] = useState('');
+  const [step, setStep] = useState<'edit' | 'confirm'>('edit');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [drafts, setDrafts] = useState<ChangeSetSummary[]>([]);
+  const [draftTarget, setDraftTarget] = useState('new');
+  const mutationRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const patch: BulkPatch = field === 'topic' ? { topic } : field === 'difficulty' ? { difficulty } : { active };
+  const valueLabel = field === 'topic' ? topic : field === 'difficulty' ? difficultyLabels[difficulty] : active ? 'Включить' : 'Выключить';
+
+  useEffect(() => {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialogRef.current?.focus();
+    return () => { document.body.style.overflow = overflow; if (previous?.isConnected) previous.focus(); };
+  }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    void questionBankRequest<ChangeSetList>('/api/admin/questions/change-sets', { signal: controller.signal })
+      .then((result) => setDrafts(result.items.filter((item) => item.status === 'draft')))
+      .catch((requestError: unknown) => {
+        if (!(requestError instanceof DOMException && requestError.name === 'AbortError')) onAdminError(requestError);
+      });
+    return () => controller.abort();
+  }, [onAdminError]);
+
+  async function apply(mode: 'publish' | 'draft') {
+    setSaving(true);
+    setError('');
+    const fingerprint = JSON.stringify({ mode, questionIds, patch, currentBankRevision, note });
+    try {
+      if (mode === 'publish') {
+        const result = await questionBankRequest<BulkResponse>('/api/admin/questions/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+          body: JSON.stringify({ questionIds, patch, note: note.trim() || undefined, expectedBankRevision: currentBankRevision, idempotencyKey: idempotencyKey(mutationRef, fingerprint) }),
+        });
+        mutationRef.current = null;
+        onComplete(result.currentBankRevision, `Изменено вопросов: ${result.changedCount}. Опубликована одна новая ревизия.`);
+      } else {
+        let changeSetId = draftTarget;
+        let title = drafts.find((item) => item.id === draftTarget)?.title ?? '';
+        let existingOperations: QuestionBankChangeSetDetailDto['operations'] = [];
+        let expectedChangeSetUpdatedAt = 0;
+        if (draftTarget === 'new') {
+          const createFingerprint = JSON.stringify({ action: 'create-change-set', questionIds, patch, currentBankRevision, note });
+          const created = await questionBankRequest<QuestionBankChangeSetDetailDto>('/api/admin/questions/change-sets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+            body: JSON.stringify({
+              title: `Пакет для ${questionIds.length} вопросов`,
+              note: note.trim() || undefined,
+              expectedBankRevision: currentBankRevision,
+              idempotencyKey: idempotencyKey(mutationRef, createFingerprint),
+            }),
+          });
+          mutationRef.current = null;
+          changeSetId = created.changeSet.id;
+          title = created.changeSet.title;
+          existingOperations = created.operations;
+          expectedChangeSetUpdatedAt = created.changeSet.updatedAt;
+          setDraftTarget(created.changeSet.id);
+          setDrafts((current) => current.some((item) => item.id === created.changeSet.id)
+            ? current
+            : [created.changeSet, ...current]);
+        } else {
+          const existing = await questionBankRequest<QuestionBankChangeSetDetailDto>(`/api/admin/questions/change-sets/${encodeURIComponent(changeSetId)}`);
+          existingOperations = existing.operations;
+          expectedChangeSetUpdatedAt = existing.changeSet.updatedAt;
+        }
+        const merged = new Map(existingOperations.map((operation) => [operation.questionId, { questionId: operation.questionId, patch: operation.patch }]));
+        for (const questionId of questionIds) merged.set(questionId, { questionId, patch });
+        const operations = [...merged.values()];
+        if (operations.length > QUESTION_BANK_MUTATION_LIMIT) {
+          throw new QuestionBankRequestError(413, 'mutation_too_large', [`В одном черновике допускается не более ${QUESTION_BANK_MUTATION_LIMIT} операций.`]);
+        }
+        const updateFingerprint = JSON.stringify({ action: 'update-change-set', changeSetId, operations, currentBankRevision, expectedChangeSetUpdatedAt });
+        await questionBankRequest(`/api/admin/questions/change-sets/${encodeURIComponent(changeSetId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+          body: JSON.stringify({ operations, expectedBankRevision: currentBankRevision, expectedChangeSetUpdatedAt, idempotencyKey: idempotencyKey(mutationRef, updateFingerprint) }),
+        });
+        mutationRef.current = null;
+        onComplete(currentBankRevision, `Изменения добавлены в черновик «${title}». Проверьте его в разделе «Черновики».`);
+      }
+      onClose();
+    } catch (requestError) {
+      onAdminError(requestError);
+      setError(questionBankError(requestError).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className={styles.detailBackdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
+      <section ref={dialogRef} className={`${styles.detailDialog} ${styles.bulkDialog}`} role="dialog" aria-modal="true" aria-labelledby="bulk-title" aria-describedby="bulk-description" tabIndex={-1} onKeyDown={(event) => {
+        if (event.key === 'Escape' && !saving) { event.preventDefault(); onClose(); return; }
+        if (event.key !== 'Tab' || !dialogRef.current) return;
+        const focusable = [...dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])')];
+        const first = focusable[0]; const last = focusable.at(-1);
+        if (!first || !last) return;
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }}>
+        <header className={styles.detailHeader}><div><span className={styles.dialogEyebrow}>Пакетное действие</span><h2 id="bulk-title">Изменить {questionIds.length} вопросов</h2></div><button type="button" disabled={saving} onClick={onClose} aria-label="Закрыть">×</button></header>
+        <div className={styles.detailBody} id="bulk-description">
+          {step === 'edit' ? <div className={styles.bulkForm}>
+            <fieldset><legend>Что изменить</legend>
+              <label><input type="radio" checked={field === 'topic'} onChange={() => setField('topic')} /><span>Категорию</span></label>
+              <label><input type="radio" checked={field === 'difficulty'} onChange={() => setField('difficulty')} /><span>Сложность</span></label>
+              <label><input type="radio" checked={field === 'active'} onChange={() => setField('active')} /><span>Состояние</span></label>
+            </fieldset>
+            {field === 'topic' && <label><span>Новая категория</span><select value={topic} onChange={(event) => setTopic(event.target.value)}>{topics.map((item) => <option key={item}>{item}</option>)}</select></label>}
+            {field === 'difficulty' && <label><span>Новая сложность</span><select value={difficulty} onChange={(event) => setDifficulty(event.target.value as Difficulty)}>{(Object.keys(difficultyLabels) as Difficulty[]).map((item) => <option key={item} value={item}>{difficultyLabels[item]}</option>)}</select></label>}
+            {field === 'active' && <label><span>Новое состояние</span><select value={active ? 'active' : 'inactive'} onChange={(event) => setActive(event.target.value === 'active')}><option value="active">Включить в тест</option><option value="inactive">Выключить из теста</option></select></label>}
+            <label><span>Комментарий к аудиту</span><textarea value={note} maxLength={500} onChange={(event) => setNote(event.target.value)} placeholder="Почему выполняется изменение" /></label>
+            <div className={styles.bankEditorFooter}><button className={styles.quietButton} type="button" onClick={onClose}>Отмена</button><button className={styles.primaryButton} type="button" disabled={field === 'topic' && !topic} onClick={() => setStep('confirm')}>Проверить пакет</button></div>
+          </div> : <div className={styles.bulkReview}>
+            <span aria-hidden="true">{questionIds.length}</span><h3>Проверьте изменение</h3>
+            <dl><div><dt>Вопросов</dt><dd>{questionIds.length}</dd></div><div><dt>{field === 'topic' ? 'Категория' : field === 'difficulty' ? 'Сложность' : 'Состояние'}</dt><dd>{valueLabel}</dd></div><div><dt>Результат</dt><dd>{field === 'active' ? 'Изменится состав текущего банка' : 'Будут созданы новые редакции вопросов'}</dd></div></dl>
+            <p>Можно сохранить пакет как черновик для повторной проверки или сразу опубликовать одной атомарной ревизией.</p>
+            <label className={styles.bulkDraftTarget}><span>Куда сохранить черновик</span><select value={draftTarget} onChange={(event) => setDraftTarget(event.target.value)}><option value="new">Создать новый пакет</option>{drafts.map((draft) => <option key={draft.id} value={draft.id}>Добавить в «{draft.title}» · сейчас {draft.operationCount}</option>)}</select><small>При добавлении в существующий пакет операции для тех же вопросов будут заменены.</small></label>
+            {error && <p className={styles.error} role="alert">{error}</p>}
+            <div className={styles.bankEditorFooter}><button className={styles.quietButton} type="button" disabled={saving} onClick={() => setStep('edit')}>Назад</button><button className={styles.secondaryButton} type="button" disabled={saving} onClick={() => void apply('draft')}>Сохранить черновик</button><button className={styles.primaryButton} type="button" disabled={saving} onClick={() => void apply('publish')}>{saving ? 'Сохраняем…' : 'Опубликовать'}</button></div>
+          </div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ImportExportPanel({ csrfToken, currentBankRevision, topics, onAdminError, onComplete }: {
+  csrfToken: string;
+  currentBankRevision: string;
+  topics: string[];
+  onAdminError: (error: unknown) => void;
+  onComplete: (revision: string, message?: string) => void;
+}) {
+  const [questions, setQuestions] = useState<ImportQuestion[]>([]);
+  const [fileName, setFileName] = useState('');
+  const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState('');
+  const [exportTopic, setExportTopic] = useState('');
+  const [exportStatus, setExportStatus] = useState<QuestionStatus>('active');
+  const applyRef = useRef<{ fingerprint: string; key: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  function resetImportFile() {
+    setQuestions([]);
+    setPreview(null);
+    setFileName('');
+    setError('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  async function readFile(file: File | null) {
+    setPreview(null);
+    setQuestions([]);
+    setError('');
+    setFileName(file?.name ?? '');
+    if (!file) return;
+    if (file.size > 2_000_000) {
+      setError(`Файл больше 2 МБ. Разделите импорт на пакеты до ${QUESTION_BANK_MUTATION_LIMIT} вопросов.`);
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(await file.text());
+      const records = Array.isArray(parsed)
+        ? parsed
+        : parsed && typeof parsed === 'object' && 'questions' in parsed
+          ? (parsed as { questions?: unknown }).questions
+          : null;
+      if (!Array.isArray(records)) throw new Error('invalid_shape');
+      if (records.length === 0) throw new Error('empty');
+      if (records.length > QUESTION_BANK_MUTATION_LIMIT) throw new Error('too_many');
+      setQuestions(records as ImportQuestion[]);
+    } catch (fileError) {
+      const message = fileError instanceof Error && fileError.message === 'too_many'
+        ? `В одном пакете допускается не более ${QUESTION_BANK_MUTATION_LIMIT} вопросов.`
+        : fileError instanceof Error && fileError.message === 'empty'
+          ? 'В файле нет вопросов.'
+          : 'Не удалось прочитать JSON. Ожидается массив вопросов или объект с полем questions.';
+      setError(message);
+    }
+  }
+
+  async function requestPreview() {
+    if (!questions.length || previewing) return;
+    setPreviewing(true);
+    setError('');
+    try {
+      setPreview(await questionBankRequest<ImportPreview>('/api/admin/questions/import/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ questions, expectedBankRevision: currentBankRevision }),
+      }));
+    } catch (requestError) {
+      onAdminError(requestError);
+      setError(questionBankError(requestError).message);
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function applyImport() {
+    if (!preview || preview.summary.invalid > 0 || applying) return;
+    setApplying(true);
+    setError('');
+    const fingerprint = JSON.stringify({ questions, previewToken: preview.previewToken, currentBankRevision });
+    try {
+      const result = await questionBankRequest<BulkResponse>('/api/admin/questions/import/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({
+          questions,
+          previewToken: preview.previewToken,
+          expectedBankRevision: currentBankRevision,
+          idempotencyKey: idempotencyKey(applyRef, fingerprint),
+          note: `Импорт из файла ${fileName}`,
+        }),
+      });
+      applyRef.current = null;
+      onComplete(result.currentBankRevision, `Импорт завершён: добавлено ${preview.summary.added}, обновлено ${preview.summary.revised}, без изменений ${preview.summary.unchanged}.`);
+      resetImportFile();
+    } catch (requestError) {
+      onAdminError(requestError);
+      setError(questionBankError(requestError).message);
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  const exportParams = new URLSearchParams({ status: exportStatus });
+  if (exportTopic) exportParams.set('topic', exportTopic);
+  return (
+    <section className={styles.transferGrid} aria-label="Импорт и экспорт банка">
+      <article className={styles.bankOperationWorkspace}>
+        <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Импорт</p><h3>Проверить пакет до публикации</h3><p>Сначала сервер покажет точный diff. Пока вы не нажмёте «Применить», банк не изменится. Новые категории создаются отдельно в справочнике.</p></div><span>до {QUESTION_BANK_MUTATION_LIMIT} вопросов</span></header>
+        <label className={styles.fileDrop} data-loaded={questions.length > 0}>
+          <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={(event) => void readFile(event.target.files?.[0] ?? null)} />
+          <span aria-hidden="true">{questions.length ? '✓' : '↓'}</span>
+          <strong>{fileName || 'Выберите JSON-файл'}</strong>
+          <small>{questions.length ? `Прочитано записей: ${questions.length}` : 'Массив вопросов или экспорт Candidate Check'}</small>
+        </label>
+        {error && <p className={styles.error} role="alert">{error}</p>}
+        {questions.length > 0 && !preview && <button className={styles.primaryButton} type="button" disabled={previewing} onClick={() => void requestPreview()}>{previewing ? 'Проверяем…' : 'Проверить изменения'}</button>}
+        {preview && <div className={styles.importDiff}>
+          <header><div><p className={styles.eyebrow}>Предпросмотр</p><h4>{preview.summary.invalid ? 'Нужно исправить файл' : 'Пакет готов к публикации'}</h4></div><span className={preview.readiness?.ready ? styles.bankActive : styles.bankInactive}>{preview.readiness?.ready ? 'Банк готов' : 'Есть ограничения'}</span></header>
+          <dl><div><dt>Новые</dt><dd>{preview.summary.added}</dd></div><div><dt>Новые редакции</dt><dd>{preview.summary.revised}</dd></div><div><dt>Без изменений</dt><dd>{preview.summary.unchanged}</dd></div><div><dt>Ошибки</dt><dd>{preview.summary.invalid}</dd></div></dl>
+          <details className={styles.importItemDetails} open>
+            <summary>
+              <span>Изменения и ошибки</span>
+              <b>{preview.items.filter((item) => item.action !== 'unchanged').length}</b>
+            </summary>
+            <ol>
+              {preview.items.filter((item) => item.action !== 'unchanged').map((item) => (
+                <li key={item.sourceIndex} data-action={item.action}>
+                  <header>
+                    <strong>Строка {item.sourceIndex + 1}{item.sourceId === null ? '' : ` · ID ${item.sourceId}`}</strong>
+                    <span>{importActionLabels[item.action]}</span>
+                  </header>
+                  {item.changedFields.length > 0 && (
+                    <p><b>Изменятся:</b> {item.changedFields.map((field) => importFieldLabels[field] ?? field).join(', ')}</p>
+                  )}
+                  {item.issues.length > 0 && <ul>{item.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul>}
+                </li>
+              ))}
+            </ol>
+          </details>
+          {preview.summary.unchanged > 0 && (
+            <details className={styles.importUnchangedDetails}>
+              <summary><span>Без изменений</span><b>{preview.summary.unchanged}</b></summary>
+              <p>Эти записи полностью совпадают с актуальными редакциями и при публикации будут пропущены.</p>
+            </details>
+          )}
+          {preview.summary.invalid > 0 && <p className={styles.importHint}>Если в файле указана неизвестная категория, сначала создайте её в разделе «Категории», затем повторите проверку. Импорт не создаёт категории автоматически.</p>}
+          <div><button className={styles.quietButton} type="button" disabled={applying} onClick={resetImportFile}>Выбрать другой файл</button><button className={styles.primaryButton} type="button" disabled={applying || preview.summary.invalid > 0 || !preview.readiness?.ready} onClick={() => void applyImport()}>{applying ? 'Публикуем…' : 'Применить одной ревизией'}</button></div>
+        </div>}
+      </article>
+      <article className={styles.bankOperationWorkspace}>
+        <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Экспорт</p><h3>Выгрузить актуальный банк</h3><p>Файл подходит для резервной копии, проверки и последующего импорта.</p></div><span>JSON · schema v1</span></header>
+        <div className={styles.exportControls}>
+          <label><span>Категория</span><select value={exportTopic} onChange={(event) => setExportTopic(event.target.value)}><option value="">Все категории</option>{topics.map((item) => <option key={item}>{item}</option>)}</select></label>
+          <label><span>Состояние</span><select value={exportStatus} onChange={(event) => setExportStatus(event.target.value as QuestionStatus)}><option value="active">Только активные актуальные вопросы</option><option value="inactive">Только выключенные актуальные редакции</option><option value="all">Все актуальные редакции</option></select></label>
+          <a className={styles.primaryButton} href={appPath(`/api/admin/questions/export?${exportParams.toString()}`)} download>Скачать JSON</a>
+        </div>
+        <aside className={styles.exportNote}><span aria-hidden="true">i</span><p><strong>Что попадёт в файл</strong>Текст, варианты, правильный ответ, категория, сложность и смысловая группа. Персональные результаты кандидатов не экспортируются.</p></aside>
+      </article>
+    </section>
+  );
+}
+
+function ChangeSetsPanel({ csrfToken, currentBankRevision, onAdminError, onComplete }: {
+  csrfToken: string;
+  currentBankRevision: string;
+  onAdminError: (error: unknown) => void;
+  onComplete: (revision: string, message?: string) => void;
+}) {
+  const [data, setData] = useState<ChangeSetList | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [detail, setDetail] = useState<QuestionBankChangeSetDetailDto | null>(null);
+  const [preview, setPreview] = useState<QuestionBankChangeSetPreviewDto | null>(null);
+  const [title, setTitle] = useState('');
+  const [note, setNote] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const mutationRef = useRef<{ fingerprint: string; key: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setData(await questionBankRequest<ChangeSetList>('/api/admin/questions/change-sets')); }
+    catch (requestError) { onAdminError(requestError); setError(questionBankError(requestError).message); }
+    finally { setLoading(false); }
+  }, [onAdminError]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+  useEffect(() => {
+    if (!selected) return;
+    const controller = new AbortController();
+    void questionBankRequest<QuestionBankChangeSetDetailDto>(`/api/admin/questions/change-sets/${encodeURIComponent(selected)}`, { signal: controller.signal })
+      .then((result) => { setDetail(result); setPreview(null); })
+      .catch((requestError: unknown) => { if (!(requestError instanceof DOMException && requestError.name === 'AbortError')) { onAdminError(requestError); setError(questionBankError(requestError).message); } });
+    return () => controller.abort();
+  }, [onAdminError, selected]);
+
+  function chooseDraft(id: string) {
+    setSelected(id);
+    setDetail(null);
+    setPreview(null);
+    setConfirmDelete(false);
+  }
+
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!title.trim() || saving) return;
+    setSaving(true); setError('');
+    const fingerprint = JSON.stringify({ title, note, currentBankRevision });
+    try {
+      const result = await questionBankRequest<QuestionBankChangeSetDetailDto>('/api/admin/questions/change-sets', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ title: title.trim(), note: note.trim() || undefined, expectedBankRevision: currentBankRevision, idempotencyKey: idempotencyKey(mutationRef, fingerprint) }),
+      });
+      mutationRef.current = null; setTitle(''); setNote(''); setSelected(result.changeSet.id); setDetail(result); setPreview(null); await load();
+    } catch (requestError) { onAdminError(requestError); setError(questionBankError(requestError).message); }
+    finally { setSaving(false); }
+  }
+
+  async function previewDraft() {
+    if (!selected || saving) return;
+    setSaving(true); setError('');
+    try { setPreview(await questionBankRequest<QuestionBankChangeSetPreviewDto>(`/api/admin/questions/change-sets/${encodeURIComponent(selected)}/preview`, { method: 'POST', headers: { 'X-CSRF-Token': csrfToken } })); }
+    catch (requestError) { onAdminError(requestError); setError(questionBankError(requestError).message); }
+    finally { setSaving(false); }
+  }
+
+  async function handleDraftMutationError(requestError: unknown) {
+    onAdminError(requestError);
+    const issue = questionBankError(requestError);
+    if (
+      selected
+      && requestError instanceof QuestionBankRequestError
+      && requestError.code === 'change_set_conflict'
+    ) {
+      mutationRef.current = null;
+      try {
+        const latest = await questionBankRequest<QuestionBankChangeSetDetailDto>(`/api/admin/questions/change-sets/${encodeURIComponent(selected)}`);
+        setDetail(latest);
+        setPreview(null);
+        await load();
+        setError(`${issue.message} Показана актуальная версия черновика.`);
+        return;
+      } catch (refreshError) {
+        onAdminError(refreshError);
+      }
+    }
+    setError(issue.message);
+  }
+
+  async function removeDraftOperation(questionId: number) {
+    if (!selected || !detail || saving || detail.changeSet.status !== 'draft') return;
+    const operations = detail.operations
+      .filter((operation) => operation.questionId !== questionId)
+      .map((operation) => ({ questionId: operation.questionId, patch: operation.patch }));
+    setSaving(true); setError('');
+    const expectedChangeSetUpdatedAt = detail.changeSet.updatedAt;
+    const fingerprint = JSON.stringify({ action: 'remove-operation', selected, questionId, operations, currentBankRevision, expectedChangeSetUpdatedAt });
+    try {
+      const result = await questionBankRequest<QuestionBankChangeSetDetailDto>(`/api/admin/questions/change-sets/${encodeURIComponent(selected)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ operations, expectedBankRevision: currentBankRevision, expectedChangeSetUpdatedAt, idempotencyKey: idempotencyKey(mutationRef, fingerprint) }),
+      });
+      mutationRef.current = null; setDetail(result); setPreview(null); await load();
+    } catch (requestError) { await handleDraftMutationError(requestError); }
+    finally { setSaving(false); }
+  }
+
+  async function publishDraft() {
+    if (!selected || !preview || saving) return;
+    setSaving(true); setError('');
+    const expectedChangeSetUpdatedAt = preview.changeSet.updatedAt;
+    const fingerprint = JSON.stringify({ selected, currentBankRevision, expectedChangeSetUpdatedAt, operations: preview.operations });
+    try {
+      const result = await questionBankRequest<BulkResponse>(`/api/admin/questions/change-sets/${encodeURIComponent(selected)}/publish`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({ expectedBankRevision: currentBankRevision, expectedChangeSetUpdatedAt, idempotencyKey: idempotencyKey(mutationRef, fingerprint) }),
+      });
+      mutationRef.current = null; setSelected(null); setPreview(null); await load();
+      onComplete(result.currentBankRevision, `Черновик опубликован: изменено ${result.changedCount}, без изменений ${result.unchangedCount}.`);
+    } catch (requestError) { await handleDraftMutationError(requestError); }
+    finally { setSaving(false); }
+  }
+
+  async function discardDraft() {
+    if (!selected || !detail || saving) return;
+    setSaving(true); setError('');
+    const expectedBankRevision = detail.currentBankRevision || currentBankRevision;
+    const expectedChangeSetUpdatedAt = detail.changeSet.updatedAt;
+    const fingerprint = JSON.stringify({ action: 'discard-change-set', selected, expectedBankRevision, expectedChangeSetUpdatedAt });
+    try {
+      await questionBankRequest(`/api/admin/questions/change-sets/${encodeURIComponent(selected)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+        body: JSON.stringify({
+          expectedBankRevision,
+          expectedChangeSetUpdatedAt,
+          idempotencyKey: idempotencyKey(mutationRef, fingerprint),
+        }),
+      });
+      mutationRef.current = null;
+      setSelected(null); setPreview(null); setConfirmDelete(false); await load();
+    } catch (requestError) { await handleDraftMutationError(requestError); }
+    finally { setSaving(false); }
+  }
+
+  if (loading) return <BankLoading />;
+  return (
+    <section className={styles.draftWorkspace}>
+      <aside className={styles.bankOperationWorkspace}>
+        <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Пакеты</p><h3>Черновики изменений</h3><p>Публикуйте связанные изменения одной ревизией.</p></div><span>{data?.items.filter((item) => item.status === 'draft').length ?? 0} активных</span></header>
+        <form className={styles.draftCreateForm} onSubmit={create}><label><span>Название пакета</span><input value={title} maxLength={120} onChange={(event) => setTitle(event.target.value)} placeholder="Например, Пересмотр Linux" /></label><label><span>Комментарий</span><textarea value={note} maxLength={500} onChange={(event) => setNote(event.target.value)} placeholder="Цель изменений" /></label><button className={styles.primaryButton} type="submit" disabled={saving || !title.trim()}>Создать пустой черновик</button></form>
+        <nav className={styles.draftList} aria-label="Черновики банка">{data?.items.length ? data.items.map((item) => <button key={item.id} type="button" data-active={selected === item.id} onClick={() => chooseDraft(item.id)}><span><strong>{item.title}</strong><small>{item.operationCount} изменений · {item.status === 'draft' ? 'черновик' : item.status === 'published' ? 'опубликован' : 'отменён'}</small></span><b aria-hidden="true">→</b></button>) : <p>Черновиков пока нет. Выберите вопросы и сохраните массовое изменение как пакет.</p>}</nav>
+      </aside>
+      <article className={styles.bankOperationWorkspace}>
+        {!selected ? <BankEmpty title="Выберите черновик" message="Здесь появятся операции, проверка готовности и кнопка атомарной публикации." /> : !detail ? <BankLoading compact /> : <>
+          <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Черновик</p><h3>{detail.changeSet.title}</h3><p>{detail.changeSet.note || 'Без комментария'}</p></div><span>{detail.operations.length} операций</span></header>
+          {detail.operations.length === 0 ? <BankEmpty compact title="Пакет пуст" message="Добавьте операции через массовое изменение вопросов или удалите черновик." /> : <ol className={styles.draftOperations}>{detail.operations.map((operation) => <li key={operation.id}><strong>Вопрос #{operation.questionId}</strong><span>{operation.patch.topic ? `Категория → ${operation.patch.topic}` : operation.patch.difficulty ? `Сложность → ${difficultyLabels[operation.patch.difficulty]}` : operation.patch.active === true ? 'Включить' : 'Выключить'}</span>{detail.changeSet.status === 'draft' && <button type="button" disabled={saving} onClick={() => void removeDraftOperation(operation.questionId)} aria-label={`Удалить изменение вопроса ${operation.questionId}`}>×</button>}</li>)}</ol>}
+          {preview && <div className={styles.draftPreview}><header><strong>{preview.readiness.ready ? 'Готов к публикации' : 'Публикация заблокирована'}</strong><span>{preview.changedCount} изменится · {preview.unchangedCount} без изменений</span></header><p>{preview.coverage.ready ? 'Покрытие банка сохранено.' : 'После изменений возникнет дефицит вопросов. Исправьте пакет.'}</p>{preview.readiness.issues.length > 0 && <ul>{preview.readiness.issues.map((issue) => <li key={issue}>{readinessMessage(issue)}</li>)}</ul>}{preview.readiness.warnings.length > 0 && <ul>{preview.readiness.warnings.map((warning) => <li key={warning}>{readinessMessage(warning)}</li>)}</ul>}</div>}
+          {error && <p className={styles.error} role="alert">{error}</p>}
+          {confirmDelete && <div className={styles.draftDeleteConfirm} role="alert"><span>Удалить черновик без публикации?</span><button className={styles.dangerButton} type="button" disabled={saving} onClick={() => void discardDraft()}>Да, удалить</button><button className={styles.quietButton} type="button" disabled={saving} onClick={() => setConfirmDelete(false)}>Отмена</button></div>}
+          <div className={styles.draftActions}><button className={styles.dangerButton} type="button" disabled={saving || detail.changeSet.status !== 'draft'} onClick={() => setConfirmDelete(true)}>Удалить</button><button className={styles.secondaryButton} type="button" disabled={saving || detail.operations.length === 0 || detail.changeSet.status !== 'draft'} onClick={() => void previewDraft()}>{saving ? 'Проверяем…' : 'Проверить пакет'}</button><button className={styles.primaryButton} type="button" disabled={saving || !preview?.readiness.ready || detail.changeSet.status !== 'draft'} onClick={() => void publishDraft()}>Опубликовать</button></div>
+        </>}
+      </article>
+    </section>
+  );
+}
+
+const qualityWarningText: Record<string, string> = {
+  insufficient: 'Недостаточно данных для вывода',
+  too_easy: 'Вопрос заметно проще заявленного',
+  too_hard: 'Вопрос заметно сложнее заявленного',
+  high_timeout: 'Высокая доля тайм-аутов',
+  slow: 'Ответ занимает аномально много времени',
+  negative_discrimination: 'Вопрос хуже разделяет уровень кандидатов',
+};
+
+function BankQualityPanel({ onAdminError, onOpenQuestion }: {
+  onAdminError: (error: unknown) => void;
+  onOpenQuestion: (id: number) => void;
+}) {
+  const [coverage, setCoverage] = useState<CoverageResponse | null>(null);
+  const [queue, setQueue] = useState<QualityQueueResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const [nextCoverage, nextQueue] = await Promise.all([
+        questionBankRequest<CoverageResponse>('/api/admin/questions/coverage'),
+        questionBankRequest<QualityQueueResponse>('/api/admin/questions/quality-queue'),
+      ]);
+      setCoverage(nextCoverage); setQueue(nextQueue);
+    } catch (requestError) { onAdminError(requestError); setError(questionBankError(requestError).message); }
+    finally { setLoading(false); }
+  }, [onAdminError]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
+  if (loading) return <BankLoading />;
+  if (error || !coverage || !queue) return <BankError error={{ message: error || 'Не удалось загрузить контроль банка.', issues: [] }} />;
+  const actionableQueue = queue.items.filter((item) => item.qualityStatus === 'review' || item.qualityStatus === 'observe');
+  const waitingForData = queue.items.filter((item) => item.qualityStatus === 'insufficient').length;
+  const disabledCount = queue.items.filter((item) => item.qualityStatus === 'disabled').length;
+  const coverageMessages = [...new Set([...coverage.issues, ...coverage.warnings])];
+  return (
+    <div className={styles.qualityWorkspace}>
+      <section className={styles.bankOperationWorkspace}>
+        <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Покрытие</p><h3>Хватает ли вопросов для теста</h3><p>Матрица показывает активный резерв каждой категории и сложности.</p></div><span className={coverage.ready ? styles.bankActive : styles.bankInactive}>{coverage.ready ? 'Банк готов' : 'Есть дефицит'}</span></header>
+        {coverageMessages.length > 0 && (
+          <div className={styles.coverageCallout} data-ready={coverage.ready} role="status">
+            <strong>{coverage.ready ? 'Что стоит улучшить' : 'Почему банк не готов'}</strong>
+            <ul>{coverageMessages.map((message) => <li key={message}>{readinessMessage(message)}</li>)}</ul>
+          </div>
+        )}
+        <div className={styles.coverageTableWrap}>
+          <table className={styles.coverageTable}>
+            <thead><tr><th>Категория</th>{(Object.keys(difficultyLabels) as Difficulty[]).map((item) => <th key={item}>{difficultyLabels[item]}</th>)}<th>Всего</th><th>Состояние</th></tr></thead>
+            <tbody>{coverage.categories.map((item) => {
+              const unused = item.requiredTotal === 0 || (item.status as string) === 'unused';
+              const statusLabel = unused ? 'Без тематической квоты' : item.status === 'enough' ? 'Достаточно' : 'Дефицит';
+              const explanation = item.deficits.length > 0
+                ? item.deficits.join(' · ')
+                : unused
+                  ? 'Для категории нет обязательной квоты в сбалансированном профиле; обычный селектор по-прежнему может выбрать её вопросы.'
+                  : null;
+              return (
+                <tr key={item.categoryId} data-status={unused ? 'unused' : item.status}>
+                  <td data-label="Категория"><strong>{item.name}</strong></td>
+                  {(Object.keys(difficultyLabels) as Difficulty[]).map((difficulty) => <td key={difficulty} data-label={difficultyLabels[difficulty]}>{item.counts[difficulty]}</td>)}
+                  <td data-label="Всего">{item.counts.total}</td>
+                  <td data-label="Состояние">
+                    <span className={unused ? styles.coverageNeutral : item.status === 'enough' ? styles.bankActive : styles.bankInactive}>{statusLabel}</span>
+                    {explanation && <small>{explanation}</small>}
+                  </td>
+                </tr>
+              );
+            })}</tbody>
+          </table>
+        </div>
+      </section>
+      <section className={styles.bankOperationWorkspace}>
+        <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Очередь качества</p><h3>Что проверить в первую очередь</h3><p>Причины сформированы по фактическим ответам; решение всегда остаётся за администратором.</p></div><span>{actionableQueue.length} требуют решения · {waitingForData} ждут выборки</span></header>
+        {(waitingForData > 0 || disabledCount > 0) && <div className={styles.qualityQueueSummary}><span>{waitingForData} вопросов ждут данных</span>{disabledCount > 0 && <span>{disabledCount} выключено</span>}</div>}
+        {actionableQueue.length === 0 ? <BankEmpty compact title="Нет вопросов, требующих решения" message={waitingForData ? 'Наблюдения накапливаются. Вопросы с малой выборкой не перегружают рабочую очередь.' : 'По текущей выборке вопросы не требуют действий администратора.'} /> : <ol className={styles.qualityQueue}>{actionableQueue.map((item) => <li key={item.questionId}><div><span className={item.qualityStatus === 'review' ? styles.bankInactive : styles.qualityQueueObserve}>{item.qualityStatus === 'review' ? 'Проверить' : 'Наблюдать'}</span><strong>Вопрос #{item.questionId}</strong><small>{item.topic} · {difficultyLabels[item.difficulty] ?? item.difficulty}</small></div><ul>{item.warnings.map((warning) => <li key={warning}>{qualityWarningText[warning] ?? warning}</li>)}</ul><div className={styles.qualityQueueActions}><a className={styles.secondaryButton} href={appPath(item.analyticsHref)}>Аналитика</a><a className={styles.primaryButton} href={appPath(item.editorHref)} onClick={(event) => { event.preventDefault(); onOpenQuestion(item.questionId); }}>Открыть вопрос</a></div></li>)}</ol>}
+      </section>
     </div>
   );
 }
@@ -984,20 +1930,20 @@ function QuestionEditor({
         <header><span>01</span><div><h3>Классификация</h3><p>Тема определяет квоту, сложность — вес и пул выбора.</p></div></header>
         <div className={styles.bankEditorGrid}>
           <label>
-            <span>Тема</span>
-            <input
-              list="question-bank-topics"
+            <span>Категория</span>
+            <select
               value={draft.topic}
               onChange={(event) => {
                 const value = event.target.value;
                 onChange((current) => ({ ...current, topic: value }));
               }}
               required
-              maxLength={80}
-              placeholder="Например, Сети"
-            />
-            <datalist id="question-bank-topics">{topics.map((topic) => <option value={topic} key={topic} />)}</datalist>
-            <small>{draft.topic.length} / 80</small>
+            >
+              <option value="">Выберите категорию</option>
+              {draft.topic && !topics.includes(draft.topic) && <option value={draft.topic} disabled>{draft.topic} · недоступна</option>}
+              {topics.map((topic) => <option value={topic} key={topic}>{topic}</option>)}
+            </select>
+            <small>Новую категорию сначала добавьте в разделе «Категории».</small>
           </label>
           <label>
             <span>Сложность</span>
@@ -1163,13 +2109,15 @@ function BankEmpty({
   title,
   message,
   action,
+  compact = false,
 }: {
   title: string;
   message: string;
   action?: () => void;
+  compact?: boolean;
 }) {
   return (
-    <div className={styles.emptyState}>
+    <div className={`${styles.emptyState} ${compact ? styles.compactState : ''}`}>
       <span aria-hidden="true">◇</span>
       <strong>{title}</strong>
       <p>{message}</p>

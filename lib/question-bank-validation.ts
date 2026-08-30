@@ -3,8 +3,12 @@ import { selectUniqueQuestionPlan } from './question-selection.ts';
 
 export type QuestionDefinition = {
   id: number;
+  /** Stable catalog relation; operational metadata, not canonical question content. */
+  categoryId?: number | null;
   difficulty: Difficulty;
   topic: string;
+  /** Stable category identity used by readiness/selection; not canonical question content. */
+  selectionTopic?: string;
   prompt: string;
   contextType?: QuestionContextType;
   context?: string;

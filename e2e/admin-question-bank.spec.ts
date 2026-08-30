@@ -82,9 +82,12 @@ test('API банка сохраняет immutable-редакции, CAS и ид�
   );
   expect(initial.readiness.ready).toBe(true);
   expect(initial.nextCursor).not.toBeNull();
+  const topic = initial.topics[0];
+  const revisionTopic = initial.topics[1] ?? topic;
+  expect(topic).toBeTruthy();
   const suffix = `${testInfo.project.name}-${randomUUID().slice(0, 8)}`;
   const createKey = `create-${randomUUID()}`;
-  const createBody = draft(suffix, initial.currentBankRevision, createKey);
+  const createBody = draft(suffix, initial.currentBankRevision, createKey, { topic });
 
   const csrfRejected = await page.request.post('/api/admin/questions', { data: createBody });
   expect(csrfRejected.status()).toBe(403);
@@ -125,17 +128,19 @@ test('API банка сохраняет immutable-редакции, CAS и ид�
 
   const stale = await page.request.post('/api/admin/questions', {
     headers: mutationHeaders(csrfToken),
-    data: draft(`${suffix}-stale`, initial.currentBankRevision, `stale-${randomUUID()}`),
+    data: draft(`${suffix}-stale`, initial.currentBankRevision, `stale-${randomUUID()}`, { topic }),
   });
   expect(stale.status()).toBe(409);
   expect(await stale.json()).toMatchObject({ error: 'bank_revision_conflict' });
 
   const revisionKey = `revise-${randomUUID()}`;
   const revisionBody = draft(suffix, created.currentBankRevision, revisionKey, {
-    topic: `E2E Сети ${suffix}`,
+    topic: revisionTopic,
     difficulty: 'hard',
     prompt: `Как проверить сетевую доступность в сценарии ${suffix}?`,
-    dedupeKey: `e2e:network-${suffix.toLowerCase().replace(/[^a-z0-9]+/gu, '-')}`,
+    // Portrait and landscape exercise the same concept in one shared E2E D1.
+    // A stable semantic key explicitly marks those formulations as one pool.
+    dedupeKey: 'e2e:admin-bank-network-check',
     note: 'Переназначены тема и сложность',
   });
   const revised = await json<QuestionAdminMutationDto>(await page.request.put(
@@ -144,7 +149,7 @@ test('API банка сохраняет immutable-редакции, CAS и ид�
   ), 201);
   expect(revised.previousQuestionId).toBe(created.question.id);
   expect(revised.question.id).toBeGreaterThan(created.question.id);
-  expect(revised.question.topic).toBe(`E2E Сети ${suffix}`);
+  expect(revised.question.topic).toBe(revisionTopic);
   expect(revised.question.difficulty).toBe('hard');
 
   const reviseReplay = await json<QuestionAdminMutationDto>(await page.request.put(
@@ -230,6 +235,7 @@ test('API банка сохраняет immutable-редакции, CAS и ид�
   const invalid = await page.request.post('/api/admin/questions', {
     headers: mutationHeaders(csrfToken),
     data: draft(`${suffix}-invalid`, activated.currentBankRevision, `invalid-${randomUUID()}`, {
+      topic,
       prompt: 'x'.repeat(281),
     }),
   });
@@ -255,6 +261,7 @@ test('API банка сохраняет immutable-редакции, CAS и ид�
     `${suffix}-concurrent-${index}`,
     concurrencyRevision,
     `concurrent-${index}-${randomUUID()}`,
+    { topic, dedupeKey: 'e2e:admin-bank-concurrent' },
   ));
   const concurrent = await Promise.all(concurrentBodies.map((data) => page.request.post(
     '/api/admin/questions',
@@ -263,7 +270,7 @@ test('API банка сохраняет immutable-редакции, CAS и ид�
   expect(concurrent.map((response) => response.status()).sort()).toEqual([201, 409]);
 });
 
-test('iPad UI создаёт вопрос и выпускает новую категорию редакцией', async ({ page }, testInfo) => {
+test('iPad UI создаёт вопрос и переназначает категорию новой редакцией', async ({ page }, testInfo) => {
   await login(page);
   await page.getByRole('tab', { name: 'Вопросы', exact: true }).click();
   await page.getByRole('tab', { name: 'Банк вопросов', exact: true }).click();
@@ -276,7 +283,14 @@ test('iPad UI создаёт вопрос и выпускает новую ка�
   const suffix = `${testInfo.project.name}-${randomUUID().slice(0, 8)}`;
   await page.getByRole('button', { name: 'Новый вопрос' }).click();
   const createDialog = page.getByRole('dialog', { name: 'Новый вопрос' });
-  await createDialog.getByLabel('Тема').fill(`UI ${suffix}`);
+  const categorySelect = createDialog.getByLabel('Категория');
+  const categoryOptions = await categorySelect.locator('option:not([disabled])').allTextContents();
+  const createCategory = categoryOptions.find((value) => value !== 'Выберите категорию');
+  const reviseCategory = categoryOptions.find((value) => (
+    value !== 'Выберите категорию' && value !== createCategory
+  )) ?? createCategory;
+  expect(createCategory).toBeTruthy();
+  await categorySelect.selectOption({ label: createCategory! });
   await page.keyboard.press('Escape');
   const discardDialog = page.getByRole('alertdialog', { name: 'Отменить несохранённые изменения?' });
   await expect(discardDialog).toBeVisible();
@@ -304,7 +318,7 @@ test('iPad UI создаёт вопрос и выпускает новую ка�
   const originalId = Number(originalTitle.replace(/\D/gu, ''));
   await viewer.getByRole('button', { name: 'Создать новую редакцию' }).click();
   const reviseDialog = page.getByRole('dialog', { name: `Новая редакция #${originalId}` });
-  await reviseDialog.getByLabel('Тема').fill(`UI Security ${suffix}`);
+  await reviseDialog.getByLabel('Категория').selectOption({ label: reviseCategory! });
   await reviseDialog.getByLabel('Сложность').selectOption('medium');
   const reviseResponse = page.waitForResponse((response) => (
     new URL(response.url()).pathname === `/api/admin/questions/${originalId}`
@@ -314,7 +328,7 @@ test('iPad UI создаёт вопрос и выпускает новую ка�
   expect((await reviseResponse).status()).toBe(201);
 
   const revisedViewer = page.getByRole('dialog', { name: /Вопрос #\d+/u });
-  await expect(revisedViewer.getByText(`UI Security ${suffix}`, { exact: true })).toBeVisible();
+  await expect(revisedViewer.getByText(reviseCategory!, { exact: true })).toBeVisible();
   await expect(revisedViewer.getByText('Средний', { exact: true })).toBeVisible();
   await expect(revisedViewer.getByRole('button', { name: `#${originalId}`, exact: true })).toBeVisible();
   await expect(revisedViewer.getByText('Создана новая редакция', { exact: true })).toBeVisible();
