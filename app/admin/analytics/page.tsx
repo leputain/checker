@@ -1935,7 +1935,7 @@ function CandidateDetail({
           <div className={styles.candidateHero}>
             <div>
               <p className={styles.eyebrow}>Отчёт кандидата</p>
-              <h2 className={styles.candidateName}>{detail.data.candidateName ?? 'Имя было удалено по прежней политике хранения'}</h2>
+              <p className={styles.candidateName}>{detail.data.candidateName ?? 'Имя было удалено по прежней политике хранения'}</p>
               <p className={styles.candidateAlias}>{detail.data.alias} · попытка {detail.data.attemptId.slice(-8)}</p>
               <h3>{detail.data.score} / 100 баллов</h3>
               <VerdictBadge verdict={detail.data.verdict} />
