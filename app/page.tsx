@@ -1458,13 +1458,13 @@ function TimerDial({
 
 function TotalTimer({ seconds, maximum }: { seconds: number; maximum: number }) {
   const remaining = Math.min(maximum, Math.max(0, seconds));
-  const percent = maximum > 0 ? (remaining / maximum) * 100 : 0;
+  const progress = maximum > 0 ? remaining / maximum : 0;
   return (
     <div className="total-timer" role="timer" aria-label={`Весь тест: ${formatTime(remaining)}`}>
       <span>Весь тест</span>
       <strong>{formatTime(remaining)}</strong>
       <span className="total-timer-track" aria-hidden="true">
-        <i style={{ width: `${percent}%` }} />
+        <i style={{ transform: `scaleX(${progress})` }} />
       </span>
     </div>
   );

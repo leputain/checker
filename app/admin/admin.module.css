@@ -137,7 +137,7 @@
   cursor: pointer;
   font-size: 12px;
   font-weight: 850;
-  transition: transform .2s ease, border-color .2s ease, background .2s ease, opacity .2s ease;
+  transition: transform .16s var(--ease-out), border-color .2s ease, background .2s ease, opacity .2s ease;
 }
 
 .primaryButton {
@@ -179,7 +179,7 @@
   font-size: 12px;
   font-weight: 800;
   text-decoration: none;
-  transition: border-color .2s ease, background .2s ease, color .2s ease;
+  transition: transform .16s var(--ease-out), border-color .2s ease, background .2s ease, color .2s ease;
 }
 .error, .filterError { margin: 0; color: #ffad9d; font-size: 12px; line-height: 1.45; }
 .stateMessage { margin: 24px 0 0; color: #a8bbb2; line-height: 1.55; }
@@ -949,6 +949,13 @@
   .helpHeroActions a:hover, .helpCard button:hover, .helpContents a:hover { border-color: rgba(174, 242, 212, .28); color: #e7f5ee; background: rgba(255, 255, 255, .065); }
 }
 
+.primaryButton:active:not(:disabled),
+.secondaryButton:active:not(:disabled),
+.quietButton:active:not(:disabled),
+.headerButton:active:not(:disabled),
+.dangerButton:active:not(:disabled),
+.loginBackLink:active { transform: scale(.97); }
+
 @media (max-width: 1220px) {
   .cohortFilterGrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .filterActions { justify-content: flex-end; }
@@ -1132,9 +1139,19 @@
 
 @media (prefers-reduced-motion: reduce) {
   .detailBackdrop, .detailDialog, .loadingState i { animation: none; }
-  .primaryButton, .secondaryButton, .quietButton, .headerButton, .dataTable tbody tr { transition: none; }
-  .bankSwitch > span, .bankSwitch > span::after { transition: none; }
-  .bankWorkspaceNav button, .bankQuestionCard { transition: none; }
+  .primaryButton, .secondaryButton, .quietButton, .headerButton, .dangerButton, .loginBackLink, .dataTable tbody tr { transition-property: color, background-color, border-color, opacity; transition-duration: .16s; }
+  .primaryButton:active:not(:disabled), .secondaryButton:active:not(:disabled), .quietButton:active:not(:disabled), .headerButton:active:not(:disabled), .dangerButton:active:not(:disabled), .loginBackLink:active { transform: none; }
+  .bankSwitch > span, .bankSwitch > span::after, .bankWorkspaceNav button, .bankQuestionCard { transition: none; }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .loginCard, .adminHeader, .filterBar, .detailBackdrop, .detailDialog, .bankEditorFooter, .bankSelectionBar { backdrop-filter: none; }
+  .loginCard, .detailDialog { background: #102019; }
+}
+
+@media (prefers-contrast: more) {
+  .loginCard, .filterBar, .metricCard, .analyticsCard, .detailDialog, .dataTable, .bankQuestionCard { border-color: rgba(238, 255, 247, .38); }
+  .loginForm > p, .loginFootnote, .dataTable td, .emptyState p, .errorState p { color: #c6d6ce; }
 }
 
 @media print {
