@@ -18,6 +18,7 @@ import migration0015 from '../drizzle/0015_mighty_adam_destine.sql?raw';
 import migration0016 from '../drizzle/0016_free_khan.sql?raw';
 import migration0017 from '../drizzle/0017_narrow_baron_zemo.sql?raw';
 import migration0018 from '../drizzle/0018_abnormal_captain_midlands.sql?raw';
+import migration0019 from '../drizzle/0019_mute_rhino.sql?raw';
 import {
   BASE_MAX_SCORE,
   calculateAccuracy,
@@ -36,6 +37,11 @@ import {
   TEST_CONFIG_JSON,
   type Difficulty,
 } from '@/lib/test-config.ts';
+import {
+  SECURITY_CHALLENGE_CONFIG_ID,
+  SECURITY_CHALLENGE_CONFIG_JSON,
+  SECURITY_CHALLENGE_SCORING_VERSION,
+} from '@/lib/security-challenge-config.ts';
 import {
   summarizeAttemptBreakdown,
   summarizeAttemptStatistics,
@@ -65,7 +71,7 @@ import {
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 17;
+export const CURRENT_SCHEMA_VERSION = 18;
 
 export type QuestionRow = {
   id: number;
@@ -160,22 +166,23 @@ const MANAGED_MIGRATIONS = [
   { version: 15, name: 'analytics-refresh-lease-0016', sql: migration0016 },
   { version: 16, name: 'question-bank-admin-0017-narrow-baron-zemo', sql: migration0017 },
   { version: 17, name: 'question-bank-workflow-0018-abnormal-captain-midlands', sql: migration0018 },
+  { version: 18, name: 'security-challenge-0019-mute-rhino', sql: migration0019 },
 ] as const;
 
 async function ensureCurrentTestConfigVersion() {
   const db = database();
   const configs = [
-    { id: TEST_CONFIG_ID, json: TEST_CONFIG_JSON },
-    { id: BALANCED_TEST_CONFIG_ID, json: BALANCED_TEST_CONFIG_JSON },
+    { id: TEST_CONFIG_ID, json: TEST_CONFIG_JSON, scoringVersion: SCORING_VERSION, hashed: true },
+    { id: BALANCED_TEST_CONFIG_ID, json: BALANCED_TEST_CONFIG_JSON, scoringVersion: SCORING_VERSION, hashed: true },
   ];
   for (const config of configs) {
-    if (await sha256Hex(config.json) !== config.id) {
+    if (config.hashed && await sha256Hex(config.json) !== config.id) {
       throw new Error('test_config_hash_mismatch');
     }
     await db.prepare(`INSERT OR IGNORE INTO test_config_versions (
       id, scoring_version, config_json, created_at
     ) VALUES (?, ?, ?, ?)`)
-      .bind(config.id, SCORING_VERSION, config.json, Date.now())
+      .bind(config.id, config.scoringVersion, config.json, Date.now())
       .run();
     const stored = await db.prepare(`SELECT scoring_version, config_json
       FROM test_config_versions WHERE id = ?`)
@@ -183,12 +190,30 @@ async function ensureCurrentTestConfigVersion() {
       .first<{ scoring_version: number; config_json: string }>();
     if (
       !stored ||
-      stored.scoring_version !== SCORING_VERSION ||
+      stored.scoring_version !== config.scoringVersion ||
       stored.config_json !== config.json
     ) {
       throw new Error('test_config_identity_conflict');
     }
   }
+  await db.prepare(`INSERT OR IGNORE INTO security_challenge_configs (
+    id, scoring_version, config_json, created_at
+  ) VALUES (?, ?, ?, ?)`)
+    .bind(
+      SECURITY_CHALLENGE_CONFIG_ID,
+      SECURITY_CHALLENGE_SCORING_VERSION,
+      SECURITY_CHALLENGE_CONFIG_JSON,
+      Date.now(),
+    ).run();
+  const challengeConfig = await db.prepare(`SELECT scoring_version, config_json
+    FROM security_challenge_configs WHERE id = ?`)
+    .bind(SECURITY_CHALLENGE_CONFIG_ID)
+    .first<{ scoring_version: number; config_json: string }>();
+  if (
+    !challengeConfig
+    || challengeConfig.scoring_version !== SECURITY_CHALLENGE_SCORING_VERSION
+    || challengeConfig.config_json !== SECURITY_CHALLENGE_CONFIG_JSON
+  ) throw new Error('security_challenge_config_identity_conflict');
 }
 
 function migrationStatements(sql: string) {

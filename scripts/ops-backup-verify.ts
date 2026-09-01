@@ -75,6 +75,10 @@ export async function verifyBackup(
       analytics_daily_choice_aggregates: count('analytics_daily_choice_aggregates'),
       analytics_daily_timing_aggregates: count('analytics_daily_timing_aggregates'),
       analytics_candidate_dimensions: count('analytics_candidate_dimensions'),
+      security_challenge_configs: count('security_challenge_configs'),
+      security_challenge_attempts: count('security_challenge_attempts'),
+      security_challenge_question_events: count('security_challenge_question_events'),
+      security_challenge_feedback: count('security_challenge_feedback'),
       schema_version: tables.has('schema_migrations')
         ? '(SELECT COALESCE(MAX(version), 0) FROM schema_migrations)'
         : '0',

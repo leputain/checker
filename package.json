@@ -1,9 +1,16 @@
 {
   "name": "candidate-check",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24.20.0 <25"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=24.20.0 <25",
+      "onFail": "error"
+    }
   },
   "scripts": {
     "dev": "node --experimental-strip-types scripts/run-local.ts dev",
@@ -30,8 +37,9 @@
     "analytics:explain": "node --experimental-strip-types scripts/analytics-explain.ts",
     "db:demo:seed": "node --experimental-strip-types scripts/demo-candidates.ts",
     "db:demo:clear": "node --experimental-strip-types scripts/demo-candidates.ts --clear",
-    "test": "npm run test:scoring && npm run test:attempts && npm run test:model && npm run test:bank && npm run test:leaderboard && npm run test:telegram && npm run test:admin && npm run test:analytics",
+    "test": "npm run test:scoring && npm run test:challenge && npm run test:attempts && npm run test:model && npm run test:bank && npm run test:leaderboard && npm run test:telegram && npm run test:admin && npm run test:analytics",
     "test:scoring": "node --experimental-strip-types scripts/scoring.test.ts",
+    "test:challenge": "node --experimental-strip-types scripts/security-challenge.test.ts",
     "test:attempts": "node --experimental-strip-types scripts/attempt-policy.test.ts && node --experimental-strip-types scripts/attempt-review.test.ts",
     "test:model": "node --experimental-strip-types scripts/model-identity.test.ts && node --experimental-strip-types scripts/balanced-selection.test.ts && node --experimental-strip-types scripts/candidate-insights.test.ts",
     "test:bank": "node --experimental-strip-types scripts/question-bank.test.ts && node --experimental-strip-types scripts/question-bank-readiness.test.ts && node --experimental-strip-types scripts/question-bank-workflow.test.ts && node --experimental-strip-types scripts/question-catalog.test.ts",
@@ -55,7 +63,7 @@
     "@cloudflare/workers-types": "4.20260515.1",
     "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "4.2.1",
-    "@types/node": "22.19.19",
+    "@types/node": "24.13.3",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",

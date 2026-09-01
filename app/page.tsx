@@ -363,6 +363,7 @@ export default function Home() {
   const [aborting, setAborting] = useState(false);
   const [notice, setNotice] = useState('');
   const [connectivity, setConnectivity] = useState<Connectivity>('checking');
+  const [challengeAvailable, setChallengeAvailable] = useState(false);
   const submittingRef = useRef(false);
   const timeoutBackoffUntilRef = useRef(0);
   const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
@@ -464,6 +465,20 @@ export default function Home() {
       setConnectivity(navigator.onLine ? 'service-error' : 'offline');
       return false;
     }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(appPath('/api/challenges/infosec/config'), {
+      signal: controller.signal,
+      cache: 'no-store',
+      credentials: 'same-origin',
+    }).then(async (response) => {
+      if (!response.ok) return;
+      const payload = await response.json() as { enabled?: boolean; ready?: boolean };
+      setChallengeAvailable(payload.enabled === true && payload.ready === true);
+    }).catch(() => undefined);
+    return () => controller.abort();
   }, []);
 
   const resetUnsupportedAttempt = useCallback(() => {
@@ -1225,6 +1240,9 @@ export default function Home() {
       >
         <div className="brand"><span className="brand-mark" aria-hidden="true" /><span>Candidate Check</span><span className="release-tag">v{APP_RELEASE}</span></div>
         <div className="header-actions">
+          {challengeAvailable && (
+            <a className="challenge-entry-link" href={appPath('/challenge')}>ИБ-челлендж</a>
+          )}
           <button
             ref={leaderboardButtonRef}
             className="text-button"

@@ -4,6 +4,7 @@ import { maintainRuntimeRetention } from '@/db/runtime-retention';
 import { database, ensureSchema, sha256Hex } from '@/db/runtime';
 import { maintainAnalyticsAggregates } from '@/lib/analytics-aggregate-store.ts';
 import { readFeatureFlags } from '@/lib/feature-flags.ts';
+import { maintainSecurityChallengeAttempts } from '@/db/security-challenge.ts';
 
 const NO_STORE = { 'Cache-Control': 'no-store, max-age=0' };
 
@@ -37,6 +38,7 @@ export async function POST(request: Request) {
     await ensureSchema();
     await maintainTelegramOutbox();
     await maintainRuntimeRetention();
+    await maintainSecurityChallengeAttempts();
     if (readFeatureFlags(env).analytics) {
       try {
         const analytics = await maintainAnalyticsAggregates(database());

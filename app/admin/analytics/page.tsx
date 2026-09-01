@@ -53,9 +53,10 @@ import {
 } from '../admin-client.ts';
 import { AdminHelpPanel } from '../help-panel.tsx';
 import { QuestionBankPanel } from '../question-bank-panel.tsx';
+import { SecurityChallengeAdminPanel } from '../security-challenge-panel.tsx';
 import styles from '../admin.module.css';
 
-type AnalyticsTab = 'overview' | 'questions' | 'bank' | 'candidates' | 'topics' | 'difficulty' | 'help';
+type AnalyticsTab = 'overview' | 'questions' | 'bank' | 'challenge' | 'candidates' | 'topics' | 'difficulty' | 'help';
 type SessionState = 'checking' | 'ready' | 'disabled' | 'unavailable';
 type RefreshState = 'idle' | 'required' | 'refreshing' | 'failed';
 
@@ -63,6 +64,7 @@ const tabLabels: Record<AnalyticsTab, string> = {
   overview: 'Обзор',
   questions: 'Аналитика вопросов',
   bank: 'Банк вопросов',
+  challenge: 'ИБ-челлендж',
   candidates: 'Кандидаты',
   topics: 'Темы',
   difficulty: 'Сложность',
@@ -498,7 +500,7 @@ export default function AdminAnalyticsPage() {
     return <AdminStatePage title={title} message={message} retry={sessionState === 'unavailable'} />;
   }
 
-  const showAnalyticsControls = activeTab !== 'bank' && activeTab !== 'help';
+  const showAnalyticsControls = activeTab !== 'bank' && activeTab !== 'challenge' && activeTab !== 'help';
 
   return (
     <main className={styles.shell}>
@@ -613,6 +615,12 @@ export default function AdminAnalyticsPage() {
               onAdminError={handleAdminError}
               bankQuestionId={bankQuestionId}
               onQuestionEditorClosed={clearQuestionEditorLink}
+            />
+          )}
+          {activeTab === 'challenge' && (
+            <SecurityChallengeAdminPanel
+              csrfToken={session?.csrfToken ?? ''}
+              onAdminError={handleAdminError}
             />
           )}
           {activeTab === 'candidates' && (

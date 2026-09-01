@@ -34,6 +34,10 @@ type Counts = {
   analytics_daily_choice_aggregates: number;
   analytics_daily_timing_aggregates: number;
   analytics_candidate_dimensions: number;
+  security_challenge_configs: number;
+  security_challenge_attempts: number;
+  security_challenge_question_events: number;
+  security_challenge_feedback: number;
   schema_version: number;
   bank_revision: string | null;
 };
@@ -102,6 +106,10 @@ export async function createBackup(options: BackupOptions = {}) {
       ${count('analytics_daily_choice_aggregates')} AS analytics_daily_choice_aggregates,
       ${count('analytics_daily_timing_aggregates')} AS analytics_daily_timing_aggregates,
       ${count('analytics_candidate_dimensions')} AS analytics_candidate_dimensions,
+      ${count('security_challenge_configs')} AS security_challenge_configs,
+      ${count('security_challenge_attempts')} AS security_challenge_attempts,
+      ${count('security_challenge_question_events')} AS security_challenge_question_events,
+      ${count('security_challenge_feedback')} AS security_challenge_feedback,
       ${tables.has('schema_migrations')
         ? '(SELECT COALESCE(MAX(version), 0) FROM schema_migrations)'
         : '0'} AS schema_version,

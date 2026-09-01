@@ -33,6 +33,7 @@ const localBindingConfig = {
     BALANCED_SELECTION_SHADOW: process.env.BALANCED_SELECTION_SHADOW ?? '1',
     CALIBRATION_ENABLED: process.env.CALIBRATION_ENABLED ?? '1',
     ANALYTICS_EXPORT_ENABLED: process.env.ANALYTICS_EXPORT_ENABLED ?? '1',
+    SECURITY_CHALLENGE_ENABLED: process.env.SECURITY_CHALLENGE_ENABLED ?? '0',
   },
   d1_databases: [
     {

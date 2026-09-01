@@ -18,6 +18,7 @@ declare namespace Cloudflare {
     BALANCED_SELECTION_SHADOW?: string;
     CALIBRATION_ENABLED?: string;
     ANALYTICS_EXPORT_ENABLED?: string;
+    SECURITY_CHALLENGE_ENABLED?: string;
   }
 }
 

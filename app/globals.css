@@ -171,6 +171,8 @@ button:focus-visible,input:focus-visible,[tabindex]:focus-visible { outline:3px 
 .abort-dialog .muted { margin:14px 0 0; }
 .dialog-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:28px; }
 .header-actions { display:flex; align-items:center; gap:24px; }
+.challenge-entry-link { min-height:36px; display:inline-flex; align-items:center; padding:0 13px; border:1px solid rgba(96,215,170,.34); border-radius:999px; color:#91e4c2; background:rgba(38,130,97,.1); text-decoration:none; font-size:11px; font-weight:850; letter-spacing:.04em; transition:transform .16s var(--ease-out),background .2s ease,border-color .2s ease; }
+.challenge-entry-link:hover { background:rgba(53,166,124,.17); border-color:rgba(116,230,187,.55); }
 .loading-shell { display:grid; place-items:center; align-content:center; gap:14px; color:var(--muted); }
 .loading-shell p { margin:0; font-size:12px; letter-spacing:.06em; }
 .recovery-shell { text-align:center; }
@@ -318,6 +320,10 @@ button:focus-visible,input:focus-visible,[tabindex]:focus-visible { outline:3px 
   .primary-button,.answer,.text-button,.close-button,.admin-entry-link,.abort-button,.ghost-button,.danger-button,.leaderboard-tabs button,.error-review-card summary i { transition-property:color,background-color,border-color,box-shadow,opacity!important; transition-duration:.16s!important; }
   .primary-button:active:not(:disabled),.answer:active,.answer.selected,.answer.selected:active,.text-button:active,.close-button:active,.admin-entry-link:active,.ghost-button:active:not(:disabled),.abort-button:active:not(:disabled),.danger-button:active:not(:disabled) { transform:none!important; }
   .timer-dial,.total-timer-track i,.progress-track span { transition:none!important; }
+}
+@media (max-width:520px) {
+  .challenge-entry-link { font-size:0; padding:0 10px; }
+  .challenge-entry-link::after { content:'ИБ'; font-size:11px; }
 }
 @media (prefers-reduced-transparency:reduce) { .glass-card,.modal-backdrop,.leaderboard-card { backdrop-filter:none; background-color:#102019; } }
 @media (prefers-contrast:more) { :root { --muted:#c6d6ce; --line:rgba(238,255,247,.34); } .glass-card,.answer,.total-timer,.status-chip { border-color:rgba(238,255,247,.42); } }

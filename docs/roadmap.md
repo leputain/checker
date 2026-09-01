@@ -1,5 +1,9 @@
 # Candidate Check Analytics: статус v1.0 и следующий цикл
 
+Реализованная спецификация отдельного ИБ-челленджа находится в
+[`security-challenge-plan.md`](security-challenge-plan.md). Челлендж работает как
+изолированный контур и не меняет scoring, verdict, аналитику или рейтинг кандидатского теста.
+
 ## Что завершено
 
 - `v0.7.1`: immutable model identity, `attempt_questions`, exact answer facts, revision membership, полный base/additional breakdown и cohort-aware leaderboard.

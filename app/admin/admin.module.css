@@ -1166,3 +1166,26 @@
   .printSurface .metricCard, .printSurface .analyticsCard { color: #111; border-color: #ddd; background: #fff; }
   .printSurface .barTrack { background: #eee; }
 }
+.challengeAdmin { display:grid; gap:24px; }
+.challengeAdminActions { display:flex; align-items:center; gap:8px; }.challengeAdminActions a { min-height:38px; display:inline-flex; align-items:center; padding:0 12px; border:1px solid var(--line); border-radius:10px; color:var(--ink); text-decoration:none; font-size:11px; font-weight:800; }
+.challengeAdminState { min-height:260px; display:grid; place-items:center; align-content:center; gap:12px; color:var(--muted); }
+.challengeMetrics { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
+.challengeSectionHeading { display:flex; justify-content:space-between; align-items:end; gap:20px; margin-bottom:22px; }
+.challengeSectionHeading h3 { margin:0; font-size:24px; }
+.challengeSectionHeading>span { color:var(--muted); font-size:12px; }
+.challengeTableWrap { width:100%; overflow:auto; }
+.challengeTable { width:100%; border-collapse:collapse; font-size:12px; }
+.challengeTable th { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.07em; text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); white-space:nowrap; }
+.challengeTable td { padding:12px; border-bottom:1px solid var(--line); vertical-align:top; line-height:1.45; }
+.challengeTable td:first-child { min-width:220px; max-width:460px; }
+.challengeAttemptLink { border:0; padding:0; color:#84d8b7; background:transparent; cursor:pointer; font:inherit; font-weight:800; text-align:left; text-decoration:underline; text-decoration-color:rgba(132,216,183,.35); }
+.challengeAttemptDetail { margin-top:20px; padding:20px; border:1px solid var(--line); border-radius:16px; background:rgba(0,0,0,.1); }.challengeAttemptDetail>header { display:flex; justify-content:space-between; align-items:start; gap:15px; }.challengeAttemptDetail h4 { margin:0; font-size:22px; }.challengeDetailMetrics { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; margin:18px 0; background:var(--line); }.challengeDetailMetrics span { display:grid; gap:5px; padding:13px; background:var(--surface); color:var(--muted); font-size:10px; }.challengeDetailMetrics strong { color:var(--ink); font-size:18px; }.challengeDetailReview { display:grid; gap:8px; }.challengeDetailReview details { border:1px solid var(--line); border-radius:10px; padding:12px; }.challengeDetailReview summary { cursor:pointer; font-weight:800; }.challengeDetailReview h5 { font-size:14px; line-height:1.5; }.challengeDetailReview ol { display:grid; gap:5px; padding-left:24px; }.challengeDetailReview li { color:var(--muted); }.challengeDetailReview li[data-selected] { color:#e9b879; }.challengeDetailReview li[data-correct] { color:#73d9b2; }
+.challengeEmpty { color:var(--muted); }
+.challengeFeedbackList { display:grid; gap:12px; }
+.challengeFeedback { border:1px solid var(--line); border-radius:16px; background:rgba(255,255,255,.02); padding:18px; }
+.challengeFeedback header { display:flex; align-items:center; justify-content:space-between; gap:14px; }
+.challengeFeedback header div { display:grid; gap:4px; }.challengeFeedback time { color:var(--muted); font-size:10px; }.challengeFeedback header>span { color:#f2bd79; font-size:10px; text-transform:uppercase; }
+.challengeFeedback h4 { margin:16px 0 8px; }.challengeFeedback blockquote { margin:0 0 14px; padding:12px 14px; border-left:2px solid #65c8a2; background:rgba(64,174,131,.06); color:#b9cec5; }
+.challengeFeedback textarea { width:100%; min-height:80px; box-sizing:border-box; border:1px solid var(--line); border-radius:10px; background:rgba(0,0,0,.16); color:var(--ink); padding:11px; font:inherit; }.challengeFeedback>div { display:flex; justify-content:flex-end; gap:9px; margin-top:10px; }
+@media (max-width:1100px) { .challengeMetrics { grid-template-columns:repeat(3,1fr); } }
+@media (max-width:650px) { .challengeMetrics { grid-template-columns:repeat(2,1fr); }.challengeSectionHeading { align-items:flex-start; flex-direction:column; } }

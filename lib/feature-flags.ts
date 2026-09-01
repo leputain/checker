@@ -4,6 +4,7 @@ export type CandidateCheckFeatureFlags = {
   balancedSelectionShadow: boolean;
   calibration: boolean;
   analyticsExport: boolean;
+  securityChallenge: boolean;
 };
 
 function enabled(value: string | undefined, fallback: boolean) {
@@ -18,5 +19,6 @@ export function readFeatureFlags(environment: Partial<Cloudflare.Env>): Candidat
     balancedSelectionShadow: enabled(environment.BALANCED_SELECTION_SHADOW, true),
     calibration: enabled(environment.CALIBRATION_ENABLED, true),
     analyticsExport: enabled(environment.ANALYTICS_EXPORT_ENABLED, true),
+    securityChallenge: enabled(environment.SECURITY_CHALLENGE_ENABLED, false),
   };
 }

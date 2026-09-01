@@ -25,6 +25,26 @@ Invoke-RestMethod http://localhost:3001/api/health/ready
 
 Ожидается `live.status=ok` и `ready.status=ready`. Код `telegram_misconfigured` означает, что новые тесты намеренно заблокированы; уже активные попытки продолжают работать.
 
+### ИБ-челлендж
+
+Локальный `npm run dev` включает челлендж по умолчанию. В preview/production режим
+fail-closed: для включения необходимо явно передать `SECURITY_CHALLENGE_ENABLED=1`.
+Проверка состояния не раскрывает вопросы или ответы:
+
+```powershell
+Invoke-RestMethod http://localhost:3001/api/challenges/infosec/config
+```
+
+Ожидаются `enabled=true`, `ready=true`, `totalTimeSeconds=900`, `questionTimeSeconds=60` и
+ненулевой `poolSize`. При `ready=false` CTA скрыт, новые попытки не создаются; следует
+проверить наличие активных leaf-вопросов со стабильным selection key категории
+«Информационная безопасность» по всем четырём сложностям. Telegram для челленджа не нужен.
+
+Попытки, события, отзывы и конфигурация хранятся в отдельных таблицах схемы 18 и входят в
+штатный backup/restore. Завершённая история сохраняется для рейтинга и аналитики; фоновый
+maintenance закрывает попытки, у которых истёк общий deadline. При быстром rollback
+выключить флаг и перезапустить приложение — миграцию и накопленные данные оставлять на месте.
+
 ## Admin PIN и analytics
 
 Admin-раздел не влияет на readiness candidate flow. Для его включения создать локальный `admin_pin.txt` с одной строкой из 4–12 цифр и перезапустить процесс. Файл игнорируется Git; PIN, его hash/salt и session secret запрещено выводить в логи или передавать через `VITE_*`.
@@ -188,7 +208,7 @@ Baseline 2026-08-28: raw overview `p95 847,9 мс`, raw question-list `p95 3 590
 
 GitHub Actions запускает единый job `verify` для `push` и `pull_request`. В настройках branch protection для `main` следует включить required status check `verify` и требование актуальной ветки перед merge. Релиз или прямой push в `main` не считается завершённым, пока удалённый `verify` не стал зелёным; локальный успешный запуск не заменяет GitHub check.
 
-Workflow использует `actions/checkout@v7` и `actions/setup-node@v7`: это актуальные стабильные major с внутренним Node.js 24 runtime. Версия Node.js приложения и quality gate намеренно остаётся зафиксированной на `22.13.0` — runtime самой Action и тестируемый runtime проекта являются разными контурами.
+Workflow использует `actions/checkout@v7` и `actions/setup-node@v7`. Версия runtime приложения и quality gate читается из `.node-version` и сейчас зафиксирована на Node.js `24.20.0` LTS; `package.json` допускает совместимые обновления внутри major 24, но переход на следующий major выполняется только отдельным проверенным изменением.
 
 Production security gate:
 

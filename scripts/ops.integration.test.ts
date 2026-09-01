@@ -612,6 +612,10 @@ try {
     'telegram_outbox',
     'analytics_refresh_state',
     'analytics_report_aggregates',
+    'security_challenge_configs',
+    'security_challenge_attempts',
+    'security_challenge_question_events',
+    'security_challenge_feedback',
   ]) {
     assert(tables.has(table), `clean migration chain did not create ${table}`);
   }

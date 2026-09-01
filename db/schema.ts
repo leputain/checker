@@ -145,6 +145,120 @@ export const answers = sqliteTable(
   ],
 );
 
+export const securityChallengeConfigs = sqliteTable('security_challenge_configs', {
+  id: text('id').primaryKey(),
+  scoringVersion: integer('scoring_version').notNull(),
+  configJson: text('config_json').notNull(),
+  createdAt: integer('created_at').notNull(),
+});
+
+export const securityChallengeAttempts = sqliteTable(
+  'security_challenge_attempts',
+  {
+    id: text('id').primaryKey(),
+    tokenHash: text('token_hash').notNull(),
+    startKey: text('start_key').notNull(),
+    nickname: text('nickname').notNull(),
+    normalizedNickname: text('normalized_nickname').notNull(),
+    participantKey: text('participant_key').notNull(),
+    configId: text('config_id')
+      .notNull()
+      .references(() => securityChallengeConfigs.id, { onDelete: 'restrict' }),
+    scoringVersion: integer('scoring_version').notNull(),
+    bankRevision: text('bank_revision').notNull(),
+    poolRevision: text('pool_revision').notNull(),
+    poolQuestionIds: text('pool_question_ids').notNull(),
+    status: text('status').notNull().default('active'),
+    completionReason: text('completion_reason'),
+    startedAt: integer('started_at').notNull(),
+    totalDeadlineAt: integer('total_deadline_at').notNull(),
+    currentQuestionStartedAt: integer('current_question_started_at').notNull(),
+    questionDeadlineAt: integer('question_deadline_at').notNull(),
+    currentQuestionId: integer('current_question_id'),
+    currentOrdinal: integer('current_ordinal').notNull().default(1),
+    scoreUnits: integer('score_units').notNull().default(0),
+    correctCount: integer('correct_count').notNull().default(0),
+    incorrectCount: integer('incorrect_count').notNull().default(0),
+    timeoutCount: integer('timeout_count').notNull().default(0),
+    completedAt: integer('completed_at'),
+    durationSeconds: integer('duration_seconds'),
+  },
+  (table) => [
+    uniqueIndex('idx_security_challenge_attempts_start_key').on(table.startKey),
+    index('idx_security_challenge_attempts_active_deadline')
+      .on(table.status, table.totalDeadlineAt),
+    index('idx_security_challenge_attempts_leaderboard').on(
+      table.configId,
+      table.scoringVersion,
+      table.poolRevision,
+      table.status,
+      table.scoreUnits,
+      table.completedAt,
+    ),
+    index('idx_security_challenge_attempts_participant').on(
+      table.participantKey,
+      table.startedAt,
+    ),
+  ],
+);
+
+export const securityChallengeQuestionEvents = sqliteTable(
+  'security_challenge_question_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    attemptId: text('attempt_id')
+      .notNull()
+      .references(() => securityChallengeAttempts.id, { onDelete: 'cascade' }),
+    questionId: integer('question_id')
+      .notNull()
+      .references(() => questions.id, { onDelete: 'restrict' }),
+    ordinal: integer('ordinal').notNull(),
+    difficulty: text('difficulty').notNull(),
+    choiceOrderJson: text('choice_order_json').notNull(),
+    selectedIndex: integer('selected_index'),
+    canonicalSelectedIndex: integer('canonical_selected_index'),
+    outcome: text('outcome').notNull().default('pending'),
+    scoreDeltaUnits: integer('score_delta_units').notNull().default(0),
+    presentedAt: integer('presented_at').notNull(),
+    resolvedAt: integer('resolved_at'),
+    elapsedSeconds: integer('elapsed_seconds'),
+  },
+  (table) => [
+    uniqueIndex('idx_security_challenge_events_attempt_ordinal')
+      .on(table.attemptId, table.ordinal),
+    uniqueIndex('idx_security_challenge_events_attempt_question')
+      .on(table.attemptId, table.questionId),
+    index('idx_security_challenge_events_question_outcome')
+      .on(table.questionId, table.outcome, table.resolvedAt),
+  ],
+);
+
+export const securityChallengeFeedback = sqliteTable(
+  'security_challenge_feedback',
+  {
+    id: text('id').primaryKey(),
+    attemptId: text('attempt_id')
+      .notNull()
+      .references(() => securityChallengeAttempts.id, { onDelete: 'cascade' }),
+    questionEventId: integer('question_event_id')
+      .notNull()
+      .references(() => securityChallengeQuestionEvents.id, { onDelete: 'cascade' }),
+    participantKey: text('participant_key').notNull(),
+    comment: text('comment').notNull(),
+    status: text('status').notNull().default('open'),
+    resolutionNote: text('resolution_note'),
+    createdAt: integer('created_at').notNull(),
+    resolvedAt: integer('resolved_at'),
+    adminSessionFingerprint: text('admin_session_fingerprint'),
+  },
+  (table) => [
+    uniqueIndex('idx_security_challenge_feedback_attempt_event')
+      .on(table.attemptId, table.questionEventId),
+    index('idx_security_challenge_feedback_status_created')
+      .on(table.status, table.createdAt),
+  ],
+);
+
 export const testConfigVersions = sqliteTable('test_config_versions', {
   id: text('id').primaryKey(),
   scoringVersion: integer('scoring_version').notNull(),
