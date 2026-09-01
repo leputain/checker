@@ -125,6 +125,23 @@ test('таблица лидеров доступна до начала тест�
   await expect(leaderboardButton).toBeFocused();
 });
 
+test('со стартовой страницы доступен вход администратора', async ({ page }) => {
+  await page.goto('/');
+  const adminLink = page.getByRole('link', { name: 'Войти в административную панель' });
+  await expect(adminLink).toBeVisible();
+  await expect(adminLink).toHaveAttribute('href', '/admin/login');
+  expect(await adminLink.evaluate((link) => Math.round(link.getBoundingClientRect().height)))
+    .toBeGreaterThanOrEqual(44);
+  await adminLink.focus();
+  await expect(adminLink).toBeFocused();
+  await adminLink.click();
+  await expect(page).toHaveURL(/\/admin\/login$/u);
+  await expect(page.getByRole('heading', { name: 'Вход администратора' })).toBeVisible();
+  expect(await page.evaluate(() => (
+    document.documentElement.scrollWidth <= document.documentElement.clientWidth
+  ))).toBe(true);
+});
+
 test('пробный вопрос не запускает серверный таймер и позволяет исправить выбор', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('landscape'), 'Логика demo не зависит от orientation.');
   let attemptId = '';

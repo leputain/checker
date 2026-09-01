@@ -27,7 +27,7 @@ export async function GET(request: Request) {
         : 'easy') as Difficulty,
       qualityStatus: item.quality.status,
       warnings: item.qualityWarnings,
-      editorHref: `/admin/analytics?tab=questions&view=bank&questionId=${item.questionId}`,
+      editorHref: `/admin/analytics?tab=bank&questionId=${item.questionId}`,
       analyticsHref: `/admin/analytics?tab=questions&questionId=${item.questionId}`,
     }));
     return questionAdminJson({

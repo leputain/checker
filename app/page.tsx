@@ -1230,6 +1230,14 @@ export default function Home() {
           >
             Таблица лидеров
           </button>
+          <a
+            className="admin-entry-link"
+            href={appPath('/admin/login')}
+            aria-label="Войти в административную панель"
+          >
+            <span className="admin-entry-long">Администратору</span>
+            <span className="admin-entry-short" aria-hidden="true">Админ</span>
+          </a>
           <StatusChip state={connectivity} />
         </div>
       </header>

@@ -39,6 +39,17 @@ type Difficulty = QuestionAdminItem['difficulty'];
 type ContextType = Exclude<QuestionAdminDetail['contextType'], null>;
 type EditorMode = 'view' | 'create' | 'revise';
 type BankWorkspace = 'questions' | 'categories' | 'transfer' | 'drafts' | 'quality';
+type CatalogScope = 'leaf' | 'all' | 'superseded';
+type CatalogStatus = 'all' | 'active' | 'archived' | 'superseded';
+type LifecycleStatus = Exclude<CatalogStatus, 'all'>;
+type CatalogQuestionItem = QuestionAdminItem & { lifecycleStatus?: LifecycleStatus };
+type CatalogListDto = Omit<QuestionBankListDto, 'items' | 'bankCounts'> & {
+  items: CatalogQuestionItem[];
+  bankCounts: QuestionBankListDto['bankCounts'] & {
+    archived?: number;
+    superseded?: number;
+  };
+};
 const QUESTION_BANK_MUTATION_LIMIT = 250;
 
 const difficultyLabels: Record<Difficulty, string> = {
@@ -55,6 +66,18 @@ const contextTypeLabels: Record<ContextType, string> = {
   log: 'Журнал',
   config: 'Конфигурация',
 };
+
+const lifecycleLabels: Record<LifecycleStatus, string> = {
+  active: 'Активен',
+  archived: 'Архивирован',
+  superseded: 'Заменён новой редакцией',
+};
+
+function questionLifecycle(question: QuestionAdminItem & { lifecycleStatus?: LifecycleStatus }): LifecycleStatus {
+  if (question.lifecycleStatus) return question.lifecycleStatus;
+  if (question.successorId) return 'superseded';
+  return question.active ? 'active' : 'archived';
+}
 
 const importActionLabels: Record<ImportPreview['items'][number]['action'], string> = {
   added: 'Будет добавлен',
@@ -162,10 +185,33 @@ function draftFromQuestion(question: QuestionAdminDetail): QuestionDraft {
   };
 }
 
+function validateDraft(draft: QuestionDraft) {
+  const issues: string[] = [];
+  const choices = draft.choices.map((choice) => choice.trim());
+  if (!draft.topic.trim()) issues.push('Выберите категорию.');
+  if (!draft.prompt.trim()) issues.push('Введите текст вопроса.');
+  if (choices.length < 2 || choices.length > 6) issues.push('Добавьте от 2 до 6 вариантов ответа.');
+  if (choices.some((choice) => !choice)) issues.push('Заполните каждый вариант ответа.');
+  const normalizedChoices = choices.map((choice) => choice.toLocaleLowerCase('ru-RU'));
+  if (new Set(normalizedChoices).size !== normalizedChoices.length) {
+    issues.push('Варианты ответа не должны повторяться.');
+  }
+  if (draft.correctIndex < 0 || draft.correctIndex >= choices.length) {
+    issues.push('Выберите правильный вариант ответа.');
+  }
+  if (!/^[a-z0-9][a-z0-9:_-]*$/u.test(draft.dedupeKey.trim().toLowerCase())) {
+    issues.push('Смысловая группа должна начинаться с латинской буквы или цифры и содержать только a-z, 0-9, «:», «_», «-».');
+  }
+  if (draft.contextType && !draft.context.trim()) issues.push('Заполните выбранный дополнительный контекст.');
+  return issues;
+}
+
 function questionBankError(error: unknown): RequestIssue {
   if (error instanceof QuestionBankRequestError) {
     const message = {
       bank_revision_conflict: 'Банк изменился в другой сессии. Закройте карточку, откройте актуальную редакцию и повторите действие.',
+      catalog_snapshot_conflict: 'Каталог изменился во время загрузки. Обновите список и повторите действие.',
+      analytics_refresh_required: 'Аналитика вопросов обновилась. Обновите список, чтобы продолжить с актуальными данными.',
       idempotency_conflict: 'Этот запрос уже использовался с другим содержимым. Измените поле и повторите сохранение.',
       question_has_successor: 'У вопроса уже есть более новая редакция. Откройте её из истории.',
       question_validation_failed: 'Вопрос не прошёл проверку структуры или защиты от дубликатов.',
@@ -248,7 +294,7 @@ function historyLabel(event: QuestionBankHistoryEvent['eventType']) {
     created: 'Вопрос создан',
     revised: 'Создана новая редакция',
     activated: 'Вопрос включён',
-    deactivated: 'Вопрос выключен',
+    deactivated: 'Вопрос архивирован',
   }[event];
 }
 
@@ -279,12 +325,20 @@ export function QuestionBankPanel({
   const [query, setQuery] = useState('');
   const [topic, setTopic] = useState('');
   const [difficulty, setDifficulty] = useState<Difficulty | ''>('');
-  const [status, setStatus] = useState<QuestionStatus>('all');
+  const [scope, setScope] = useState<CatalogScope>('leaf');
+  const [status, setStatus] = useState<CatalogStatus>('all');
   const [sortValue, setSortValue] = useState('id:desc');
-  const [items, setItems] = useState<QuestionAdminItem[]>([]);
+  const [items, setItems] = useState<CatalogQuestionItem[]>([]);
   const [topics, setTopics] = useState<string[]>([]);
   const [totalCount, setTotalCount] = useState(0);
-  const [bankCounts, setBankCounts] = useState({ total: 0, active: 0, inactive: 0 });
+  const [bankCounts, setBankCounts] = useState<CatalogListDto['bankCounts']>({
+    total: 0,
+    active: 0,
+    inactive: 0,
+    archived: 0,
+    superseded: 0,
+    allRevisions: 0,
+  });
   const [readiness, setReadiness] = useState<QuestionBankListDto['readiness'] | null>(null);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [currentBankRevision, setCurrentBankRevision] = useState('');
@@ -310,18 +364,18 @@ export function QuestionBankPanel({
 
   const queryString = useMemo(() => {
     const [sort, direction] = sortValue.split(':');
-    const params = new URLSearchParams({ limit: '40', status, sort, direction });
+    const params = new URLSearchParams({ limit: '40', scope, status, sort, direction });
     if (query) params.set('q', query);
     if (topic) params.set('topic', topic);
     if (difficulty) params.set('difficulty', difficulty);
     return params.toString();
-  }, [difficulty, query, sortValue, status, topic]);
+  }, [difficulty, query, scope, sortValue, status, topic]);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError('');
     try {
-      const payload = await questionBankRequest<QuestionBankListDto>(
+      const payload = await questionBankRequest<CatalogListDto>(
         `/api/admin/questions?${queryString}`,
         { signal },
       );
@@ -359,7 +413,7 @@ export function QuestionBankPanel({
     setLoadingMore(true);
     setError('');
     try {
-      const payload = await questionBankRequest<QuestionBankListDto>(
+      const payload = await questionBankRequest<CatalogListDto>(
         `/api/admin/questions?${queryString}&cursor=${encodeURIComponent(nextCursor)}`,
       );
       setItems((current) => {
@@ -392,6 +446,7 @@ export function QuestionBankPanel({
     setTopic('');
     setDifficulty('');
     setStatus('all');
+    setScope('leaf');
     setSortValue('id:desc');
   }
 
@@ -429,13 +484,16 @@ export function QuestionBankPanel({
       : new Set(eligible.map((item) => item.id)));
   }
 
-  const hasFilters = Boolean(query || topic || difficulty || status !== 'all' || sortValue !== 'id:desc');
+  const hasFilters = Boolean(
+    query || topic || difficulty || scope !== 'leaf' || status !== 'all' || sortValue !== 'id:desc'
+  );
   return (
     <div className={styles.bankStack}>
       <section className={styles.bankSummary} aria-label="Состояние банка вопросов">
-        <article><strong>{bankCounts.total}</strong><span>всего редакций</span></article>
+        <article><strong>{bankCounts.total}</strong><span>актуальных вопросов</span></article>
         <article><strong>{bankCounts.active}</strong><span>активных вопросов</span></article>
-        <article><strong>{bankCounts.inactive}</strong><span>выключено и заменено</span></article>
+        <article><strong>{bankCounts.archived ?? bankCounts.inactive}</strong><span>архивированных</span></article>
+        <article><strong>{bankCounts.superseded ?? 0}</strong><span>заменённых редакций</span></article>
         <article>
           <strong>{readiness?.ready ? 'Готов' : 'Проверка'}</strong>
           <span>
@@ -510,9 +568,9 @@ export function QuestionBankPanel({
           />
         </label>
         <label>
-          <span>Тема</span>
+          <span>Категория</span>
           <select value={topic} onChange={(event) => setTopic(event.target.value)}>
-            <option value="">Все темы</option>
+            <option value="">Все категории</option>
             {topics.map((item) => <option value={item} key={item}>{item}</option>)}
           </select>
         </label>
@@ -526,11 +584,30 @@ export function QuestionBankPanel({
           </select>
         </label>
         <label>
+          <span>Редакции</span>
+          <select value={scope} onChange={(event) => {
+            const nextScope = event.target.value as CatalogScope;
+            setScope(nextScope);
+            if (nextScope === 'superseded') setStatus('superseded');
+            else if (status === 'superseded') setStatus('all');
+          }}>
+            <option value="leaf">Актуальные</option>
+            <option value="all">Все редакции</option>
+            <option value="superseded">Только заменённые</option>
+          </select>
+        </label>
+        <label>
           <span>Состояние</span>
-          <select value={status} onChange={(event) => setStatus(event.target.value as QuestionStatus)}>
-            <option value="all">Все вопросы</option>
-            <option value="active">Только активные</option>
-            <option value="inactive">Только выключенные</option>
+          <select value={status} onChange={(event) => {
+            const nextStatus = event.target.value as CatalogStatus;
+            setStatus(nextStatus);
+            if (nextStatus === 'superseded') setScope('superseded');
+            else if (scope === 'superseded') setScope('all');
+          }}>
+            <option value="all">Все состояния</option>
+            <option value="active">Активные</option>
+            <option value="archived">Архивированные</option>
+            <option value="superseded">Заменённые</option>
           </select>
         </label>
         <label>
@@ -538,19 +615,26 @@ export function QuestionBankPanel({
           <select value={sortValue} onChange={(event) => setSortValue(event.target.value)}>
             <option value="id:desc">Сначала новые ID</option>
             <option value="id:asc">Сначала старые ID</option>
-            <option value="topic:asc">По теме</option>
+            <option value="topic:asc">По категории</option>
             <option value="difficulty:asc">По сложности</option>
             <option value="status:desc">Сначала активные</option>
           </select>
         </label>
         <div className={styles.bankToolbarActions}>
           <button className={styles.primaryButton} type="submit">Найти</button>
-          {hasFilters && <button className={styles.quietButton} type="button" onClick={resetFilters}>Сбросить</button>}
+          {hasFilters && <button className={styles.quietButton} type="button" onClick={resetFilters}>Сбросить фильтры</button>}
         </div>
         <button className={styles.bankCreateButton} type="button" disabled={!currentBankRevision || loading} onClick={() => setEditor({ mode: 'create' })}>
           <span aria-hidden="true">＋</span> Новый вопрос
         </button>
       </form>
+
+      <div className={styles.bankResultSummary} role="status" aria-live="polite">
+        <strong>{loading ? 'Обновляем результаты…' : `Найдено: ${totalCount}`}</strong>
+        <span>{loading
+          ? 'Фильтры применяются'
+          : `Показано ${items.length} · актуальных ${bankCounts.total} · редакций всего ${bankCounts.allRevisions ?? bankCounts.total}`}</span>
+      </div>
 
       {!loading && items.length > 0 && (
         <div className={styles.bankSelectionBar} data-active={selectedIds.size > 0}>
@@ -603,8 +687,10 @@ export function QuestionBankPanel({
         />
       ) : (
         <div className={styles.bankGrid}>
-          {items.map((item) => (
-            <article className={styles.bankQuestionCard} key={item.id} data-active={item.active} data-selected={selectedIds.has(item.id)}>
+          {items.map((item) => {
+            const lifecycle = questionLifecycle(item);
+            return (
+            <article className={styles.bankQuestionCard} key={item.id} data-active={item.active} data-lifecycle={lifecycle} data-selected={selectedIds.has(item.id)}>
               <header>
                 <label className={styles.bankCardSelect}>
                   <input type="checkbox" checked={selectedIds.has(item.id)} disabled={Boolean(item.successorId)} onChange={() => toggleSelection(item.id)} />
@@ -616,8 +702,8 @@ export function QuestionBankPanel({
                   <span>{difficultyLabels[item.difficulty]}</span>
                   <span>{item.topic}</span>
                 </div>
-                <span className={item.active ? styles.bankActive : styles.bankInactive}>
-                  {item.active ? 'Активен' : 'Выключен'}
+                <span className={lifecycle === 'active' ? styles.bankActive : lifecycle === 'superseded' ? styles.bankSuperseded : styles.bankInactive}>
+                  {lifecycleLabels[lifecycle]}
                 </span>
               </header>
               <button
@@ -645,7 +731,8 @@ export function QuestionBankPanel({
                 </button>
               </footer>
             </article>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -674,7 +761,7 @@ export function QuestionBankPanel({
 
       {editor && (
         <QuestionBankDialog
-          key={`${editor.mode}-${editor.id ?? 'new'}`}
+          key={`${editor.mode}-${editor.id ?? 'new'}-${currentBankRevision}`}
           mode={editor.mode}
           questionId={editor.id}
           csrfToken={csrfToken}
@@ -833,7 +920,7 @@ function CategoryManager({ csrfToken, currentBankRevision, onAdminError, onCompl
           const total = item.activeQuestionCount + item.inactiveQuestionCount;
           return (
             <article key={item.id} className={styles.categoryCard}>
-              <header><div><strong>{item.name}</strong><span>{item.activeQuestionCount} активных актуальных вопросов · {item.inactiveQuestionCount} выключенных актуальных редакций</span>{!item.active && <em>Объединена · архивная категория</em>}</div><b>{total}</b></header>
+              <header><div><strong>{item.name}</strong><span>{item.activeQuestionCount} активных актуальных вопросов · {item.inactiveQuestionCount} архивированных актуальных редакций</span>{!item.active && <em>Объединена · архивная категория</em>}</div><b>{total}</b></header>
               <dl>
                 {(Object.keys(difficultyLabels) as Difficulty[]).map((difficulty) => (
                   <div key={difficulty}><dt>{difficultyLabels[difficulty]}</dt><dd>{item.difficultyCounts[difficulty] ?? 0}</dd></div>
@@ -890,7 +977,7 @@ function BulkOperationDialog({ questionIds, topics, csrfToken, currentBankRevisi
   const [draftTarget, setDraftTarget] = useState('new');
   const mutationRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const patch: BulkPatch = field === 'topic' ? { topic } : field === 'difficulty' ? { difficulty } : { active };
-  const valueLabel = field === 'topic' ? topic : field === 'difficulty' ? difficultyLabels[difficulty] : active ? 'Включить' : 'Выключить';
+  const valueLabel = field === 'topic' ? topic : field === 'difficulty' ? difficultyLabels[difficulty] : active ? 'Восстановить' : 'Архивировать';
 
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -998,7 +1085,7 @@ function BulkOperationDialog({ questionIds, topics, csrfToken, currentBankRevisi
             </fieldset>
             {field === 'topic' && <label><span>Новая категория</span><select value={topic} onChange={(event) => setTopic(event.target.value)}>{topics.map((item) => <option key={item}>{item}</option>)}</select></label>}
             {field === 'difficulty' && <label><span>Новая сложность</span><select value={difficulty} onChange={(event) => setDifficulty(event.target.value as Difficulty)}>{(Object.keys(difficultyLabels) as Difficulty[]).map((item) => <option key={item} value={item}>{difficultyLabels[item]}</option>)}</select></label>}
-            {field === 'active' && <label><span>Новое состояние</span><select value={active ? 'active' : 'inactive'} onChange={(event) => setActive(event.target.value === 'active')}><option value="active">Включить в тест</option><option value="inactive">Выключить из теста</option></select></label>}
+            {field === 'active' && <label><span>Новое состояние</span><select value={active ? 'active' : 'inactive'} onChange={(event) => setActive(event.target.value === 'active')}><option value="active">Восстановить в тесте</option><option value="inactive">Архивировать</option></select></label>}
             <label><span>Комментарий к аудиту</span><textarea value={note} maxLength={500} onChange={(event) => setNote(event.target.value)} placeholder="Почему выполняется изменение" /></label>
             <div className={styles.bankEditorFooter}><button className={styles.quietButton} type="button" onClick={onClose}>Отмена</button><button className={styles.primaryButton} type="button" disabled={field === 'topic' && !topic} onClick={() => setStep('confirm')}>Проверить пакет</button></div>
           </div> : <div className={styles.bulkReview}>
@@ -1169,7 +1256,7 @@ function ImportExportPanel({ csrfToken, currentBankRevision, topics, onAdminErro
         <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Экспорт</p><h3>Выгрузить актуальный банк</h3><p>Файл подходит для резервной копии, проверки и последующего импорта.</p></div><span>JSON · schema v1</span></header>
         <div className={styles.exportControls}>
           <label><span>Категория</span><select value={exportTopic} onChange={(event) => setExportTopic(event.target.value)}><option value="">Все категории</option>{topics.map((item) => <option key={item}>{item}</option>)}</select></label>
-          <label><span>Состояние</span><select value={exportStatus} onChange={(event) => setExportStatus(event.target.value as QuestionStatus)}><option value="active">Только активные актуальные вопросы</option><option value="inactive">Только выключенные актуальные редакции</option><option value="all">Все актуальные редакции</option></select></label>
+          <label><span>Состояние</span><select value={exportStatus} onChange={(event) => setExportStatus(event.target.value as QuestionStatus)}><option value="active">Только активные актуальные вопросы</option><option value="inactive">Только архивированные актуальные редакции</option><option value="all">Все актуальные редакции</option></select></label>
           <a className={styles.primaryButton} href={appPath(`/api/admin/questions/export?${exportParams.toString()}`)} download>Скачать JSON</a>
         </div>
         <aside className={styles.exportNote}><span aria-hidden="true">i</span><p><strong>Что попадёт в файл</strong>Текст, варианты, правильный ответ, категория, сложность и смысловая группа. Персональные результаты кандидатов не экспортируются.</p></aside>
@@ -1335,7 +1422,7 @@ function ChangeSetsPanel({ csrfToken, currentBankRevision, onAdminError, onCompl
       <article className={styles.bankOperationWorkspace}>
         {!selected ? <BankEmpty title="Выберите черновик" message="Здесь появятся операции, проверка готовности и кнопка атомарной публикации." /> : !detail ? <BankLoading compact /> : <>
           <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Черновик</p><h3>{detail.changeSet.title}</h3><p>{detail.changeSet.note || 'Без комментария'}</p></div><span>{detail.operations.length} операций</span></header>
-          {detail.operations.length === 0 ? <BankEmpty compact title="Пакет пуст" message="Добавьте операции через массовое изменение вопросов или удалите черновик." /> : <ol className={styles.draftOperations}>{detail.operations.map((operation) => <li key={operation.id}><strong>Вопрос #{operation.questionId}</strong><span>{operation.patch.topic ? `Категория → ${operation.patch.topic}` : operation.patch.difficulty ? `Сложность → ${difficultyLabels[operation.patch.difficulty]}` : operation.patch.active === true ? 'Включить' : 'Выключить'}</span>{detail.changeSet.status === 'draft' && <button type="button" disabled={saving} onClick={() => void removeDraftOperation(operation.questionId)} aria-label={`Удалить изменение вопроса ${operation.questionId}`}>×</button>}</li>)}</ol>}
+          {detail.operations.length === 0 ? <BankEmpty compact title="Пакет пуст" message="Добавьте операции через массовое изменение вопросов или удалите черновик." /> : <ol className={styles.draftOperations}>{detail.operations.map((operation) => <li key={operation.id}><strong>Вопрос #{operation.questionId}</strong><span>{operation.patch.topic ? `Категория → ${operation.patch.topic}` : operation.patch.difficulty ? `Сложность → ${difficultyLabels[operation.patch.difficulty]}` : operation.patch.active === true ? 'Восстановить' : 'Архивировать'}</span>{detail.changeSet.status === 'draft' && <button type="button" disabled={saving} onClick={() => void removeDraftOperation(operation.questionId)} aria-label={`Удалить изменение вопроса ${operation.questionId}`}>×</button>}</li>)}</ol>}
           {preview && <div className={styles.draftPreview}><header><strong>{preview.readiness.ready ? 'Готов к публикации' : 'Публикация заблокирована'}</strong><span>{preview.changedCount} изменится · {preview.unchangedCount} без изменений</span></header><p>{preview.coverage.ready ? 'Покрытие банка сохранено.' : 'После изменений возникнет дефицит вопросов. Исправьте пакет.'}</p>{preview.readiness.issues.length > 0 && <ul>{preview.readiness.issues.map((issue) => <li key={issue}>{readinessMessage(issue)}</li>)}</ul>}{preview.readiness.warnings.length > 0 && <ul>{preview.readiness.warnings.map((warning) => <li key={warning}>{readinessMessage(warning)}</li>)}</ul>}</div>}
           {error && <p className={styles.error} role="alert">{error}</p>}
           {confirmDelete && <div className={styles.draftDeleteConfirm} role="alert"><span>Удалить черновик без публикации?</span><button className={styles.dangerButton} type="button" disabled={saving} onClick={() => void discardDraft()}>Да, удалить</button><button className={styles.quietButton} type="button" disabled={saving} onClick={() => setConfirmDelete(false)}>Отмена</button></div>}
@@ -1422,7 +1509,7 @@ function BankQualityPanel({ onAdminError, onOpenQuestion }: {
       </section>
       <section className={styles.bankOperationWorkspace}>
         <header className={styles.bankOperationHeading}><div><p className={styles.eyebrow}>Очередь качества</p><h3>Что проверить в первую очередь</h3><p>Причины сформированы по фактическим ответам; решение всегда остаётся за администратором.</p></div><span>{actionableQueue.length} требуют решения · {waitingForData} ждут выборки</span></header>
-        {(waitingForData > 0 || disabledCount > 0) && <div className={styles.qualityQueueSummary}><span>{waitingForData} вопросов ждут данных</span>{disabledCount > 0 && <span>{disabledCount} выключено</span>}</div>}
+        {(waitingForData > 0 || disabledCount > 0) && <div className={styles.qualityQueueSummary}><span>{waitingForData} вопросов ждут данных</span>{disabledCount > 0 && <span>{disabledCount} архивировано</span>}</div>}
         {actionableQueue.length === 0 ? <BankEmpty compact title="Нет вопросов, требующих решения" message={waitingForData ? 'Наблюдения накапливаются. Вопросы с малой выборкой не перегружают рабочую очередь.' : 'По текущей выборке вопросы не требуют действий администратора.'} /> : <ol className={styles.qualityQueue}>{actionableQueue.map((item) => <li key={item.questionId}><div><span className={item.qualityStatus === 'review' ? styles.bankInactive : styles.qualityQueueObserve}>{item.qualityStatus === 'review' ? 'Проверить' : 'Наблюдать'}</span><strong>Вопрос #{item.questionId}</strong><small>{item.topic} · {difficultyLabels[item.difficulty] ?? item.difficulty}</small></div><ul>{item.warnings.map((warning) => <li key={warning}>{qualityWarningText[warning] ?? warning}</li>)}</ul><div className={styles.qualityQueueActions}><a className={styles.secondaryButton} href={appPath(item.analyticsHref)}>Аналитика</a><a className={styles.primaryButton} href={appPath(item.editorHref)} onClick={(event) => { event.preventDefault(); onOpenQuestion(item.questionId); }}>Открыть вопрос</a></div></li>)}</ol>}
       </section>
     </div>
@@ -1470,6 +1557,16 @@ function QuestionBankDialog({
   const toggleMutationRef = useRef<{ fingerprint: string; key: string } | null>(null);
   const isEditing = mode === 'create' || mode === 'revise';
   const draftChanged = isEditing && JSON.stringify(draft) !== initialDraftSnapshot;
+
+  useEffect(() => {
+    if (!draftChanged) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [draftChanged]);
 
   const requestExit = useCallback((action: () => void) => {
     if (draftChanged && !saving) {
@@ -1553,7 +1650,7 @@ function QuestionBankDialog({
   }
 
   function addChoice() {
-    setDraft((current) => current.choices.length >= 5
+    setDraft((current) => current.choices.length >= 6
       ? current
       : { ...current, choices: [...current.choices, ''] });
   }
@@ -1571,6 +1668,11 @@ function QuestionBankDialog({
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const validationIssues = validateDraft(draft);
+    if (validationIssues.length > 0) {
+      setError({ message: 'Проверьте поля вопроса перед сохранением.', issues: validationIssues });
+      return;
+    }
     setSaving(true);
     setError({ message: '', issues: [] });
     const draftBody = {
@@ -1628,7 +1730,7 @@ function QuestionBankDialog({
           },
           body: JSON.stringify({
             active: !detail.question.active,
-            note: `${detail.question.active ? 'Выключен' : 'Включён'} администратором из панели`,
+            note: `${detail.question.active ? 'Архивирован' : 'Восстановлен'} администратором из панели`,
             expectedBankRevision: detail.currentBankRevision,
             idempotencyKey: idempotencyKey(
               toggleMutationRef,
@@ -1674,6 +1776,7 @@ function QuestionBankDialog({
           <div>
             <span className={styles.dialogEyebrow}>{isEditing ? 'Редактор банка' : 'Карточка банка'}</span>
             <h2 id="question-bank-dialog-title">{title}</h2>
+            {draftChanged && <span className={styles.bankUnsavedBadge} role="status">Есть несохранённые изменения</span>}
           </div>
           <button type="button" onClick={() => requestExit(onClose)} aria-label="Закрыть">×</button>
         </header>
@@ -1765,6 +1868,7 @@ function QuestionViewer({
     };
   }, [confirmToggle]);
   const versionIndex = Math.max(0, detail.lineage.findIndex((item) => item.id === question.id)) + 1;
+  const lifecycle = questionLifecycle(question);
   return (
     <div className={styles.bankDetailStack}>
       <section className={styles.bankDetailLead}>
@@ -1773,7 +1877,7 @@ function QuestionViewer({
           <span>{difficultyLabels[question.difficulty]}</span>
           <span>{question.topic}</span>
           <span>редакция {versionIndex} из {Math.max(1, detail.lineage.length)}</span>
-          <span>{question.active ? 'активен' : 'выключен'}</span>
+          <span>{lifecycleLabels[lifecycle].toLocaleLowerCase('ru-RU')}</span>
         </div>
         <h3>{question.prompt}</h3>
         {question.context && <pre><code>{question.context}</code></pre>}
@@ -1803,9 +1907,11 @@ function QuestionViewer({
         </div>
         <div className={styles.bankActionButtons}>
           {!question.successorId && <button className={styles.primaryButton} type="button" onClick={onRevise}>Создать новую редакцию</button>}
-          <button className={styles.secondaryButton} type="button" onClick={onAskToggle}>
-            {question.active ? 'Выключить вопрос' : 'Включить вопрос'}
-          </button>
+          {lifecycle !== 'superseded' && (
+            <button className={styles.secondaryButton} type="button" onClick={onAskToggle}>
+              {question.active ? 'Архивировать' : 'Восстановить'}
+            </button>
+          )}
         </div>
         {question.successorId && (
           <p className={styles.bankNotice}>У этого вопроса уже есть редакция #{question.successorId}. Исправлять нужно актуальную версию.</p>
@@ -1840,13 +1946,13 @@ function QuestionViewer({
             }}
           >
             <div>
-              <strong id="bank-toggle-title">{question.active ? 'Выключить вопрос?' : 'Вернуть вопрос в тест?'}</strong>
+              <strong id="bank-toggle-title">{question.active ? 'Архивировать вопрос?' : 'Восстановить вопрос?'}</strong>
               <p id="bank-toggle-description">{question.active
-                ? 'Новые тесты перестанут выбирать этот вопрос. История ответов и аналитика сохранятся.'
-                : 'Вопрос снова станет доступен для новых тестов после проверки готовности банка.'}</p>
+                ? 'Новые тесты перестанут выбирать этот вопрос. Физического удаления нет: история ответов, редакций и аналитика сохранятся.'
+                : 'Вопрос снова станет доступен для новых тестов после проверки готовности банка. Его прежняя история останется связанной с этим ID.'}</p>
             </div>
             <button className={question.active ? styles.dangerButton : styles.primaryButton} type="button" disabled={toggling} onClick={onToggle}>
-              {toggling ? 'Сохраняем…' : question.active ? 'Да, выключить' : 'Да, включить'}
+              {toggling ? 'Сохраняем…' : question.active ? 'Да, архивировать' : 'Да, восстановить'}
             </button>
             <button className={styles.quietButton} type="button" disabled={toggling} onClick={onCancelToggle}>Отмена</button>
           </div>
@@ -1921,7 +2027,7 @@ function QuestionEditor({
           <span aria-hidden="true">!</span>
           <div>
             <strong>Будет создан новый вопрос с новым ID</strong>
-            <p>Редакция #{source.id} останется в истории и будет выключена. Это сохраняет достоверность уже собранной аналитики.</p>
+            <p>Редакция #{source.id} останется в истории со статусом «Заменена». Это сохраняет достоверность уже собранной аналитики.</p>
           </div>
         </div>
       )}
@@ -2053,7 +2159,8 @@ function QuestionEditor({
             </div>
           ))}
         </div>
-        {draft.choices.length < 5 && <button className={styles.bankAddChoice} type="button" onClick={onAddChoice}>＋ Добавить вариант</button>}
+        {draft.choices.length < 6 && <button className={styles.bankAddChoice} type="button" onClick={onAddChoice}>＋ Добавить вариант</button>}
+        <small className={styles.bankChoiceLimit}>От 2 до 6 вариантов · сейчас {draft.choices.length}</small>
       </fieldset>
 
       <section className={styles.bankEditorSection}>

@@ -29,6 +29,24 @@ async function login(page: Page) {
   return session.csrfToken!;
 }
 
+async function expectReadableSelectOptions(page: Page) {
+  const optionStyles = await page.locator('select option').evaluateAll((options) => (
+    options.map((option) => {
+      const style = getComputedStyle(option);
+      return {
+        backgroundColor: style.backgroundColor,
+        color: style.color,
+        disabled: (option as HTMLOptionElement).disabled,
+      };
+    })
+  ));
+  expect(optionStyles.length).toBeGreaterThan(0);
+  expect(optionStyles.every(({ backgroundColor }) => backgroundColor === 'rgb(16, 32, 25)')).toBe(true);
+  expect(optionStyles.every(({ color, disabled }) => (
+    color === (disabled ? 'rgb(113, 134, 124)' : 'rgb(238, 247, 242)')
+  ))).toBe(true);
+}
+
 async function json<T>(response: APIResponse, status: number) {
   expect(response.status()).toBe(status);
   expect(response.headers()['cache-control']).toContain('no-store');
@@ -272,9 +290,31 @@ test('API банка сохраняет immutable-редакции, CAS и ид�
 
 test('iPad UI создаёт вопрос и переназначает категорию новой редакцией', async ({ page }, testInfo) => {
   await login(page);
-  await page.getByRole('tab', { name: 'Вопросы', exact: true }).click();
   await page.getByRole('tab', { name: 'Банк вопросов', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Просмотр и безопасное редактирование' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Все вопросы и их редакции' })).toBeVisible();
+  const revisionFilter = page.getByRole('combobox', { name: 'Редакции', exact: true });
+  const statusFilter = page.getByRole('combobox', { name: 'Состояние', exact: true });
+  await expectReadableSelectOptions(page);
+  await expect(revisionFilter).toHaveValue('leaf');
+  await expect(statusFilter).toHaveValue('all');
+  await expect(page.getByRole('status').filter({ hasText: 'Найдено:' })).toBeVisible();
+  const allRevisionsResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/admin/questions' && url.searchParams.get('scope') === 'all';
+  });
+  await revisionFilter.selectOption('all');
+  expect((await allRevisionsResponse).status()).toBe(200);
+  const archivedResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/admin/questions'
+      && url.searchParams.get('scope') === 'all'
+      && url.searchParams.get('status') === 'archived';
+  });
+  await statusFilter.selectOption('archived');
+  expect((await archivedResponse).status()).toBe(200);
+  await page.getByRole('button', { name: 'Сбросить фильтры' }).click();
+  await expect(revisionFilter).toHaveValue('leaf');
+  await expect(statusFilter).toHaveValue('all');
   await expect(page.getByText('Правильный ответ', { exact: true })).toHaveCount(0);
   expect(await page.getByRole('button', { name: 'Новый вопрос' }).evaluate((button) => (
     Math.round(button.getBoundingClientRect().height)
@@ -283,6 +323,7 @@ test('iPad UI создаёт вопрос и переназначает кате
   const suffix = `${testInfo.project.name}-${randomUUID().slice(0, 8)}`;
   await page.getByRole('button', { name: 'Новый вопрос' }).click();
   const createDialog = page.getByRole('dialog', { name: 'Новый вопрос' });
+  await expectReadableSelectOptions(page);
   const categorySelect = createDialog.getByLabel('Категория');
   const categoryOptions = await categorySelect.locator('option:not([disabled])').allTextContents();
   const createCategory = categoryOptions.find((value) => value !== 'Выберите категорию');
@@ -291,6 +332,7 @@ test('iPad UI создаёт вопрос и переназначает кате
   )) ?? createCategory;
   expect(createCategory).toBeTruthy();
   await categorySelect.selectOption({ label: createCategory! });
+  await expect(createDialog.getByText('Есть несохранённые изменения')).toBeVisible();
   await page.keyboard.press('Escape');
   const discardDialog = page.getByRole('alertdialog', { name: 'Отменить несохранённые изменения?' });
   await expect(discardDialog).toBeVisible();
@@ -305,6 +347,11 @@ test('iPad UI создаёт вопрос и переназначает кате
   await createDialog.getByLabel('Вариант B').fill('Только после перезапуска');
   await createDialog.getByLabel('Вариант C').fill('Без сохранения истории');
   await createDialog.getByLabel('Вариант D').fill('С изменением старого ID');
+  await createDialog.getByRole('button', { name: 'Добавить вариант' }).click();
+  await createDialog.getByRole('button', { name: 'Добавить вариант' }).click();
+  await createDialog.getByLabel('Вариант E').fill('С потерей редакции');
+  await createDialog.getByLabel('Вариант F').fill('С физическим удалением');
+  await expect(createDialog.getByText('От 2 до 6 вариантов · сейчас 6')).toBeVisible();
   const createResponse = page.waitForResponse((response) => (
     new URL(response.url()).pathname === '/api/admin/questions'
       && response.request().method() === 'POST'
@@ -332,6 +379,29 @@ test('iPad UI создаёт вопрос и переназначает кате
   await expect(revisedViewer.getByText('Средний', { exact: true })).toBeVisible();
   await expect(revisedViewer.getByRole('button', { name: `#${originalId}`, exact: true })).toBeVisible();
   await expect(revisedViewer.getByText('Создана новая редакция', { exact: true })).toBeVisible();
+
+  const archiveResponse = page.waitForResponse((response) => (
+    /\/api\/admin\/questions\/\d+$/u.test(new URL(response.url()).pathname)
+      && response.request().method() === 'PATCH'
+  ));
+  await revisedViewer.getByRole('button', { name: 'Архивировать', exact: true }).click();
+  const archiveDialog = revisedViewer.getByRole('alertdialog', { name: 'Архивировать вопрос?' });
+  await expect(archiveDialog).toContainText('Физического удаления нет');
+  await archiveDialog.getByRole('button', { name: 'Да, архивировать' }).click();
+  expect((await archiveResponse).status()).toBe(200);
+
+  const archivedViewer = page.getByRole('dialog', { name: /Вопрос #\d+/u });
+  await expect(archivedViewer.getByText('архивирован', { exact: true })).toBeVisible();
+  const restoreResponse = page.waitForResponse((response) => (
+    /\/api\/admin\/questions\/\d+$/u.test(new URL(response.url()).pathname)
+      && response.request().method() === 'PATCH'
+  ));
+  await archivedViewer.getByRole('button', { name: 'Восстановить', exact: true }).click();
+  await archivedViewer.getByRole('alertdialog', { name: 'Восстановить вопрос?' })
+    .getByRole('button', { name: 'Да, восстановить' }).click();
+  expect((await restoreResponse).status()).toBe(200);
+  await expect(page.getByRole('dialog', { name: /Вопрос #\d+/u })
+    .getByText('активен', { exact: true })).toBeVisible();
 
   expect(await page.evaluate(() => (
     document.documentElement.scrollWidth <= document.documentElement.clientWidth

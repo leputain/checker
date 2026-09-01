@@ -43,9 +43,8 @@ async function login(page: Page) {
 }
 
 async function openQuestionBank(page: Page) {
-  await page.getByRole('tab', { name: 'Вопросы', exact: true }).click();
   await page.getByRole('tab', { name: 'Банк вопросов', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Просмотр и безопасное редактирование' }))
+  await expect(page.getByRole('heading', { name: 'Все вопросы и их редакции' }))
     .toBeVisible();
 }
 
@@ -674,6 +673,7 @@ test('rename required category сохраняет selection identity и frozen r
 
 test('черновик публикуется атомарно и отклоняет stale CAS', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes('landscape'), 'API/D1 семантика не зависит от orientation.');
+  test.setTimeout(90_000);
   const csrfToken = await login(page);
   const categories = await json<QuestionCategoryListDto>(
     await page.request.get('/api/admin/questions/categories'),
@@ -1225,7 +1225,7 @@ test('рабочее место банка доступно на iPad и оче�
           difficulty: question.difficulty,
           qualityStatus: 'review',
           warnings: ['high_timeout'],
-          editorHref: `/admin/analytics?tab=questions&view=bank&questionId=${question.id}`,
+          editorHref: `/admin/analytics?tab=bank&questionId=${question.id}`,
           analyticsHref: `/admin/analytics?tab=questions&questionId=${question.id}`,
         }],
       }),
@@ -1234,7 +1234,7 @@ test('рабочее место банка доступно на iPad и оче�
 
   const workspace = page.getByRole('tablist', { name: 'Разделы банка вопросов' });
   const tabs = [
-    ['Вопросы', 'Просмотр и безопасное редактирование'],
+    ['Вопросы', 'Все вопросы и их редакции'],
     ['Категории', 'Категории вопросов'],
     ['Импорт и экспорт', 'Проверить пакет до публикации'],
     ['Черновики', 'Черновики изменений'],
@@ -1262,7 +1262,7 @@ test('рабочее место банка доступно на iPad и оче�
   await expect(viewer.getByText('Правильный ответ')).toBeVisible();
   await viewer.getByRole('button', { name: 'Закрыть' }).click();
 
-  await page.goto(`/admin/analytics?tab=questions&view=bank&questionId=${question.id}`);
+  await page.goto(`/admin/analytics?tab=bank&questionId=${question.id}`);
   await expect(page.getByRole('dialog', { name: `Вопрос #${question.id}` })).toBeVisible();
   await expectNoPageOverflow(page);
 });

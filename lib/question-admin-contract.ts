@@ -1,8 +1,31 @@
 import type { QuestionContextType } from './question-bank-validation.ts';
 import type { Difficulty } from './test-config.ts';
 
-export type QuestionAdminStatusFilter = 'all' | 'active' | 'inactive';
-export type QuestionAdminSort = 'id' | 'topic' | 'difficulty' | 'status';
+export type QuestionAdminLifecycleStatus = 'active' | 'archived' | 'superseded';
+export type QuestionAdminStatusFilter =
+  | 'all'
+  | QuestionAdminLifecycleStatus
+  /** Backward-compatible alias for archived current leaf questions. */
+  | 'inactive';
+export type QuestionAdminRevisionFilter = 'current' | 'all' | 'historical';
+export type QuestionAdminQualityStatus =
+  | 'good'
+  | 'observe'
+  | 'review'
+  | 'insufficient'
+  | 'disabled';
+export type QuestionAdminQualityFilter =
+  | 'all'
+  | QuestionAdminQualityStatus
+  | 'needs_review';
+export type QuestionAdminSort =
+  | 'id'
+  | 'topic'
+  | 'difficulty'
+  | 'status'
+  | 'quality'
+  | 'usage'
+  | 'revision';
 export type QuestionAdminDirection = 'asc' | 'desc';
 export type QuestionBankEventType = 'created' | 'revised' | 'activated' | 'deactivated';
 
@@ -211,6 +234,7 @@ export type QuestionQualityQueueDto = {
 
 export type QuestionAdminItemDto = {
   id: number;
+  categoryId: number | null;
   difficulty: Difficulty;
   topic: string;
   prompt: string;
@@ -224,6 +248,12 @@ export type QuestionAdminItemDto = {
   predecessorId: number | null;
   successorId: number | null;
   usageCount: number;
+  lifecycleStatus: QuestionAdminLifecycleStatus;
+  currentRevisionMember: boolean;
+  introducedBankRevision: string | null;
+  introducedAt: number | null;
+  /** Populated for quality-filtered/sorted catalog requests; null otherwise. */
+  qualityStatus: QuestionAdminQualityStatus | null;
 };
 
 export type QuestionAdminDetailDto = QuestionAdminItemDto & {
@@ -255,9 +285,14 @@ export type QuestionAdminListDto = {
   currentBankRevision: string;
   topics: string[];
   bankCounts: {
+    /** Current leaf questions only: active + archived. */
     total: number;
     active: number;
+    /** Backward-compatible alias/count for archived current leaf questions. */
     inactive: number;
+    archived: number;
+    superseded: number;
+    allRevisions: number;
   };
   readiness: QuestionBankReadinessDto;
 };
@@ -313,7 +348,9 @@ export type QuestionAdminErrorCode =
   | 'category_conflict'
   | 'change_set_conflict'
   | 'import_preview_conflict'
-  | 'mutation_too_large';
+  | 'mutation_too_large'
+  | 'analytics_refresh_required'
+  | 'catalog_snapshot_conflict';
 
 export type QuestionAdminErrorDto = {
   error: QuestionAdminErrorCode | 'invalid_request' | 'not_found';

@@ -51,19 +51,22 @@ import {
   loginPath,
   type AdminFilters,
 } from '../admin-client.ts';
+import { AdminHelpPanel } from '../help-panel.tsx';
 import { QuestionBankPanel } from '../question-bank-panel.tsx';
 import styles from '../admin.module.css';
 
-type AnalyticsTab = 'overview' | 'questions' | 'candidates' | 'topics' | 'difficulty';
+type AnalyticsTab = 'overview' | 'questions' | 'bank' | 'candidates' | 'topics' | 'difficulty' | 'help';
 type SessionState = 'checking' | 'ready' | 'disabled' | 'unavailable';
 type RefreshState = 'idle' | 'required' | 'refreshing' | 'failed';
 
 const tabLabels: Record<AnalyticsTab, string> = {
   overview: 'Обзор',
-  questions: 'Вопросы',
+  questions: 'Аналитика вопросов',
+  bank: 'Банк вопросов',
   candidates: 'Кандидаты',
   topics: 'Темы',
   difficulty: 'Сложность',
+  help: 'Описание',
 };
 
 const reliabilityLabels: Record<AnalyticsReliability, string> = {
@@ -89,7 +92,7 @@ const difficultyLabels: Record<string, string> = {
 const reviewDecisionLabels: Record<QuestionReviewDecision, string> = {
   keep: 'Оставить',
   observe: 'Наблюдать',
-  disable_requested: 'Запрошено отключение',
+  disable_requested: 'Запрошена архивация',
   new_revision_required: 'Нужна новая редакция',
 };
 
@@ -136,7 +139,7 @@ function qualityStatusLabel(value: QuestionAnalyticsItemDto['quality']['status']
     observe: 'Требует наблюдения',
     review: 'Требует проверки',
     insufficient: 'Недостаточно данных',
-    disabled: 'Вопрос отключён',
+    disabled: 'Вопрос архивирован',
   }[value];
 }
 
@@ -250,8 +253,8 @@ export default function AdminAnalyticsPage() {
   const [session, setSession] = useState<AdminSessionDto | null>(null);
   const [sessionError, setSessionError] = useState('');
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('overview');
-  const [questionView, setQuestionView] = useState<'analytics' | 'bank'>('analytics');
   const [bankQuestionId, setBankQuestionId] = useState<number | null>(null);
+  const [analyticsQuestionId, setAnalyticsQuestionId] = useState<number | null>(null);
   const [draftFilters, setDraftFilters] = useState<AdminFilters>(DEFAULT_ADMIN_FILTERS);
   const [filters, setFilters] = useState<AdminFilters>(DEFAULT_ADMIN_FILTERS);
   const [revisions, setRevisions] = useState<AnalyticsRevisionItemDto[]>([]);
@@ -291,11 +294,22 @@ export default function AdminAnalyticsPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams(window.location.search);
-      if (params.get('tab') !== 'questions' || params.get('view') !== 'bank') return;
+      const requestedTab = params.get('tab');
+      const legacyBankLink = requestedTab === 'questions' && params.get('view') === 'bank';
+      const nextTab = legacyBankLink
+        ? 'bank'
+        : requestedTab && Object.hasOwn(tabLabels, requestedTab) ? requestedTab as AnalyticsTab : null;
+      if (nextTab) setActiveTab(nextTab);
+      if (legacyBankLink) {
+        const canonicalUrl = new URL(window.location.href);
+        canonicalUrl.searchParams.set('tab', 'bank');
+        canonicalUrl.searchParams.delete('view');
+        window.history.replaceState(null, '', canonicalUrl);
+      }
       const questionId = Number(params.get('questionId'));
-      setActiveTab('questions');
-      setQuestionView('bank');
-      if (Number.isInteger(questionId) && questionId > 0) setBankQuestionId(questionId);
+      if (!Number.isInteger(questionId) || questionId <= 0) return;
+      if (nextTab === 'bank') setBankQuestionId(questionId);
+      if (nextTab === 'questions') setAnalyticsQuestionId(questionId);
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
@@ -398,17 +412,15 @@ export default function AdminAnalyticsPage() {
     setDraftFilters(nextFilters);
     setFilters(nextFilters);
     setFiltersRevision((revision) => revision + 1);
-    setQuestionView('analytics');
     setActiveTab('questions');
   }
 
   function openQuestionEditor(questionId: number) {
     setBankQuestionId(questionId);
-    setQuestionView('bank');
-    setActiveTab('questions');
+    setActiveTab('bank');
     const url = new URL(window.location.href);
-    url.searchParams.set('tab', 'questions');
-    url.searchParams.set('view', 'bank');
+    url.searchParams.set('tab', 'bank');
+    url.searchParams.delete('view');
     url.searchParams.set('questionId', String(questionId));
     window.history.replaceState(null, '', url);
   }
@@ -417,6 +429,24 @@ export default function AdminAnalyticsPage() {
     setBankQuestionId(null);
     const url = new URL(window.location.href);
     url.searchParams.delete('questionId');
+    window.history.replaceState(null, '', url);
+  }
+
+  function clearQuestionAnalyticsLink() {
+    setAnalyticsQuestionId(null);
+    const url = new URL(window.location.href);
+    url.searchParams.delete('questionId');
+    window.history.replaceState(null, '', url);
+  }
+
+  function selectTab(tab: AnalyticsTab) {
+    setActiveTab(tab);
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', tab);
+    url.searchParams.delete('view');
+    url.searchParams.delete('questionId');
+    setBankQuestionId(null);
+    setAnalyticsQuestionId(null);
     window.history.replaceState(null, '', url);
   }
 
@@ -430,7 +460,7 @@ export default function AdminAnalyticsPage() {
       : event.key === 'End'
         ? tabs.at(-1)!
         : tabs[(current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length];
-    setActiveTab(next);
+    selectTab(next);
     window.requestAnimationFrame(() => document.getElementById(`admin-tab-${next}`)?.focus());
   }
 
@@ -447,6 +477,8 @@ export default function AdminAnalyticsPage() {
         : sessionError || 'Не удалось загрузить административный раздел.';
     return <AdminStatePage title={title} message={message} retry={sessionState === 'unavailable'} />;
   }
+
+  const showAnalyticsControls = activeTab !== 'bank' && activeTab !== 'help';
 
   return (
     <main className={styles.shell}>
@@ -472,7 +504,7 @@ export default function AdminAnalyticsPage() {
             <h1>Тесты, кандидаты и банк вопросов.</h1>
             <p>Управление содержимым теста и понятные факты для проверки его качества.</p>
           </div>
-          {!(activeTab === 'questions' && questionView === 'bank') && (
+          {showAnalyticsControls && (
             <div className={styles.exportGroup} aria-label="Экспорт текущей когорты">
               <span>Экспорт когорты</span>
               <a href={exportHref('csv', filters)} download>CSV</a>
@@ -500,7 +532,7 @@ export default function AdminAnalyticsPage() {
           </section>
         )}
 
-        <nav className={styles.tabs} role="tablist" aria-label="Разделы аналитики" onKeyDown={moveTab}>
+        <nav className={styles.tabs} role="tablist" aria-label="Разделы администрирования" onKeyDown={moveTab}>
           {(Object.keys(tabLabels) as AnalyticsTab[]).map((tab) => (
             <button
               key={tab}
@@ -509,14 +541,14 @@ export default function AdminAnalyticsPage() {
               aria-selected={activeTab === tab}
               aria-controls={`admin-panel-${tab}`}
               tabIndex={activeTab === tab ? 0 : -1}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => selectTab(tab)}
             >
               {tabLabels[tab]}
             </button>
           ))}
         </nav>
 
-        {!(activeTab === 'questions' && questionView === 'bank') && (
+        {showAnalyticsControls && (
           <FilterBar
             filters={draftFilters}
             revisions={revisions}
@@ -545,15 +577,21 @@ export default function AdminAnalyticsPage() {
             </>
           )}
           {activeTab === 'questions' && (
-            <QuestionsPanel
+            <QuestionAnalyticsPanel
               filters={filters}
               revision={filtersRevision}
               csrfToken={session?.csrfToken ?? ''}
               onAdminError={handleAdminError}
-              view={questionView}
-              onViewChange={setQuestionView}
-              bankQuestionId={bankQuestionId}
               onOpenQuestionEditor={openQuestionEditor}
+              initialQuestionId={analyticsQuestionId}
+              onQuestionClosed={clearQuestionAnalyticsLink}
+            />
+          )}
+          {activeTab === 'bank' && (
+            <QuestionBankWorkspace
+              csrfToken={session?.csrfToken ?? ''}
+              onAdminError={handleAdminError}
+              bankQuestionId={bankQuestionId}
               onQuestionEditorClosed={clearQuestionEditorLink}
             />
           )}
@@ -582,6 +620,7 @@ export default function AdminAnalyticsPage() {
               onOpenQuestions={(value) => openQuestionDrilldown('difficulty', value)}
             />
           )}
+          {activeTab === 'help' && <AdminHelpPanel onNavigate={selectTab} />}
         </section>
       </div>
     </main>
@@ -1104,84 +1143,32 @@ function RevisionComparisonPanel({
   );
 }
 
-function QuestionsPanel({
-  view,
-  onViewChange,
-  ...props
-}: PanelProps & {
+function QuestionBankWorkspace({
+  csrfToken,
+  onAdminError,
+  bankQuestionId,
+  onQuestionEditorClosed,
+}: {
   csrfToken: string;
-  view: 'analytics' | 'bank';
-  onViewChange: (view: 'analytics' | 'bank') => void;
+  onAdminError: (error: unknown) => void;
   bankQuestionId: number | null;
-  onOpenQuestionEditor: (questionId: number) => void;
   onQuestionEditorClosed: () => void;
 }) {
-  const questionViews = ['analytics', 'bank'] as const;
-  function handleQuestionViewKey(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const current = questionViews.indexOf(view);
-    const next = event.key === 'Home'
-      ? questionViews[0]
-      : event.key === 'End'
-        ? questionViews.at(-1)!
-        : questionViews[(current + (event.key === 'ArrowRight' ? 1 : -1) + questionViews.length) % questionViews.length];
-    onViewChange(next);
-    window.requestAnimationFrame(() => document.getElementById(`question-view-${next}`)?.focus());
-  }
   return (
-    <div className={styles.questionWorkspace}>
-      <div className={styles.questionWorkspaceSwitcher}>
+    <div className={styles.bankWorkspace}>
+      <div className={styles.bankWorkspaceHeading}>
         <div>
-          <span>Работа с вопросами</span>
-          <strong>{view === 'analytics' ? 'Качество по результатам тестов' : 'Содержимое и редакции банка'}</strong>
-        </div>
-        <div role="tablist" aria-label="Режим работы с вопросами" onKeyDown={handleQuestionViewKey}>
-          <button
-            id="question-view-analytics"
-            type="button"
-            role="tab"
-            aria-selected={view === 'analytics'}
-            aria-controls="question-analytics-workspace"
-            tabIndex={view === 'analytics' ? 0 : -1}
-            onClick={() => onViewChange('analytics')}
-          >
-            Аналитика
-          </button>
-          <button
-            id="question-view-bank"
-            type="button"
-            role="tab"
-            aria-selected={view === 'bank'}
-            aria-controls="question-bank-workspace"
-            tabIndex={view === 'bank' ? 0 : -1}
-            onClick={() => onViewChange('bank')}
-          >
-            Банк вопросов
-          </button>
+          <p className={styles.eyebrow}>Банк вопросов</p>
+          <h2>Все вопросы и их редакции</h2>
+          <p>Активные и архивированные вопросы доступны в одном каталоге. Любое изменение содержания создаёт новую редакцию и сохраняет достоверность уже собранной аналитики.</p>
         </div>
       </div>
-      {view === 'analytics' ? (
-        <section id="question-analytics-workspace" role="tabpanel" aria-labelledby="question-view-analytics">
-          <QuestionAnalyticsPanel {...props} onOpenQuestionEditor={props.onOpenQuestionEditor} />
-        </section>
-      ) : (
-        <section id="question-bank-workspace" role="tabpanel" aria-labelledby="question-view-bank" className={styles.bankWorkspace}>
-          <div className={styles.bankWorkspaceHeading}>
-            <div>
-              <p className={styles.eyebrow}>Банк вопросов</p>
-              <h2>Просмотр и безопасное редактирование</h2>
-              <p>Изменение текста, темы или сложности создаёт новую редакцию: уже собранные результаты остаются достоверными.</p>
-            </div>
-          </div>
-          <QuestionBankPanel
-            csrfToken={props.csrfToken}
-            onAdminError={props.onAdminError}
-            initialQuestionId={props.bankQuestionId}
-            onQuestionClosed={props.onQuestionEditorClosed}
-          />
-        </section>
-      )}
+      <QuestionBankPanel
+        csrfToken={csrfToken}
+        onAdminError={onAdminError}
+        initialQuestionId={bankQuestionId}
+        onQuestionClosed={onQuestionEditorClosed}
+      />
     </div>
   );
 }
@@ -1192,19 +1179,28 @@ function QuestionAnalyticsPanel({
   csrfToken,
   onAdminError,
   onOpenQuestionEditor,
-}: PanelProps & { csrfToken: string; onOpenQuestionEditor: (questionId: number) => void }) {
+  initialQuestionId,
+  onQuestionClosed,
+}: PanelProps & {
+  csrfToken: string;
+  onOpenQuestionEditor: (questionId: number) => void;
+  initialQuestionId: number | null;
+  onQuestionClosed: () => void;
+}) {
   const [searchDraft, setSearchDraft] = useState('');
   const [search, setSearch] = useState('');
   const [sampleStatus, setSampleStatus] = useState<QuestionSampleStatus | 'all'>('all');
   const [sortValue, setSortValue] = useState('priority:asc');
   const [selected, setSelected] = useState<QuestionAnalyticsItemDto | null>(null);
   const [sort, direction] = sortValue.split(':') as [QuestionAnalyticsSort, AnalyticsSortDirection];
+  const deepLinkSearch = initialQuestionId ? String(initialQuestionId) : '';
+  const appliedSearch = deepLinkSearch || search;
   const extraQuery = useMemo(() => {
     const params = new URLSearchParams({ sort, direction });
-    if (search) params.set('q', search);
+    if (appliedSearch) params.set('q', appliedSearch);
     if (sampleStatus !== 'all') params.set('sampleStatus', sampleStatus);
     return params.toString();
-  }, [direction, sampleStatus, search, sort]);
+  }, [appliedSearch, direction, sampleStatus, sort]);
   const resource = usePagedAdminResource<QuestionAnalyticsItemDto>(
     'questions', filters, revision, onAdminError, questionPageKey, extraQuery,
   );
@@ -1219,16 +1215,20 @@ function QuestionAnalyticsPanel({
     setSearch('');
     setSampleStatus('all');
     setSortValue('priority:asc');
+    if (initialQuestionId) onQuestionClosed();
   }
 
   if (resource.loading) return <LoadingState />;
   if (resource.error || !resource.data) return <ErrorState message={resource.error} onRetry={resource.reload} />;
   const data = resource.data as QuestionAnalyticsListDto;
   const items = data.items;
+  const selectedQuestion = initialQuestionId
+    ? items.find((item) => item.questionId === initialQuestionId) ?? null
+    : selected;
   const summary = data.summary;
   const totalCount = data.totalCount;
   const hasQuestionFilters = Boolean(
-    search
+    appliedSearch
       || sampleStatus !== 'all'
       || filters.qualityStatus !== 'all'
       || filters.topic
@@ -1251,8 +1251,11 @@ function QuestionAnalyticsPanel({
           <span>Поиск по всему банку</span>
           <input
             type="search"
-            value={searchDraft}
-            onChange={(event) => setSearchDraft(event.target.value)}
+            value={deepLinkSearch || searchDraft}
+            onChange={(event) => {
+              if (initialQuestionId) onQuestionClosed();
+              setSearchDraft(event.target.value);
+            }}
             placeholder="ID, тема или текст вопроса"
             autoComplete="off"
           />
@@ -1283,7 +1286,7 @@ function QuestionAnalyticsPanel({
         </label>
         <div className={styles.questionToolbarActions}>
           <button className={styles.primaryButton} type="submit">Найти</button>
-          {(search || searchDraft || sampleStatus !== 'all' || sortValue !== 'priority:asc') && (
+          {(appliedSearch || searchDraft || sampleStatus !== 'all' || sortValue !== 'priority:asc') && (
             <button className={styles.quietButton} type="button" onClick={resetSearch}>Сбросить</button>
           )}
         </div>
@@ -1325,7 +1328,7 @@ function QuestionAnalyticsPanel({
                         <strong>{item.promptPreview}</strong>
                         <span>#{item.questionId} · {item.topic} · {difficultyLabels[item.difficulty] ?? item.difficulty}</span>
                       </button>
-                      <small>{questionKindLabel(item.kind)}{item.active ? '' : ' · выключен'}</small>
+                      <small>{questionKindLabel(item.kind)}{item.active ? '' : ' · архивирован'}</small>
                     </td>
                     <td data-label="Статус">
                       <QuestionStatusBadge item={item} />
@@ -1366,12 +1369,19 @@ function QuestionAnalyticsPanel({
           </button>
         </div>
       )}
-      {selected && (
+      {selectedQuestion && (
         <QuestionDetail
-          summary={selected}
+          summary={selectedQuestion}
           filters={filters}
           csrfToken={csrfToken}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelected(null);
+            if (initialQuestionId) {
+              setSearchDraft('');
+              setSearch('');
+              onQuestionClosed();
+            }
+          }}
           onAdminError={onAdminError}
           onOpenQuestionEditor={onOpenQuestionEditor}
         />
@@ -1679,7 +1689,7 @@ function QuestionDetail({
               <span>{difficultyLabels[data.difficulty] ?? data.difficulty}</span>
               <span>{data.topic}</span>
               <span>{questionKindLabel(data.kind)}</span>
-              {!data.active && <span className={styles.warningBadge}>Выключен</span>}
+              {!data.active && <span className={styles.warningBadge}>Архивирован</span>}
             </div>
             <h3>{data.prompt}</h3>
             {data.context && (
@@ -1822,7 +1832,7 @@ function QuestionDetail({
                 <select value={decision} onChange={(event) => setDecision(event.target.value as QuestionReviewDecision)}>
                   <option value="keep">Оставить</option>
                   <option value="observe">Наблюдать</option>
-                  <option value="disable_requested">Запросить отключение</option>
+                  <option value="disable_requested">Запросить архивацию</option>
                   <option value="new_revision_required">Нужна новая редакция</option>
                 </select>
               </label>

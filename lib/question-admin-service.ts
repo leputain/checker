@@ -5,6 +5,9 @@ import {
   questionContentHash,
   sha256Hex,
 } from '@/db/runtime.ts';
+import { analyticsAggregateState } from './analytics-aggregate-store.ts';
+import { fetchDerivedQuestionListReport } from './analytics-derived.ts';
+import { parseAnalyticsQuery } from './analytics-query.ts';
 import {
   evaluateQuestionBankReadiness,
   type QuestionBankReadiness,
@@ -15,38 +18,39 @@ import {
   validateQuestionBank,
   type QuestionDefinition,
 } from './question-bank-validation.ts';
-import {
-  DIFFICULTIES,
-  TEST_CONFIG,
-  type Difficulty,
-} from './test-config.ts';
+import { TEST_CONFIG } from './test-config.ts';
 import type {
   QuestionAdminDetailDto,
   QuestionAdminDetailResponseDto,
-  QuestionAdminDirection,
   QuestionAdminDraftDto,
   QuestionAdminErrorCode,
   QuestionAdminHistoryDto,
   QuestionAdminItemDto,
   QuestionAdminListDto,
   QuestionAdminMutationDto,
-  QuestionAdminSort,
-  QuestionAdminStatusFilter,
+  QuestionAdminQualityStatus,
   QuestionAdminToggleDto,
   QuestionBankEventType,
   QuestionBankHistoryEventDto,
   QuestionBankReadinessDto,
 } from './question-admin-contract.ts';
 import {
+  compareQuestionAdminItems,
+  encodeQuestionAdminCursor,
+  parseQuestionAdminListQuery as parseQuestionAdminListQueryValue,
+  QUESTION_ADMIN_SHA256_PATTERN,
+  questionAdminItemMatchesQuery,
+  questionAdminLifecycleStatus,
+  type QuestionAdminListQuery,
+} from './question-admin-query.ts';
+import {
   activeQuestionCategory,
   questionCategoryDependencyGuardStatement,
 } from './question-categories.ts';
 
 export const ADMIN_QUESTION_ID_FLOOR = 1_000_000;
-const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]{7,127}$/u;
 const MAX_NOTE_LENGTH = 500;
-const MAX_PAGE_SIZE = 100;
 
 type QuestionAdminRow = QuestionRow & {
   predecessor_id: number | null;
@@ -54,6 +58,8 @@ type QuestionAdminRow = QuestionRow & {
   usage_count: number;
   in_current_revision: number;
   selection_topic: string | null;
+  introduced_bank_revision: string | null;
+  introduced_at: number | null;
 };
 
 type MutationRecord = {
@@ -80,84 +86,20 @@ export class QuestionAdminServiceError extends Error {
   }
 }
 
-export type QuestionAdminListQuery = {
-  q: string;
-  topic: string | null;
-  difficulty: Difficulty | null;
-  status: QuestionAdminStatusFilter;
-  sort: QuestionAdminSort;
-  direction: QuestionAdminDirection;
-  offset: number;
-  cursorRevision: string | null;
-  limit: number;
-};
-
-function decodeCursor(value: string | null) {
-  if (!value) return { offset: 0, revision: null };
-  try {
-    const normalized = value.replace(/-/gu, '+').replace(/_/gu, '/');
-    const decoded = atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '='));
-    const cursor = JSON.parse(decoded) as { offset?: unknown; revision?: unknown };
-    if (
-      Number.isSafeInteger(cursor.offset) && Number(cursor.offset) >= 0
-      && typeof cursor.revision === 'string' && SHA256_PATTERN.test(cursor.revision)
-    ) {
-      return { offset: Number(cursor.offset), revision: cursor.revision };
-    }
-  } catch {
-    // Converted to a stable client error below.
-  }
-  throw new QuestionAdminServiceError('invalid_request', 400, ['Некорректный cursor']);
-}
-
-function encodeCursor(revision: string, offset: number) {
-  return btoa(JSON.stringify({ revision, offset }))
-    .replace(/\+/gu, '-').replace(/\//gu, '_').replace(/=+$/gu, '');
-}
-
-function one(params: URLSearchParams, name: string) {
-  const values = params.getAll(name);
-  if (values.length > 1) throw new QuestionAdminServiceError('invalid_request', 400);
-  return values[0] ?? null;
-}
-
 export function parseQuestionAdminListQuery(request: Request): QuestionAdminListQuery {
-  const params = new URL(request.url).searchParams;
-  const cursor = decodeCursor(one(params, 'cursor'));
-  const q = (one(params, 'q') ?? '').trim().slice(0, 160);
-  const topic = one(params, 'topic')?.trim() || null;
-  const difficultyValue = one(params, 'difficulty');
-  const difficulty = difficultyValue && DIFFICULTIES.includes(difficultyValue as Difficulty)
-    ? difficultyValue as Difficulty
-    : null;
-  if (difficultyValue && !difficulty) throw new QuestionAdminServiceError('invalid_request', 400);
-  const statusValue = one(params, 'status') ?? 'all';
-  if (!['all', 'active', 'inactive'].includes(statusValue)) {
-    throw new QuestionAdminServiceError('invalid_request', 400);
+  try {
+    return parseQuestionAdminListQueryValue(request);
+  } catch (error) {
+    const queryError = error as Partial<{
+      code: string;
+      status: number;
+      issues: string[];
+    }>;
+    if (queryError.code === 'invalid_request' && queryError.status === 400) {
+      throw new QuestionAdminServiceError('invalid_request', 400, queryError.issues);
+    }
+    throw error;
   }
-  const sortValue = one(params, 'sort') ?? 'id';
-  if (!['id', 'topic', 'difficulty', 'status'].includes(sortValue)) {
-    throw new QuestionAdminServiceError('invalid_request', 400);
-  }
-  const directionValue = one(params, 'direction') ?? 'desc';
-  if (!['asc', 'desc'].includes(directionValue)) {
-    throw new QuestionAdminServiceError('invalid_request', 400);
-  }
-  const limitValue = Number(one(params, 'limit') ?? 40);
-  if (!Number.isInteger(limitValue) || limitValue < 1 || limitValue > MAX_PAGE_SIZE) {
-    throw new QuestionAdminServiceError('invalid_request', 400);
-  }
-  return {
-    q,
-    topic,
-    difficulty,
-    status: statusValue as QuestionAdminStatusFilter,
-    sort: sortValue as QuestionAdminSort,
-    direction: directionValue as QuestionAdminDirection,
-    offset: cursor.offset,
-    cursorRevision: cursor.revision,
-    limit: limitValue,
-  };
 }
 
 function parseChoices(row: Pick<QuestionRow, 'choices_json'>) {
@@ -188,8 +130,11 @@ function definitionFromRow(row: QuestionAdminRow): QuestionDefinition {
 
 function itemFromRow(row: QuestionAdminRow): QuestionAdminItemDto {
   const promptPreview = row.prompt.length > 150 ? `${row.prompt.slice(0, 147)}…` : row.prompt;
+  const active = row.active === 1;
+  const lifecycleStatus = questionAdminLifecycleStatus(active, row.successor_id);
   return {
     id: row.id,
+    categoryId: row.category_id,
     difficulty: row.difficulty,
     topic: row.topic,
     prompt: row.prompt,
@@ -197,12 +142,17 @@ function itemFromRow(row: QuestionAdminRow): QuestionAdminItemDto {
     contextType: row.context_type ?? null,
     context: row.context_text,
     choices: parseChoices(row),
-    active: row.active === 1,
+    active,
     weight: row.weight,
     dedupeKey: row.dedupe_key,
     predecessorId: row.predecessor_id,
     successorId: row.successor_id,
     usageCount: row.usage_count,
+    lifecycleStatus,
+    currentRevisionMember: row.in_current_revision === 1,
+    introducedBankRevision: row.introduced_bank_revision,
+    introducedAt: row.introduced_at,
+    qualityStatus: lifecycleStatus === 'active' ? null : 'disabled',
   };
 }
 
@@ -228,7 +178,9 @@ async function allQuestionRows(db: D1Database) {
       successor.successor_question_id AS successor_id,
       COALESCE(usage.usage_count, 0) AS usage_count,
       CASE WHEN current_membership.question_id IS NULL THEN 0 ELSE 1 END AS in_current_revision,
-      category.selection_key AS selection_topic
+      category.selection_key AS selection_topic,
+      introduction.bank_revision AS introduced_bank_revision,
+      introduction.created_at AS introduced_at
     FROM questions
     LEFT JOIN question_bank_state current_state ON current_state.id = 1
     LEFT JOIN question_bank_revision_items current_membership
@@ -240,6 +192,16 @@ async function allQuestionRows(db: D1Database) {
     LEFT JOIN question_version_links successor
       ON successor.predecessor_question_id = questions.id
     LEFT JOIN (
+      SELECT events.question_id, events.bank_revision, events.created_at
+      FROM question_bank_change_events events
+      JOIN (
+        SELECT question_id, MIN(id) AS first_event_id
+        FROM question_bank_change_events
+        WHERE event_type IN ('created', 'revised')
+        GROUP BY question_id
+      ) first_event ON first_event.first_event_id = events.id
+    ) introduction ON introduction.question_id = questions.id
+    LEFT JOIN (
       SELECT question_id, COUNT(DISTINCT attempt_id) AS usage_count
       FROM attempt_questions GROUP BY question_id
     ) usage ON usage.question_id = questions.id
@@ -247,18 +209,41 @@ async function allQuestionRows(db: D1Database) {
   return rows.results;
 }
 
-function compareItems(
-  left: QuestionAdminItemDto,
-  right: QuestionAdminItemDto,
-  sort: QuestionAdminSort,
-) {
-  if (sort === 'topic') return left.topic.localeCompare(right.topic, 'ru-RU') || left.id - right.id;
-  if (sort === 'difficulty') {
-    return DIFFICULTIES.indexOf(left.difficulty) - DIFFICULTIES.indexOf(right.difficulty)
-      || left.id - right.id;
+async function questionQualitySnapshot(db: D1Database, revision: string) {
+  const state = await analyticsAggregateState(db);
+  if (!state.ready) {
+    throw new QuestionAdminServiceError(
+      'analytics_refresh_required',
+      409,
+      ['Для фильтра качества сначала обновите аналитическую проекцию'],
+    );
   }
-  if (sort === 'status') return Number(left.active) - Number(right.active) || left.id - right.id;
-  return left.id - right.id;
+  const url = new URL('http://localhost/api/admin/analytics/questions');
+  url.searchParams.set('bankRevision', revision);
+  url.searchParams.set('qualityStatus', 'all');
+  url.searchParams.set('questionKind', 'base');
+  url.searchParams.set('limit', '100');
+  const parsed = parseAnalyticsQuery(url);
+  const report = await fetchDerivedQuestionListReport(
+    db,
+    { ...parsed, cursorOffset: 0, limit: Number.MAX_SAFE_INTEGER },
+    true,
+  );
+  const finalState = await analyticsAggregateState(db);
+  if (!finalState.ready || finalState.builtGeneration !== state.builtGeneration) {
+    throw new QuestionAdminServiceError(
+      'catalog_snapshot_conflict',
+      409,
+      ['Аналитика изменилась во время чтения; повторите запрос'],
+    );
+  }
+  return {
+    generation: finalState.builtGeneration,
+    statuses: new Map(report.items.map((item) => [
+      item.questionId,
+      item.quality.status as QuestionAdminQualityStatus,
+    ])),
+  };
 }
 
 export async function listAdminQuestions(
@@ -270,43 +255,70 @@ export async function listAdminQuestions(
     throw new QuestionAdminServiceError('bank_revision_conflict', 409);
   }
   const rows = await allQuestionRows(db);
-  const definitions = rows.map(definitionFromRow);
   const currentDefinitions = rows
     .filter((row) => row.in_current_revision === 1)
     .map(definitionFromRow);
-  const activeCount = definitions.filter((question) => question.active).length;
   const categoryResult = await db.prepare(`SELECT name FROM question_categories
     WHERE active = 1 ORDER BY name`).all<{ name: string }>();
   const topics = categoryResult.results.map((category) => category.name);
-  const needle = query.q.toLocaleLowerCase('ru-RU');
-  const items = rows.map(itemFromRow).filter((item) => (
-    (!query.topic || item.topic === query.topic)
-    && (!query.difficulty || item.difficulty === query.difficulty)
-    && (query.status === 'all' || item.active === (query.status === 'active'))
-    && (!needle || [
-      String(item.id),
-      item.topic,
-      item.prompt,
-      item.context ?? '',
-      item.dedupeKey,
-      ...item.choices,
-    ].some((value) => value.toLocaleLowerCase('ru-RU').includes(needle)))
+  const qualityRequested = query.quality !== 'all' || query.sort === 'quality';
+  const quality = qualityRequested ? await questionQualitySnapshot(db, revision) : null;
+  if (
+    query.cursorQualityGeneration !== null
+    && query.cursorQualityGeneration !== quality?.generation
+  ) {
+    throw new QuestionAdminServiceError(
+      'catalog_snapshot_conflict',
+      409,
+      ['Качество вопросов изменилось; загрузите каталог заново'],
+    );
+  }
+  const allItems = rows.map(itemFromRow).map((item) => (
+    quality
+      ? {
+          ...item,
+          qualityStatus: item.lifecycleStatus === 'active'
+            ? quality.statuses.get(item.id) ?? 'insufficient'
+            : 'disabled',
+        }
+      : item
   ));
-  items.sort((left, right) => (
-    compareItems(left, right, query.sort) * (query.direction === 'asc' ? 1 : -1)
+  const items = allItems.filter((item) => questionAdminItemMatchesQuery(item, query));
+  items.sort((left, right) => compareQuestionAdminItems(
+    left,
+    right,
+    query.sort,
+    query.direction,
   ));
   const page = items.slice(query.offset, query.offset + query.limit);
   const nextOffset = query.offset + page.length;
+  const currentLeaf = allItems.filter((item) => (
+    item.currentRevisionMember && item.lifecycleStatus !== 'superseded'
+  ));
+  const activeCount = currentLeaf.filter((item) => item.lifecycleStatus === 'active').length;
+  const archivedCount = currentLeaf.length - activeCount;
+  if (await currentRevision(db) !== revision) {
+    throw new QuestionAdminServiceError(
+      'catalog_snapshot_conflict',
+      409,
+      ['Банк вопросов изменился во время чтения; загрузите каталог заново'],
+    );
+  }
   return {
     items: page,
     totalCount: items.length,
-    nextCursor: nextOffset < items.length ? encodeCursor(revision, nextOffset) : null,
+    nextCursor: nextOffset < items.length
+      ? encodeQuestionAdminCursor(revision, nextOffset, query, quality?.generation ?? null)
+      : null,
     currentBankRevision: revision,
     topics,
     bankCounts: {
-      total: definitions.length,
+      total: currentLeaf.length,
       active: activeCount,
-      inactive: definitions.length - activeCount,
+      inactive: archivedCount,
+      archived: archivedCount,
+      superseded: allItems.length - currentLeaf.length,
+      allRevisions: allItems.length,
     },
     readiness: readinessDto(evaluateQuestionBankReadiness(currentDefinitions)),
   };
@@ -415,7 +427,10 @@ function mutationMeta(value: Record<string, unknown>): NormalizedMutationMeta {
     ? null
     : typeof value.note === 'string' ? value.note.trim() || null : undefined;
   const issues: string[] = [];
-  if (typeof expectedBankRevision !== 'string' || !SHA256_PATTERN.test(expectedBankRevision)) {
+  if (
+    typeof expectedBankRevision !== 'string'
+    || !QUESTION_ADMIN_SHA256_PATTERN.test(expectedBankRevision)
+  ) {
     issues.push('expectedBankRevision должен быть SHA-256 текущей ревизии');
   }
   if (typeof idempotencyKey !== 'string' || !IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
@@ -539,6 +554,8 @@ function syntheticRow(
   question: QuestionDefinition,
   hash: string,
   predecessorId: number | null,
+  introducedBankRevision: string,
+  introducedAt: number,
 ): QuestionAdminRow {
   return {
     id: question.id,
@@ -559,6 +576,8 @@ function syntheticRow(
     usage_count: 0,
     in_current_revision: 1,
     selection_topic: question.selectionTopic ?? question.topic,
+    introduced_bank_revision: introducedBankRevision,
+    introduced_at: introducedAt,
   };
 }
 
@@ -635,7 +654,7 @@ async function persistRevision(
         active: options.question.active ? 1 : 0,
         content_hash: hash,
       }
-    : syntheticRow(options.question, hash, predecessorId);
+    : syntheticRow(options.question, hash, predecessorId, revision, now);
   const result: QuestionAdminMutationDto = {
     question: detailFromRow(resultRow),
     previousQuestionId: options.previousQuestionId,

@@ -34,7 +34,7 @@ export const QUESTION_LIMITS = {
   topicLength: 80,
   choiceLength: 160,
   choicesMin: 2,
-  choicesMax: 5,
+  choicesMax: 6,
   dedupeKeyLength: 80,
   contextLength: 2_000,
 } as const;

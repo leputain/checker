@@ -1,6 +1,6 @@
 {
   "name": "candidate-check",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -26,15 +26,17 @@
     "ops:retention": "node --experimental-strip-types scripts/ops-retention.ts",
     "analytics:benchmark": "node --experimental-strip-types scripts/analytics-benchmark.ts",
     "analytics:explain": "node --experimental-strip-types scripts/analytics-explain.ts",
+    "db:demo:seed": "node --experimental-strip-types scripts/demo-candidates.ts",
+    "db:demo:clear": "node --experimental-strip-types scripts/demo-candidates.ts --clear",
     "test": "npm run test:scoring && npm run test:attempts && npm run test:model && npm run test:bank && npm run test:leaderboard && npm run test:telegram && npm run test:admin && npm run test:analytics",
     "test:scoring": "node --experimental-strip-types scripts/scoring.test.ts",
     "test:attempts": "node --experimental-strip-types scripts/attempt-policy.test.ts",
     "test:model": "node --experimental-strip-types scripts/model-identity.test.ts && node --experimental-strip-types scripts/balanced-selection.test.ts && node --experimental-strip-types scripts/candidate-insights.test.ts",
-    "test:bank": "node --experimental-strip-types scripts/question-bank.test.ts && node --experimental-strip-types scripts/question-bank-readiness.test.ts && node --experimental-strip-types scripts/question-bank-workflow.test.ts",
+    "test:bank": "node --experimental-strip-types scripts/question-bank.test.ts && node --experimental-strip-types scripts/question-bank-readiness.test.ts && node --experimental-strip-types scripts/question-bank-workflow.test.ts && node --experimental-strip-types scripts/question-catalog.test.ts",
     "test:leaderboard": "node --experimental-strip-types scripts/leaderboard.test.ts",
     "test:telegram": "node --experimental-strip-types scripts/telegram-config.test.ts && node --experimental-strip-types scripts/telegram-client.test.ts && node --experimental-strip-types scripts/telegram-outbox-policy.test.ts",
     "test:admin": "node --experimental-strip-types scripts/admin-config.test.ts && node --experimental-strip-types scripts/admin-auth.test.ts",
-    "test:analytics": "node --experimental-strip-types scripts/analytics.test.ts && node --experimental-strip-types scripts/analytics-auto-refresh.test.ts",
+    "test:analytics": "node --experimental-strip-types scripts/analytics.test.ts && node --experimental-strip-types scripts/analytics-auto-refresh.test.ts && node --experimental-strip-types scripts/demo-candidates.test.ts",
     "test:analytics:performance": "node --experimental-strip-types scripts/analytics-benchmark.ts --assert",
     "test:ops": "node --experimental-strip-types scripts/runtime-lock.test.ts && node --experimental-strip-types scripts/ops.integration.test.ts && node --experimental-strip-types scripts/runtime-retention.test.ts && node --experimental-strip-types scripts/backup-retention.test.ts",
     "test:e2e": "node --experimental-strip-types scripts/reset-e2e-state.ts && playwright test",

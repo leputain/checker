@@ -380,7 +380,7 @@ test('admin analytics работает на iPad и не раскрывает к
   const defaultQuestionsResponsePromise = page.waitForResponse((response) => (
     new URL(response.url()).pathname === '/api/admin/analytics/questions'
   ));
-  await page.getByRole('tab', { name: 'Вопросы' }).click();
+  await page.getByRole('tab', { name: 'Аналитика вопросов' }).click();
   const defaultQuestionsResponse = await defaultQuestionsResponsePromise;
   const defaultQuestionsUrl = new URL(defaultQuestionsResponse.url());
   for (const parameter of ['scoringVersion', 'testConfigId', 'testProfileId', 'appVersion']) {
@@ -440,10 +440,12 @@ test('admin analytics работает на iPad и не раскрывает к
   expect(bodyText).not.toContain('ADMIN_PIN_HASH');
 
   const tabs = [
-    ['Вопросы', 'Качество вопросов'],
+    ['Аналитика вопросов', 'Качество вопросов'],
+    ['Банк вопросов', 'Все вопросы и их редакции'],
     ['Кандидаты', 'Кандидаты'],
     ['Темы', 'Аналитика по темам'],
     ['Сложность', 'Аналитика по сложности'],
+    ['Описание', 'Описание всех функций'],
     ['Обзор', 'Общая картина'],
   ] as const;
   for (const [tabName, heading] of tabs) {
@@ -453,7 +455,17 @@ test('admin analytics работает на iPad и не раскрывает к
     await expect(page.getByRole('tabpanel').getByRole('heading', { name: heading })).toBeVisible();
   }
 
-  await page.getByRole('tab', { name: 'Вопросы' }).click();
+  await page.getByRole('tab', { name: 'Описание' }).click();
+  await expect(page).toHaveURL(/\?tab=help$/u);
+  const helpPanel = page.getByRole('tabpanel');
+  await expect(helpPanel.getByRole('navigation', { name: 'Содержание описания функций' })).toBeVisible();
+  await expect(helpPanel.getByText('Архивированный вопрос', { exact: true })).toBeVisible();
+  await expect(helpPanel.getByText('Не выбирается для новых тестов, но остаётся в истории и аналитике.', { exact: true })).toBeVisible();
+  await expect(page.getByText('Изменить выборку', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Экспорт когорты', { exact: true })).toHaveCount(0);
+  await expectNoHorizontalOverflow(page);
+
+  await page.getByRole('tab', { name: 'Аналитика вопросов' }).click();
   await expect(page.getByRole('tabpanel').getByRole('heading', { name: 'Качество вопросов' })).toBeVisible();
   await page.locator('summary').filter({ hasText: 'Изменить выборку' }).click();
   await page.locator('summary > span').filter({ hasText: 'Техническая модель' }).click();
@@ -522,7 +534,7 @@ test('admin analytics показывает пагинацию, детали, д�
   await expect(page.getByRole('tabpanel').getByText('Базовый', { exact: true })).toBeVisible();
   await expect(page.getByRole('tabpanel').getByText('Сложный', { exact: true })).toBeVisible();
 
-  await page.getByRole('tab', { name: 'Вопросы' }).click();
+  await page.getByRole('tab', { name: 'Аналитика вопросов' }).click();
   const qualitySummary = page.getByRole('region', { name: 'Сводка качества вопросов' });
   await expect(qualitySummary).toContainText('Вопросов в выборке');
   await expect(qualitySummary).toContainText('Требуют проверки');
@@ -540,9 +552,11 @@ test('admin analytics показывает пагинацию, детали, д�
   await expect(page.getByRole('button', { name: 'Открыть аналитику вопроса 202' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Открыть аналитику вопроса 101' })).toHaveCount(1);
   await page.getByRole('button', { name: 'Открыть аналитику вопроса 101' }).click();
-  await expect(page.getByRole('dialog', { name: 'Вопрос #101' })).toBeVisible();
-  await expect(page.getByText('Какой протокол разрешает имена в IP-адреса?')).toBeVisible();
   const questionDialog = page.getByRole('dialog', { name: 'Вопрос #101' });
+  await expect(questionDialog).toBeVisible();
+  await expect(questionDialog.getByRole('heading', {
+    name: 'Какой протокол разрешает имена в IP-адреса?',
+  })).toBeVisible();
   for (const section of [
     'Диагноз',
     'Достоверность',
@@ -559,6 +573,13 @@ test('admin analytics показывает пагинацию, детали, д�
   await expect(questionDialog.getByText('75 из доступных 80', { exact: true })).toBeVisible();
   await expect(questionDialog.getByText(/Индекс неполный/u)).toBeVisible();
   await page.getByRole('button', { name: 'Закрыть' }).click();
+
+  await page.goto('/admin/analytics?tab=questions&questionId=101');
+  await expect(page.getByRole('dialog', { name: 'Вопрос #101' })).toBeVisible();
+  await expect(page.getByLabel('Поиск по всему банку')).toHaveValue('101');
+  await page.getByRole('dialog', { name: 'Вопрос #101' })
+    .getByRole('button', { name: 'Закрыть' }).click();
+  await expect(page).toHaveURL(/\/admin\/analytics\?tab=questions$/u);
 
   const searchResponsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());

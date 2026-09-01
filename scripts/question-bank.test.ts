@@ -186,7 +186,7 @@ assert.equal(
 const oversized = minimumBank();
 oversized[0].prompt = 'П'.repeat(281);
 oversized[0].topic = 'Т'.repeat(81);
-oversized[1].choices = ['A', 'B', 'C', 'D', 'E', 'F'];
+oversized[1].choices = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
 oversized[2].choices = ['A'.repeat(161), 'B'];
 oversized[3].dedupeKey = 'некорректный ключ';
 assert.throws(
@@ -195,11 +195,20 @@ assert.throws(
     assert.ok(error instanceof QuestionBankValidationError);
     assert.match(error.message, /prompt должен содержать не более 280/);
     assert.match(error.message, /topic должен содержать не более 80/);
-    assert.match(error.message, /choices должен содержать от 2 до 5/);
+    assert.match(error.message, /choices должен содержать от 2 до 6/);
     assert.match(error.message, /вариант choices должен содержать не более 160/);
     assert.match(error.message, /dedupeKey должен содержать/);
     return true;
   },
+);
+
+const sixChoices = minimumBank();
+sixChoices[0].choices = ['A', 'B', 'C', 'D', 'E', 'F'];
+sixChoices[0].correctIndex = 5;
+assert.equal(
+  validateQuestionBank(sixChoices, 'six-choices.json')[0].correctIndex,
+  5,
+  'админский редактор и candidate flow должны принимать шесть вариантов',
 );
 
 console.log('question bank tests: PASS');
