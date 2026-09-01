@@ -234,6 +234,7 @@ function mockCandidate(attemptId: string, score: number): CandidateAnalyticsItem
   return {
     attemptId,
     alias: `Кандидат ${attemptId.slice(-8)}`,
+    candidateName: attemptId.endsWith('101') ? 'Анна Петрова' : 'Иван Сидоров',
     completedAt: '2026-08-28T11:30:00.000Z',
     score,
     accuracy: score,
@@ -298,6 +299,23 @@ async function mockAdminAnalyticsUi(page: Page) {
     topics: [],
     difficulties: [],
     interviewerRecommendations: [],
+    questions: [{
+      questionId: 101,
+      ordinal: 1,
+      questionKind: 'base',
+      scoreValue: 4,
+      topic: 'Сети',
+      difficulty: 'medium',
+      prompt: 'Какой протокол разрешает имена в IP-адреса?',
+      contextType: null,
+      context: null,
+      status: 'incorrect',
+      selectedAnswer: 'DHCP',
+      correctAnswer: 'DNS',
+      elapsedSeconds: 12,
+      awardedScore: 0,
+      explanation: 'DNS сопоставляет доменные имена с IP-адресами.',
+    }],
   };
 
   await page.route('**/api/admin/analytics/**', async (route) => {
@@ -501,6 +519,10 @@ test('admin analytics работает на iPad и не раскрывает к
   ));
   expect(touchTargetHeights.every((height) => height >= 44)).toBe(true);
 
+  await page.evaluate(() => {
+    window.history.pushState(null, '', `${window.location.pathname}?tab=overview&history-check=1`);
+  });
+
   const logoutResponsePromise = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === '/api/admin/session' && response.request().method() === 'DELETE';
@@ -509,6 +531,11 @@ test('admin analytics работает на iPad и не раскрывает к
   expect((await logoutResponsePromise).status()).toBe(204);
   await expect(page).toHaveURL(/\/admin\/login$/u);
   await expect(page.getByLabel('PIN администратора')).toBeVisible();
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/admin\/login$/u);
+  await expect(page.getByLabel('PIN администратора')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Общая картина' })).toHaveCount(0);
 
   const loggedOutResponse = await page.request.get('/api/admin/analytics/overview');
   expect(loggedOutResponse.status()).toBe(401);
@@ -600,12 +627,19 @@ test('admin analytics показывает пагинацию, детали, д�
   await expectNoHorizontalOverflow(page);
 
   await page.getByRole('tab', { name: 'Кандидаты' }).click();
-  await expect(page.getByRole('button', { name: 'Кандидат 00000101' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Анна Петрова.*Кандидат 00000101/u })).toBeVisible();
   await page.getByRole('button', { name: 'Показать ещё' }).click();
-  await expect(page.getByRole('button', { name: 'Кандидат 00000202' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Кандидат 00000101' })).toHaveCount(1);
-  await page.getByRole('button', { name: 'Кандидат 00000101' }).click();
-  await expect(page.getByRole('dialog', { name: 'Кандидат 00000101' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Иван Сидоров.*Кандидат 00000202/u })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Анна Петрова.*Кандидат 00000101/u })).toHaveCount(1);
+  await page.getByRole('button', { name: /Анна Петрова.*Кандидат 00000101/u }).click();
+  const candidateDialog = page.getByRole('dialog', { name: 'Анна Петрова' });
+  await expect(candidateDialog).toBeVisible();
+  await expect(candidateDialog.getByRole('heading', { name: 'Анна Петрова' })).toBeVisible();
+  await expect(candidateDialog.getByText('Вопросы и ответы', { exact: true })).toBeVisible();
+  await expect(candidateDialog.getByText('Какой протокол разрешает имена в IP-адреса?', { exact: true })).toBeVisible();
+  await candidateDialog.getByText('Какой протокол разрешает имена в IP-адреса?', { exact: true }).click();
+  await expect(candidateDialog.getByText('DHCP', { exact: true })).toBeVisible();
+  await expect(candidateDialog.getByText('DNS', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Печать' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'JSON' })).toBeVisible();
   await expectNoHorizontalOverflow(page);

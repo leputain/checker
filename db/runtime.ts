@@ -48,7 +48,15 @@ import {
   ANALYTICS_FACTS_READINESS_QUERY,
 } from '@/lib/analytics-facts-integrity.ts';
 import { summarizeQuestionBank, type QuestionDefinition } from '@/lib/question-bank-validation.ts';
+import { registerQuestionBankCacheInvalidator } from '@/lib/question-bank-cache.ts';
+import {
+  questionBankRevision as calculateQuestionBankRevision,
+  questionContentHash,
+  sha256,
+  sha256Hex,
+} from '@/lib/question-bank-hash.ts';
 import { loadQuestionBank } from './question-bank';
+import { loadAttemptQuestionReview } from './attempt-review.ts';
 import {
   normalizeQuestionCategoryName,
   planQuestionCategoryBootstrap,
@@ -120,6 +128,10 @@ export class QuestionBankConflictError extends Error {
 
 let schemaInitialization: Promise<void> | null = null;
 let bankInitialization: Promise<string> | null = null;
+
+registerQuestionBankCacheInvalidator(() => {
+  bankInitialization = null;
+});
 
 export function database() {
   if (!env.DB) throw new Error('SQLite binding DB is unavailable');
@@ -270,54 +282,11 @@ export async function analyticsFactsIntegrityViolations(
   return row?.violations ?? 0;
 }
 
-export async function sha256(value: string) {
-  const bytes = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return new Uint8Array(digest);
-}
-
-export async function sha256Hex(value: string) {
-  return Array.from(await sha256(value), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function canonicalQuestion(question: QuestionDefinition) {
-  return {
-    id: question.id,
-    difficulty: question.difficulty,
-    topic: question.topic,
-    prompt: question.prompt,
-    ...(question.contextType && question.context !== undefined
-      ? { contextType: question.contextType, context: question.context }
-      : {}),
-    choices: question.choices,
-    correctIndex: question.correctIndex,
-    weight: TEST_CONFIG.weights[question.difficulty],
-  };
-}
-
-export async function questionContentHash(question: QuestionDefinition) {
-  // dedupeKey affects both selection and historical interviewer grouping, so it
-  // is immutable for an existing question id just like prompt/choices/weight.
-  return sha256Hex(JSON.stringify({
-    ...canonicalQuestion(question),
-    dedupeKey: question.dedupeKey,
-  }));
-}
-
 export async function questionBankRevision(questions = loadQuestionBank()) {
-  const canonical = [...questions]
-    .sort((left, right) => left.id - right.id)
-    .map((question) => ({
-      ...canonicalQuestion(question),
-      active: question.active,
-      dedupeKey: question.dedupeKey,
-    }));
-  return sha256Hex(JSON.stringify(canonical));
+  return calculateQuestionBankRevision(questions);
 }
 
-export function invalidateQuestionBankCache() {
-  bankInitialization = null;
-}
+export { questionContentHash, sha256, sha256Hex };
 
 function rowMatchesQuestion(row: QuestionRow, question: QuestionDefinition) {
   return (
@@ -887,7 +856,10 @@ export async function attemptPayload(attempt: AttemptRow) {
     // Stored legacy verdicts are authoritative. Normalization is only a read-time
     // fallback for old/test rows that were completed before verdict persistence.
     const verdict = attempt.verdict ?? calculateVerdict(scoreForVerdict, accuracy);
-    const resultStats = await loadAttemptResultStats(attempt, baseQuestionIds);
+    const [resultStats, questionReview] = await Promise.all([
+      loadAttemptResultStats(attempt, baseQuestionIds),
+      loadAttemptQuestionReview(database(), attempt.id),
+    ]);
     return {
       attemptId: attempt.id,
       alias: attempt.public_alias,
@@ -914,6 +886,9 @@ export async function attemptPayload(attempt: AttemptRow) {
         additionalCorrectCount: resultStats.additionalCorrectCount,
         difficultyStats: resultStats.difficultyStats,
         breakdown: resultStats.breakdown,
+        review: questionReview.filter((item) => (
+          item.status === 'incorrect' || item.status === 'timeout'
+        )),
         completedAt: new Date(
           attempt.completed_at ?? attempt.started_at + (attempt.duration_seconds ?? 0) * 1_000,
         ).toISOString(),

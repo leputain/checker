@@ -263,32 +263,50 @@ export default function AdminAnalyticsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    void adminRequest<AdminSessionDto>('/api/admin/session')
-      .then((nextSession) => {
-        if (cancelled) return;
-        if (!nextSession.enabled) {
-          setSessionState('disabled');
-          return;
-        }
-        if (!nextSession.authenticated) {
-          window.location.replace(loginPath());
-          return;
-        }
-        setSession(nextSession);
-        setSessionState('ready');
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        if (error instanceof AdminRequestError && error.code === 'unauthorized') {
-          window.location.replace(loginPath());
-          return;
-        }
-        setSessionState(error instanceof AdminRequestError && error.code === 'admin_disabled'
-          ? 'disabled'
-          : 'unavailable');
-        setSessionError(adminErrorMessage(error));
-      });
-    return () => { cancelled = true; };
+    let requestSequence = 0;
+    const verifySession = () => {
+      const sequence = ++requestSequence;
+      setSession(null);
+      setSessionState('checking');
+      void adminRequest<AdminSessionDto>('/api/admin/session')
+        .then((nextSession) => {
+          if (cancelled || sequence !== requestSequence) return;
+          if (!nextSession.enabled) {
+            setSessionState('disabled');
+            return;
+          }
+          if (!nextSession.authenticated) {
+            window.location.replace(loginPath());
+            return;
+          }
+          setSession(nextSession);
+          setSessionState('ready');
+        })
+        .catch((error: unknown) => {
+          if (cancelled || sequence !== requestSequence) return;
+          if (error instanceof AdminRequestError && error.code === 'unauthorized') {
+            window.location.replace(loginPath());
+            return;
+          }
+          setSessionState(error instanceof AdminRequestError && error.code === 'admin_disabled'
+            ? 'disabled'
+            : 'unavailable');
+          setSessionError(adminErrorMessage(error));
+        });
+    };
+    const verifyVisibleSession = () => {
+      if (document.visibilityState === 'visible') verifySession();
+    };
+    verifySession();
+    window.addEventListener('pageshow', verifySession);
+    window.addEventListener('popstate', verifySession);
+    document.addEventListener('visibilitychange', verifyVisibleSession);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('pageshow', verifySession);
+      window.removeEventListener('popstate', verifySession);
+      document.removeEventListener('visibilitychange', verifyVisibleSession);
+    };
   }, []);
 
   useEffect(() => {
@@ -374,6 +392,8 @@ export default function AdminAnalyticsPage() {
   }
 
   async function logout() {
+    setSession(null);
+    setSessionState('checking');
     try {
       await adminRequest<void>('/api/admin/session', {
         method: 'DELETE',
@@ -1479,7 +1499,7 @@ function CandidatesPanel({ filters, revision, onAdminError }: PanelProps) {
     <div className={styles.panelStack}>
       <PanelHeading
         title="Кандидаты"
-        description="Обезличенные результаты и профиль для подготовки следующего этапа."
+        description="Результаты, имена новых кандидатов и подробный журнал каждого прохождения."
         cohort={resource.data.cohort}
       />
       <div className={styles.localFilters}>
@@ -1513,7 +1533,12 @@ function CandidatesPanel({ filters, revision, onAdminError }: PanelProps) {
             <tbody>
               {items.map((item) => (
                 <tr key={item.attemptId}>
-                  <td data-label="Кандидат"><button className={styles.rowLink} onClick={() => setSelected(item)}>{item.alias}</button></td>
+                  <td data-label="Кандидат">
+                    <button className={`${styles.rowLink} ${styles.candidateIdentity}`} onClick={() => setSelected(item)}>
+                      <strong>{item.candidateName ?? 'Имя ранее удалено'}</strong>
+                      <small>{item.alias}</small>
+                    </button>
+                  </td>
                   <td data-label="Дата">{dateLabel(item.completedAt)}</td>
                   <td data-label="Результат"><strong>{item.score} / 100</strong></td>
                   <td data-label="Точность">{item.accuracy}%</td>
@@ -1883,6 +1908,10 @@ function CandidateDetail({
     filters,
     onAdminError,
   );
+  const [questionView, setQuestionView] = useState<'all' | 'mistakes'>('mistakes');
+  const visibleQuestions = (detail.data?.questions ?? []).filter((question) => (
+    questionView === 'all' || question.status === 'incorrect' || question.status === 'timeout'
+  ));
 
   function downloadReport() {
     if (!detail.data) return;
@@ -1898,7 +1927,7 @@ function CandidateDetail({
   }
 
   return (
-    <DetailDialog title={summary.alias} onClose={onClose} printSurface>
+    <DetailDialog title={summary.candidateName ?? summary.alias} onClose={onClose} printSurface>
       {detail.loading ? <LoadingState compact /> : detail.error || !detail.data ? (
         <ErrorState message={detail.error} onRetry={detail.reload} compact />
       ) : (
@@ -1906,6 +1935,8 @@ function CandidateDetail({
           <div className={styles.candidateHero}>
             <div>
               <p className={styles.eyebrow}>Отчёт кандидата</p>
+              <h2 className={styles.candidateName}>{detail.data.candidateName ?? 'Имя было удалено по прежней политике хранения'}</h2>
+              <p className={styles.candidateAlias}>{detail.data.alias} · попытка {detail.data.attemptId.slice(-8)}</p>
               <h3>{detail.data.score} / 100 баллов</h3>
               <VerdictBadge verdict={detail.data.verdict} />
             </div>
@@ -1933,6 +1964,55 @@ function CandidateDetail({
               key: difficultyLabels[item.key] ?? item.key,
             }))}
           />
+          <section className={styles.candidateQuestions}>
+            <div className={styles.cardHeading}>
+              <div>
+                <p className={styles.eyebrow}>Журнал прохождения</p>
+                <h3>Вопросы и ответы</h3>
+              </div>
+              <div className={styles.questionViewSwitch} role="group" aria-label="Фильтр вопросов кандидата" data-print-hidden>
+                <button type="button" aria-pressed={questionView === 'mistakes'} onClick={() => setQuestionView('mistakes')}>Ошибки</button>
+                <button type="button" aria-pressed={questionView === 'all'} onClick={() => setQuestionView('all')}>Все</button>
+              </div>
+            </div>
+            <div className={styles.questionJournalSummary}>
+              <span><strong>{detail.data.questions.length}</strong> назначено</span>
+              <span><strong>{detail.data.questions.filter((item) => item.status !== 'unshown').length}</strong> показано и завершено</span>
+              <span><strong>{detail.data.questions.filter((item) => item.status === 'incorrect' || item.status === 'timeout').length}</strong> ошибок и тайм-аутов</span>
+            </div>
+            {visibleQuestions.length === 0 ? (
+              <EmptyState compact title="Ошибок нет" message="Все показанные вопросы были решены правильно." />
+            ) : (
+              <div className={styles.candidateQuestionList}>
+                {visibleQuestions.map((question) => (
+                  <details className={styles.candidateQuestionCard} key={`${question.ordinal}-${question.questionId}`}>
+                    <summary>
+                      <span className={styles.questionOrdinal}>{String(question.ordinal).padStart(2, '0')}</span>
+                      <span>
+                        <small>{question.questionKind === 'base' ? 'Основной' : 'Дополнительный'} · {difficultyLabels[question.difficulty] ?? question.difficulty} · {question.topic}</small>
+                        <strong>{question.prompt}</strong>
+                      </span>
+                      <span className={styles.questionOutcome} data-status={question.status}>
+                        {question.status === 'correct' ? 'Верно' : question.status === 'incorrect' ? 'Ошибка' : question.status === 'timeout' ? 'Тайм-аут' : 'Не показан'}
+                      </span>
+                    </summary>
+                    <div className={styles.candidateQuestionBody}>
+                      {question.context && <pre className={styles.contextBlock}><code>{question.context}</code></pre>}
+                      <dl className={styles.candidateAnswers}>
+                        <div><dt>Ответ кандидата</dt><dd>{question.status === 'timeout' ? 'Время истекло' : question.selectedAnswer ?? 'Нет ответа'}</dd></div>
+                        <div><dt>Правильный ответ</dt><dd>{question.correctAnswer}</dd></div>
+                        <div><dt>Время</dt><dd>{question.elapsedSeconds === null ? '—' : `${question.elapsedSeconds} сек.`}</dd></div>
+                        <div><dt>Баллы</dt><dd>{question.awardedScore} из {question.scoreValue}</dd></div>
+                      </dl>
+                      {(question.status === 'incorrect' || question.status === 'timeout') && (
+                        <p className={styles.questionExplanation}><strong>Пояснение:</strong> {question.explanation}</p>
+                      )}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
+          </section>
           <section className={styles.interviewSection}>
             <div className={styles.cardHeading}>
               <div><p className={styles.eyebrow}>Следующий этап</p><h3>Что проверить на интервью</h3></div>
@@ -1952,7 +2032,7 @@ function CandidateDetail({
               </ol>
             )}
           </section>
-          <p className={styles.generatedAt}>Сформировано {dateLabel(detail.data.generatedAt)} · данные обезличены</p>
+          <p className={styles.generatedAt}>Сформировано {dateLabel(detail.data.generatedAt)} · имя доступно только в административной сессии</p>
         </div>
       )}
     </DetailDialog>

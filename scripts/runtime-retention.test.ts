@@ -112,8 +112,8 @@ try {
   assert.deepEqual(attempts.results, [
     { id: 'aborted-fresh', candidate_name: null },
     { id: 'active-fresh', candidate_name: 'Active Fresh' },
-    { id: 'completed-old', candidate_name: null },
-    { id: 'completed-pending', candidate_name: null },
+    { id: 'completed-old', candidate_name: 'Completed Old' },
+    { id: 'completed-pending', candidate_name: 'Completed Pending' },
   ]);
 
   const completedChildren = await db.prepare(`SELECT

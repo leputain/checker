@@ -1,3 +1,5 @@
+import type { AttemptQuestionReviewDto } from './attempt-review.ts';
+
 export const ANALYTICS_SAMPLE_GATES = [30, 50, 100] as const;
 export const QUESTION_ANALYTICS_MODEL_VERSION = 2 as const;
 
@@ -306,6 +308,7 @@ export type CreateQuestionReviewDto = {
 export type CandidateAnalyticsItemDto = {
   attemptId: string;
   alias: string;
+  candidateName: string | null;
   completedAt: string;
   score: number;
   accuracy: number;
@@ -324,6 +327,7 @@ export type CandidatePrintDto = CandidateAnalyticsItemDto & {
   topics: CandidateDimensionPerformanceDto[];
   difficulties: CandidateDimensionPerformanceDto[];
   interviewerRecommendations: InterviewerRecommendationDto[];
+  questions: AttemptQuestionReviewDto[];
 };
 
 export type CandidatePerformanceClassification = 'strong' | 'normal' | 'review' | 'insufficient';

@@ -1,3 +1,4 @@
+import { loadAttemptQuestionReview } from '../db/attempt-review.ts';
 import { calculateAccuracy } from './scoring.ts';
 import {
   analyticsCursor,
@@ -618,6 +619,7 @@ export async function fetchQuestionDetailReport(
 
 type RawCandidate = {
   id: string;
+  candidate_name: string | null;
   score: number;
   correct_count: number;
   wrong_count: number;
@@ -648,7 +650,7 @@ export function candidateListStatement(query: ParsedAnalyticsQuery): AnalyticsSq
       SELECT *, COUNT(*) OVER () AS total_count
       FROM filtered_attempts ORDER BY completed_at DESC, id DESC LIMIT ? OFFSET ?
     )
-    SELECT pa.id, pa.score, pa.correct_count, pa.wrong_count,
+    SELECT pa.id, pa.candidate_name, pa.score, pa.correct_count, pa.wrong_count,
       pa.verdict, pa.completed_at, pa.duration_seconds, pa.total_count,
       SUM(CASE WHEN aq.question_kind = 'base' AND ${exactResolved()}
         THEN 1 ELSE 0 END) AS base_answered,
@@ -662,7 +664,7 @@ export function candidateListStatement(query: ParsedAnalyticsQuery): AnalyticsSq
     FROM paged_attempts pa
     LEFT JOIN attempt_questions aq ON aq.attempt_id = pa.id
     LEFT JOIN answers a ON a.attempt_id = aq.attempt_id AND a.question_id = aq.question_id
-    GROUP BY pa.id, pa.score, pa.correct_count, pa.wrong_count,
+    GROUP BY pa.id, pa.candidate_name, pa.score, pa.correct_count, pa.wrong_count,
       pa.verdict, pa.completed_at, pa.duration_seconds, pa.total_count
     ORDER BY pa.completed_at DESC, pa.id DESC`,
     bindings: [
@@ -687,6 +689,7 @@ export async function fetchCandidateListReport(
   const items = result.results.map((row): CandidateAnalyticsItemDto => ({
     attemptId: row.id,
     alias: adminCandidateAlias(row.id),
+    candidateName: row.candidate_name,
     completedAt: new Date(row.completed_at).toISOString(),
     score: row.score,
     accuracy: calculateAccuracy(row.correct_count, row.wrong_count),
@@ -715,12 +718,12 @@ async function fetchCandidateAttempt(
   const cohort = eligibleAttemptsCte(query);
   const row = await bind(db, {
     sql: `${cohort.sql}
-      SELECT id, bank_revision, app_version, score, correct_count,
+      SELECT id, candidate_name, bank_revision, app_version, score, correct_count,
         wrong_count, verdict, completed_at, duration_seconds, base_max_score
       FROM eligible_attempts WHERE id = ? LIMIT 1`,
     bindings: [...cohort.bindings, attemptId],
   }).first<{
-    id: string; bank_revision: string; app_version: string;
+    id: string; candidate_name: string | null; bank_revision: string; app_version: string;
     score: number; correct_count: number; wrong_count: number;
     verdict: 'PASS' | 'REVIEW' | 'FAIL'; completed_at: number;
     duration_seconds: number; base_max_score: number;
@@ -729,6 +732,7 @@ async function fetchCandidateAttempt(
   return {
     id: row.id,
     alias: adminCandidateAlias(row.id),
+    candidateName: row.candidate_name,
     bankRevision: row.bank_revision,
     appVersion: row.app_version,
     score: row.score,
@@ -804,8 +808,12 @@ export async function fetchCandidatePrintReport(
 ): Promise<CandidatePrintDto | null> {
   const attempt = await fetchCandidateAttempt(db, query, attemptId);
   if (!attempt) return null;
-  const facts = await fetchCandidateFacts(db, attemptId);
-  return buildCandidatePrint([attempt], facts, attemptId);
+  const [facts, questions] = await Promise.all([
+    fetchCandidateFacts(db, attemptId),
+    loadAttemptQuestionReview(db, attemptId),
+  ]);
+  const report = buildCandidatePrint([attempt], facts, attemptId);
+  return report ? { ...report, questions } : null;
 }
 
 type RawGroup = {

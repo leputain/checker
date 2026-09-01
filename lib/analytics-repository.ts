@@ -13,6 +13,7 @@ import type {
 export type AnalyticsAttemptRow = {
   id: string;
   alias: string;
+  candidateName?: string | null;
   bankRevision: string;
   appVersion: string;
   score: number;
@@ -74,6 +75,7 @@ export async function resolveCurrentBankRevision(
 
 type RawAttempt = {
   id: string;
+  candidate_name: string | null;
   public_alias: string;
   bank_revision: string;
   app_version: string;
@@ -94,6 +96,7 @@ function mapAttempt(row: RawAttempt): AnalyticsAttemptRow {
   return {
     id: row.id,
     alias: row.public_alias,
+    candidateName: row.candidate_name,
     bankRevision: row.bank_revision,
     appVersion: row.app_version,
     score: row.score,
@@ -119,7 +122,7 @@ export function analyticsAttemptsStatement(query: ParsedAnalyticsQuery): Analyti
   const cohort = eligibleAttemptsCte(query);
   return {
     sql: `${cohort.sql}
-    SELECT id, public_alias, bank_revision, app_version, score, correct_count,
+    SELECT id, candidate_name, public_alias, bank_revision, app_version, score, correct_count,
       wrong_count, verdict, completed_at, duration_seconds, base_max_score
     FROM eligible_attempts
     ORDER BY completed_at DESC, id DESC`,

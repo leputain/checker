@@ -155,7 +155,8 @@ export async function runRetention(options: RetentionRunOptions = {}) {
         db.prepare(`UPDATE telegram_outbox SET payload_text = ''
           WHERE created_at < ? AND payload_text != ''`).bind(abandonedCutoff),
         db.prepare(`UPDATE attempts SET candidate_name = NULL
-          WHERE started_at < ? AND candidate_name IS NOT NULL`).bind(abandonedCutoff),
+          WHERE started_at < ? AND candidate_name IS NOT NULL
+            AND status != 'completed'`).bind(abandonedCutoff),
         db.prepare('DELETE FROM analytics_report_aggregates'),
         db.prepare('DELETE FROM analytics_candidate_dimensions'),
         db.prepare('DELETE FROM analytics_daily_timing_aggregates'),

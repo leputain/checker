@@ -523,6 +523,7 @@ assert.match(csv, /"normal;topic";2\r\n/u);
 const recommendationCandidate = {
   attemptId: 'candidate-attempt',
   alias: 'Кандидат К.',
+  candidateName: 'Тестовый Кандидат',
   completedAt: new Date(now).toISOString(),
   score: 40,
   accuracy: 40,
@@ -901,7 +902,7 @@ try {
   const db = await miniflare.getD1Database('DB');
   const statements = [
     `CREATE TABLE attempts (
-      id TEXT PRIMARY KEY, candidate_key TEXT NOT NULL, public_alias TEXT NOT NULL,
+      id TEXT PRIMARY KEY, candidate_name TEXT, candidate_key TEXT NOT NULL, public_alias TEXT NOT NULL,
       bank_revision TEXT NOT NULL, app_version TEXT NOT NULL, scoring_version INTEGER NOT NULL,
       test_config_id TEXT NOT NULL, test_profile_id TEXT NOT NULL,
       selection_version INTEGER NOT NULL DEFAULT 1,
@@ -979,10 +980,10 @@ try {
     'a ready bank without attempts returns honest empty analytics',
   );
   const insertAttempt = db.prepare(`INSERT INTO attempts (
-    id, candidate_key, public_alias, bank_revision, app_version, scoring_version,
+    id, candidate_name, candidate_key, public_alias, bank_revision, app_version, scoring_version,
     test_config_id, test_profile_id, score, correct_count, wrong_count, verdict,
     completed_at, duration_seconds, base_max_score, status, analytics_facts_version, started_at
-  ) VALUES (?, 'same-candidate', 'Иван Иванов', ?, '0.8.0', ?, ?, ?, ?, 1, 0,
+  ) VALUES (?, 'Иван Иванов', 'same-candidate', 'Иван И.', ?, '0.8.0', ?, ?, ?, ?, 1, 0,
     'PASS', ?, 30, 100, 'completed', ?, ?)`);
   await db.batch([
     insertAttempt.bind('old-a', revisionA, SCORING_VERSION, TEST_CONFIG_ID, TEST_PROFILE_ID, 60, now - 5_000, ANALYTICS_FACTS_VERSION, now - 10_000),
@@ -1080,7 +1081,8 @@ try {
   const derivedCandidates = await fetchDerivedCandidateListReport(db, equivalenceQuery);
   assert.deepEqual(derivedCandidates.items, directCandidates.items);
   assert.ok(derivedCandidates.items.every((item) => item.alias.startsWith('Кандидат ')));
-  assert.doesNotMatch(JSON.stringify(derivedCandidates), /Иван Иванов|Кандидат К\./u);
+  assert.ok(derivedCandidates.items.every((item) => item.candidateName === 'Иван Иванов'));
+  assert.doesNotMatch(JSON.stringify(derivedCandidates), /Кандидат К\./u);
   const firstCandidatePage = await fetchDerivedCandidateListReport(
     db,
     { ...equivalenceQuery, questionKind: 'all', limit: 1, cursorOffset: 0 },
@@ -1172,9 +1174,13 @@ try {
   const directPrint = await fetchCandidatePrintReport(db, equivalenceQuery, 'new-a');
   const purePrint = buildCandidatePrint(equivalenceAttempts, equivalenceFacts, 'new-a');
   assert.ok(directPrint && purePrint);
+  const { questions: directCandidateQuestions, ...directPrintSummary } = directPrint;
+  const { questions: pureCandidateQuestions, ...purePrintSummary } = purePrint;
+  assert.ok(directCandidateQuestions.length > 0, 'admin candidate detail includes the question ledger');
+  assert.deepEqual(pureCandidateQuestions, [], 'pure aggregate builder does not expose answer content');
   assert.deepEqual(
-    { ...directPrint, generatedAt: 'stable' },
-    { ...purePrint, generatedAt: 'stable' },
+    { ...directPrintSummary, generatedAt: 'stable' },
+    { ...purePrintSummary, generatedAt: 'stable' },
   );
   const derivedPrint = await fetchDerivedCandidatePrintReport(db, equivalenceQuery, 'new-a');
   assert.deepEqual(derivedPrint, directPrint);

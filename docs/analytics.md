@@ -122,11 +122,13 @@ Overview показывает pilot-сравнение Coverage Score для leg
 - completed attempts, answers и exact ledger хранятся бессрочно;
 - active/aborted старше 24 часов удаляются фоновым maintenance при работающем приложении,
   при restore и дополнительно управляемой командой retention;
-- `candidate_name` очищается не позднее 24 часов;
+- имя завершённого кандидата сохраняется вместе с попыткой для административной карточки; уже очищенные legacy-имена не восстанавливаются;
+- имя active/aborted попытки очищается вместе с 24-часовой политикой abandoned-данных;
 - Telegram payload очищается после доставки и аварийно по retention;
-- analytics API не возвращает полное имя, token hash, correct answer, текст вариантов, raw selected answer или Telegram payload;
+- агрегатные analytics API не возвращают имя, token hash, ключи ответов или Telegram payload;
+- защищённый detail endpoint конкретного кандидата возвращает имя, журнал вопросов, выбранные и правильные ответы только действующей admin-сессии;
 - admin alias формируется из короткого opaque attempt ID; `public_alias` не копируется в derived tables;
-- CSV/JSON export содержит только агрегаты и metadata фильтров.
+- общий CSV/JSON export содержит только агрегаты и metadata фильтров; JSON из карточки кандидата является чувствительным административным отчётом.
 
 ## Эксплуатация
 

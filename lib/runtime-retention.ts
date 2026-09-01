@@ -37,6 +37,7 @@ export async function applyRuntimeRetention(
     db.prepare(`UPDATE attempts
       SET candidate_name = NULL
       WHERE candidate_name IS NOT NULL
+        AND status != 'completed'
         AND (
           started_at <= ?
           OR (

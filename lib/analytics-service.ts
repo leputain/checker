@@ -496,6 +496,7 @@ function candidateItem(
   return {
     attemptId: attempt.id,
     alias: adminCandidateAlias(attempt.id),
+    candidateName: attempt.candidateName ?? null,
     completedAt: new Date(attempt.completedAt).toISOString(),
     score: attempt.score,
     accuracy: calculateAccuracy(attempt.correctCount, attempt.wrongCount),
@@ -684,6 +685,7 @@ export function buildCandidatePrint(
         timeoutCount: area.timeoutCount,
       })),
     }),
+    questions: [],
   };
 }
 

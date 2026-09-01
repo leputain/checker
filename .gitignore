@@ -34,6 +34,7 @@ yarn-error.log*
 /admin_pin.txt
 /.dev.vars*
 /db/questions.json
+/db/questions.import-*.json
 /ib_admin_questions_130.json
 /backups/
 /.data/

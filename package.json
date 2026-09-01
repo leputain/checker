@@ -1,6 +1,6 @@
 {
   "name": "candidate-check",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "private": true,
   "engines": {
     "node": ">=22.13.0"
@@ -14,6 +14,8 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "questions:validate": "node --experimental-strip-types scripts/validate-question-bank.ts",
+    "questions:import-markdown": "node scripts/import-question-bank-markdown.mjs",
+    "questions:apply-local": "tsx scripts/apply-question-bank-local.ts",
     "questions:stats": "node --experimental-strip-types scripts/questions-stats.ts",
     "questions:readiness": "node --experimental-strip-types scripts/questions-readiness.ts",
     "telegram:test": "node --experimental-strip-types scripts/telegram-test-message.ts",
@@ -30,7 +32,7 @@
     "db:demo:clear": "node --experimental-strip-types scripts/demo-candidates.ts --clear",
     "test": "npm run test:scoring && npm run test:attempts && npm run test:model && npm run test:bank && npm run test:leaderboard && npm run test:telegram && npm run test:admin && npm run test:analytics",
     "test:scoring": "node --experimental-strip-types scripts/scoring.test.ts",
-    "test:attempts": "node --experimental-strip-types scripts/attempt-policy.test.ts",
+    "test:attempts": "node --experimental-strip-types scripts/attempt-policy.test.ts && node --experimental-strip-types scripts/attempt-review.test.ts",
     "test:model": "node --experimental-strip-types scripts/model-identity.test.ts && node --experimental-strip-types scripts/balanced-selection.test.ts && node --experimental-strip-types scripts/candidate-insights.test.ts",
     "test:bank": "node --experimental-strip-types scripts/question-bank.test.ts && node --experimental-strip-types scripts/question-bank-readiness.test.ts && node --experimental-strip-types scripts/question-bank-workflow.test.ts && node --experimental-strip-types scripts/question-catalog.test.ts",
     "test:leaderboard": "node --experimental-strip-types scripts/leaderboard.test.ts",

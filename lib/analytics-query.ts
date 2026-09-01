@@ -386,7 +386,7 @@ export function eligibleAttemptsCte(query: ParsedAnalyticsQuery): AnalyticsSql {
   if (query.candidatePolicy === 'all') {
     return {
       sql: `WITH eligible_attempts AS (
-        SELECT id, candidate_key, public_alias, bank_revision, app_version, scoring_version,
+        SELECT id, candidate_name, candidate_key, public_alias, bank_revision, app_version, scoring_version,
           test_config_id, test_profile_id, score, correct_count, wrong_count, verdict,
           completed_at, duration_seconds, base_max_score
         FROM attempts
@@ -397,7 +397,7 @@ export function eligibleAttemptsCte(query: ParsedAnalyticsQuery): AnalyticsSql {
   }
   return {
     sql: `WITH ranked_attempts AS (
-      SELECT id, candidate_key, public_alias, bank_revision, app_version, scoring_version,
+      SELECT id, candidate_name, candidate_key, public_alias, bank_revision, app_version, scoring_version,
         test_config_id, test_profile_id, score, correct_count, wrong_count, verdict,
         completed_at, duration_seconds, base_max_score,
         ROW_NUMBER() OVER (

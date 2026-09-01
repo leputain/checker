@@ -15,7 +15,7 @@ export const ANALYTICS_BENCHMARK_NOW = Date.parse('2026-08-28T12:00:00.000Z');
 
 const SCHEMA = [
   `CREATE TABLE attempts (
-    id TEXT PRIMARY KEY, candidate_key TEXT NOT NULL, public_alias TEXT NOT NULL,
+    id TEXT PRIMARY KEY, candidate_name TEXT, candidate_key TEXT NOT NULL, public_alias TEXT NOT NULL,
     bank_revision TEXT NOT NULL, app_version TEXT NOT NULL, scoring_version INTEGER NOT NULL,
     test_config_id TEXT NOT NULL, test_profile_id TEXT NOT NULL,
     selection_version INTEGER NOT NULL DEFAULT 1,

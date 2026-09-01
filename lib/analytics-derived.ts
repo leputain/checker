@@ -392,6 +392,7 @@ export async function fetchDerivedQuestionDetailReport(
 
 type CandidateAggregateRow = {
   attempt_id: string;
+  candidate_name: string | null;
   candidate_key: string;
   bank_revision: string;
   app_version: string;
@@ -434,7 +435,7 @@ export function derivedCandidateRowsStatement(
     ? 'ORDER BY candidate.completed_at DESC, candidate.attempt_id DESC LIMIT ? OFFSET ?'
     : 'ORDER BY candidate.event_at DESC, candidate.attempt_id DESC';
   return {
-    sql: `SELECT candidate.attempt_id, candidate.candidate_key,
+    sql: `SELECT candidate.attempt_id, source_attempt.candidate_name, candidate.candidate_key,
       candidate.bank_revision, candidate.app_version, candidate.status,
       candidate.selection_version, candidate.selection_strategy,
       candidate.coverage_score, candidate.shadow_coverage_score,
@@ -444,6 +445,7 @@ export function derivedCandidateRowsStatement(
       candidate.additional_answered, candidate.additional_correct,
       candidate.timeout_count${options.page ? ', COUNT(*) OVER () AS total_count' : ''}
       FROM analytics_candidate_aggregates candidate
+      LEFT JOIN attempts source_attempt ON source_attempt.id = candidate.attempt_id
       WHERE ${condition.sql} ${status} AND ${dimension.sql} ${page}`,
     bindings: [
       ...condition.bindings,
@@ -457,6 +459,7 @@ function candidateDto(row: CandidateAggregateRow): CandidateAnalyticsItemDto {
   return {
     attemptId: row.attempt_id,
     alias: adminCandidateAlias(row.attempt_id),
+    candidateName: row.candidate_name,
     completedAt: new Date(row.completed_at!).toISOString(),
     score: row.score,
     accuracy: calculateAccuracy(row.correct_count, row.wrong_count),
@@ -582,6 +585,7 @@ function aggregateAttempt(row: CandidateAggregateRow): AnalyticsAttemptRow {
   return {
     id: row.attempt_id,
     alias: adminCandidateAlias(row.attempt_id),
+    candidateName: row.candidate_name,
     bankRevision: row.bank_revision,
     appVersion: row.app_version,
     score: row.score,

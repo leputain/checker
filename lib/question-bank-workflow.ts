@@ -1,10 +1,6 @@
 import type { QuestionRow } from '@/db/runtime.ts';
-import {
-  invalidateQuestionBankCache,
-  questionBankRevision,
-  questionContentHash,
-  sha256Hex,
-} from '@/db/runtime.ts';
+import { invalidateQuestionBankCache } from './question-bank-cache.ts';
+import { questionBankRevision, questionContentHash, sha256Hex } from './question-bank-hash.ts';
 import {
   evaluateQuestionBankReadiness,
   type QuestionBankReadiness,

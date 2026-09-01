@@ -436,6 +436,12 @@ test('ошибки базовых hard и expert добавляют только
     await expect(resultStats.getByText('18 из 20', { exact: true })).toBeVisible();
     await expect(resultStats.getByText('2 из 2', { exact: true })).toBeVisible();
     await expect(resultStats.getByText('91%', { exact: true })).toBeVisible();
+    const errorReview = page.getByRole('region', { name: 'Ошибки и правильные ответы' });
+    await expect(errorReview).toBeVisible();
+    await expect(errorReview.locator('details')).toHaveCount(2);
+    await errorReview.locator('summary').first().click();
+    await expect(errorReview.getByText('Правильный ответ', { exact: true }).first()).toBeVisible();
+    await expect(errorReview.getByText('Пояснение', { exact: true }).first()).toBeVisible();
 
     const completed = queryLocalD1<{
       score: number;

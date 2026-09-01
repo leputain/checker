@@ -141,10 +141,10 @@ async function pendingState(attemptId: string, now = Date.now()) {
   };
 }
 
-async function cleanupCompletedAttempt(attemptId: string) {
+async function cleanupAbortedAttemptName(attemptId: string) {
   await database()
     .prepare(`UPDATE attempts SET candidate_name = NULL
-      WHERE id = ? AND status IN ('completed','aborted') AND NOT EXISTS (
+      WHERE id = ? AND status = 'aborted' AND NOT EXISTS (
         SELECT 1 FROM telegram_outbox
         WHERE attempt_id = ? AND status IN ('pending','sending')
       )`)
@@ -174,7 +174,7 @@ export async function flushAttemptNotifications(attemptId: string) {
   if (!config.enabled) {
     // Periodic maintenance owns the global retention scans. An answer flush
     // only needs to scrub this terminal attempt and must stay cheap.
-    await cleanupCompletedAttempt(attemptId);
+    await cleanupAbortedAttemptName(attemptId);
     return { delivered: false, pending: false, nextAttemptAt: null };
   }
   if (!config.configured) {
@@ -188,7 +188,7 @@ export async function flushAttemptNotifications(attemptId: string) {
 
   const claim = await claimNext(attemptId, now);
   if (!claim) {
-    await cleanupCompletedAttempt(attemptId);
+    await cleanupAbortedAttemptName(attemptId);
     return { delivered: false, ...(await pendingState(attemptId, now)) };
   }
 
@@ -205,7 +205,7 @@ export async function flushAttemptNotifications(attemptId: string) {
         WHERE id = ? AND lease_token = ?`)
       .bind(claim.row.id, claim.leaseToken)
       .run();
-    await cleanupCompletedAttempt(attemptId);
+    await cleanupAbortedAttemptName(attemptId);
     return { delivered: false, ...(await pendingState(attemptId)) };
   }
   const result = await sendTelegramMessage(
@@ -259,7 +259,7 @@ export async function flushAttemptNotifications(attemptId: string) {
     );
   }
 
-  await cleanupCompletedAttempt(attemptId);
+  await cleanupAbortedAttemptName(attemptId);
   return { delivered: result.ok, ...(await pendingState(attemptId)) };
 }
 

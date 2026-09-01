@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import { appPath } from '@/lib/app-path.ts';
+import type { AttemptQuestionReviewDto } from '@/lib/attempt-review.ts';
 import { APP_RELEASE, releaseAssetPath } from '@/lib/release.ts';
 import { BASE_MAX_SCORE } from '@/lib/scoring.ts';
 import { BASE_QUESTION_COUNT, TEST_CONFIG } from '@/lib/test-config.ts';
@@ -81,6 +82,7 @@ type Result = {
   additionalCorrectCount: number;
   difficultyStats: DifficultyStat[];
   breakdown?: ResultBreakdown;
+  review: AttemptQuestionReviewDto[];
 };
 
 type AttemptModel = {
@@ -988,7 +990,7 @@ export default function Home() {
               <h1>Результат готов.</h1>
               <p className="verdict-copy">{verdictCopy[result.verdict]}</p>
               <p className="muted result-copy">
-                Верно {result.correctCount} из {result.answeredCount}. Правильные ответы не раскрываются.
+                Верно {result.correctCount} из {result.answeredCount}. Ошибки можно разобрать ниже.
               </p>
             </div>
           </div>
@@ -1015,6 +1017,7 @@ export default function Home() {
           <CompetencyProfile
             difficultyStats={result.difficultyStats ?? []}
           />
+          <CandidateErrorReview items={result.review ?? []} />
           <div className="result-actions">
             <button
               ref={leaderboardButtonRef}
@@ -1025,7 +1028,7 @@ export default function Home() {
             </button>
             <button className="ghost-button" onClick={resetToStart}>На стартовую</button>
           </div>
-          <p className="result-privacy"><span aria-hidden="true">◆</span> Банк ответов остаётся закрытым</p>
+          <p className="result-privacy"><span aria-hidden="true">◆</span> Разбор доступен только после завершения теста</p>
         </section>
         {showLeaderboard && (
           <Leaderboard
@@ -1367,6 +1370,60 @@ function QuestionContext({ type, value }: { type: QuestionContextType; value: st
   );
 }
 
+function CandidateErrorReview({ items }: { items: AttemptQuestionReviewDto[] }) {
+  return (
+    <section className="error-review" aria-labelledby="error-review-title">
+      <div className="profile-heading">
+        <div>
+          <p className="eyebrow">Разбор после теста</p>
+          <h2 id="error-review-title">Ошибки и правильные ответы</h2>
+        </div>
+        <p>{items.length === 0 ? 'Ошибок нет' : `${items.length} ${items.length === 1 ? 'вопрос' : 'вопросов'}`}</p>
+      </div>
+      {items.length === 0 ? (
+        <div className="error-review-empty">
+          <strong>Все показанные вопросы решены верно.</strong>
+          <span>Дополнительный разбор не требуется.</span>
+        </div>
+      ) : (
+        <div className="error-review-list">
+          {items.map((item) => (
+            <details className="error-review-card" key={`${item.ordinal}-${item.questionId}`}>
+              <summary>
+                <span className="error-review-number">{String(item.ordinal).padStart(2, '0')}</span>
+                <span>
+                  <small>{item.status === 'timeout' ? 'Тайм-аут' : 'Неверный ответ'} · {item.topic}</small>
+                  <strong>{item.prompt}</strong>
+                </span>
+                <i aria-hidden="true">⌄</i>
+              </summary>
+              <div className="error-review-body">
+                {item.context && (
+                  <QuestionContext type={item.contextType ?? 'text'} value={item.context} />
+                )}
+                <dl className="error-review-answers">
+                  <div data-tone="wrong">
+                    <dt>Ваш ответ</dt>
+                    <dd>{item.status === 'timeout' ? 'Время истекло' : item.selectedAnswer ?? 'Ответ не сохранён'}</dd>
+                  </div>
+                  <div data-tone="correct">
+                    <dt>Правильный ответ</dt>
+                    <dd>{item.correctAnswer}</dd>
+                  </div>
+                </dl>
+                <div className="error-review-explanation">
+                  <strong>Пояснение</strong>
+                  <p>{item.explanation}</p>
+                </div>
+              </div>
+            </details>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function TimerDial({
   label,
   seconds,
@@ -1426,7 +1483,7 @@ function CompetencyProfile({
           <p className="eyebrow">Профиль результата</p>
           <h2 id="competency-profile-title">Компетенции</h2>
         </div>
-        <p>Без раскрытия правильных ответов</p>
+        <p>Подробный разбор ошибок — ниже</p>
       </div>
       <div className="profile-columns profile-columns-private">
         <div className="profile-section">

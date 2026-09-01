@@ -806,7 +806,7 @@ try {
     `SELECT candidate_name FROM attempts WHERE id = ${sqlText(completedId)}`,
     current.persistPath,
     current.localD1,
-  )[0]?.candidate_name, null, 'restore must scrub stale completed PII');
+  )[0]?.candidate_name, 'Completed Name', 'restore must retain completed candidate identity');
   assert.deepEqual(queryLocalD1<{ status: string; payload_text: string }>(
     "SELECT status, payload_text FROM telegram_outbox WHERE id = 'outbox-completed'",
     current.persistPath,
@@ -923,7 +923,7 @@ try {
     `SELECT candidate_name FROM attempts WHERE id = ${sqlText(completedId)}`,
     current.persistPath,
     current.localD1,
-  )[0]?.candidate_name, null, 'retention must scrub stale candidate names');
+  )[0]?.candidate_name, 'Completed Name', 'retention must retain completed candidate identity');
   assert.equal(queryLocalD1<{ payload_text: string }>(
     "SELECT payload_text FROM telegram_outbox WHERE id = 'outbox-completed'",
     current.persistPath,

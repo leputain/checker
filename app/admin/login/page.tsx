@@ -141,7 +141,11 @@ export default function AdminLoginPage() {
             </button>
           </form>
         )}
-        <p className={styles.loginFootnote}>Только обезличенные агрегаты и локальные данные.</p>
+        <p className={styles.loginFootnote}>Локальные результаты и персональные данные доступны только после входа.</p>
+        <a className={styles.loginBackLink} href={appPath('/')}>
+          <span aria-hidden="true">←</span>
+          Вернуться на главную
+        </a>
       </section>
     </main>
   );
