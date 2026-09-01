@@ -13,7 +13,7 @@ const E2E_ADMIN_PIN_PATH = path.resolve('.data', 'e2e-admin-pin.txt');
 
 function e2eAdminPin() {
   const pin = readFileSync(E2E_ADMIN_PIN_PATH, 'utf8').trim();
-  if (!/^\d{6,12}$/u.test(pin)) throw new Error('Disposable E2E admin PIN is invalid.');
+  if (!/^\d{4,12}$/u.test(pin)) throw new Error('Disposable E2E admin PIN is invalid.');
   return pin;
 }
 

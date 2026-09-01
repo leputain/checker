@@ -27,7 +27,7 @@ Invoke-RestMethod http://localhost:3001/api/health/ready
 
 ## Admin PIN и analytics
 
-Admin-раздел не влияет на readiness candidate flow. Для его включения создать локальный `admin_pin.txt` с одной строкой из 6–12 цифр и перезапустить процесс. Файл игнорируется Git; PIN, его hash/salt и session secret запрещено выводить в логи или передавать через `VITE_*`.
+Admin-раздел не влияет на readiness candidate flow. Для его включения создать локальный `admin_pin.txt` с одной строкой из 4–12 цифр и перезапустить процесс. Файл игнорируется Git; PIN, его hash/salt и session secret запрещено выводить в логи или передавать через `VITE_*`.
 
 Проверки после запуска:
 

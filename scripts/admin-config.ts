@@ -24,7 +24,7 @@ export class AdminConfigError extends Error {
 
 export function parseAdminPin(contents: string) {
   const pin = contents.trim();
-  if (!/^\d{6,12}$/u.test(pin)) {
+  if (!/^\d{4,12}$/u.test(pin)) {
     throw new AdminConfigError('invalid');
   }
   return pin;

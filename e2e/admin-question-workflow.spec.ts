@@ -26,7 +26,7 @@ const ATTEMPT_ID_PATTERN = /^[0-9a-f-]{36}$/iu;
 
 function e2eAdminPin() {
   const pin = readFileSync(E2E_ADMIN_PIN_PATH, 'utf8').trim();
-  if (!/^\d{6,12}$/u.test(pin)) throw new Error('Disposable E2E admin PIN is invalid.');
+  if (!/^\d{4,12}$/u.test(pin)) throw new Error('Disposable E2E admin PIN is invalid.');
   return pin;
 }
 

@@ -58,7 +58,7 @@ Balanced selector выключен по умолчанию, shadow calculation �
 
 ## Admin-доступ
 
-Создайте в корне игнорируемый Git файл `admin_pin.txt` с одной строкой из 6–12 цифр и перезапустите dev-сервер. Node-обёртка передаёт Worker только PBKDF2-SHA256 hash, случайную salt и отдельный случайный session secret. Исходный PIN не попадает в Worker bindings, D1, bundle или логи.
+Создайте в корне игнорируемый Git файл `admin_pin.txt` с одной строкой из 4–12 цифр и перезапустите dev-сервер. Node-обёртка передаёт Worker только PBKDF2-SHA256 hash, случайную salt и отдельный случайный session secret. Исходный PIN не попадает в Worker bindings, D1, bundle или логи.
 
 Сессия:
 

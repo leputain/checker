@@ -60,8 +60,8 @@ export default function AdminLoginPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    if (!/^\d{6,12}$/u.test(pin)) {
-      setError('PIN должен содержать от 6 до 12 цифр.');
+    if (!/^\d{4,12}$/u.test(pin)) {
+      setError('PIN должен содержать от 4 до 12 цифр.');
       return;
     }
     setBusy(true);
@@ -128,14 +128,14 @@ export default function AdminLoginPage() {
               value={pin}
               onChange={(event) => setPin(event.target.value.replace(/\D/gu, '').slice(0, 12))}
               disabled={busy}
-              minLength={6}
+              minLength={4}
               maxLength={12}
-              pattern="[0-9]{6,12}"
+              pattern="[0-9]{4,12}"
               aria-invalid={Boolean(error)}
               aria-describedby={error ? 'admin-login-error' : undefined}
             />
             {error && <p id="admin-login-error" className={styles.error} role="alert">{error}</p>}
-            <button className={styles.primaryButton} type="submit" disabled={busy || pin.length < 6}>
+            <button className={styles.primaryButton} type="submit" disabled={busy || pin.length < 4}>
               {busy ? 'Проверяем…' : 'Открыть аналитику'}
               <span aria-hidden="true">→</span>
             </button>

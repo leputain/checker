@@ -107,7 +107,7 @@ export async function deriveAdminPinHash(
 }
 
 export async function verifyAdminPin(pin: string, config: AdminAuthConfig) {
-  if (!/^\d{6,12}$/u.test(pin)) return false;
+  if (!/^\d{4,12}$/u.test(pin)) return false;
   const actual = await deriveAdminPinHash(pin, config.pinSalt, config.pinIterations);
   return constantTimeEqual(actual, config.pinHash);
 }

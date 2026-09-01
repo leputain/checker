@@ -42,7 +42,7 @@ const FORBIDDEN_ADMIN_FIELDS = new Set([
 
 function e2eAdminPin() {
   const pin = readFileSync(E2E_ADMIN_PIN_PATH, 'utf8').trim();
-  if (!/^\d{6,12}$/u.test(pin)) {
+  if (!/^\d{4,12}$/u.test(pin)) {
     throw new Error('Disposable E2E admin PIN is missing or invalid. Run the E2E reset first.');
   }
   return pin;
@@ -92,7 +92,7 @@ async function loginAsAdmin(page: Page) {
   await expect(pinInput).toBeVisible();
   await expect(pinInput).not.toBeFocused();
   await expect(pinInput).toHaveAttribute('maxlength', '12');
-  await expect(pinInput).toHaveAttribute('pattern', '[0-9]{6,12}');
+  await expect(pinInput).toHaveAttribute('pattern', '[0-9]{4,12}');
   await pinInput.fill(pin);
 
   const loginResponsePromise = page.waitForResponse((response) => {

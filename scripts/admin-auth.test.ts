@@ -43,7 +43,7 @@ assert.equal(readAdminAuthConfig({
 }), null);
 assert.equal(await verifyAdminPin(pin, config), true);
 assert.equal(await verifyAdminPin('483921', config), false);
-assert.equal(await verifyAdminPin('12345', config), false, 'PIN shorter than six digits is rejected');
+assert.equal(await verifyAdminPin('123', config), false, 'PIN shorter than four digits is rejected');
 assert.equal(await verifyAdminPin('12345x', config), false, 'PIN is numeric only');
 
 const now = Date.UTC(2026, 7, 28, 10, 0, 0);
