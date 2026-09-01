@@ -1,6 +1,6 @@
 import { appPath } from './app-path.ts';
 
-export const APP_RELEASE = '1.6.0';
+export const APP_RELEASE = '1.6.1';
 
 export function releaseAssetPath(path: string) {
   return `${appPath(path)}?v=${APP_RELEASE}`;

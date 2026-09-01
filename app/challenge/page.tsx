@@ -487,7 +487,16 @@ function ChallengeShell({ children, compact = false }: { children: React.ReactNo
   return (
     <main className={`${styles.shell} ${compact ? styles.compactShell : ''}`}>
       <div className={styles.grid} aria-hidden="true" />
-      <header className={styles.siteHeader}><a href={appPath('/')}><span className={styles.brandMark} />Candidate Check</a><span>ИБ-челлендж</span></header>
+      <header className={styles.siteHeader}>
+        <div className={styles.headerNav}>
+          <a className={styles.brandLink} href={appPath('/')} aria-label="Candidate Check — на главную">
+            <span className={styles.brandMark} />
+            <span className={styles.brandLabel}>Candidate Check</span>
+          </a>
+          <a className={styles.backLink} href={appPath('/')} aria-label="Вернуться на главную">← Назад</a>
+        </div>
+        <span>ИБ-челлендж</span>
+      </header>
       <div className={styles.content}>{children}</div>
     </main>
   );

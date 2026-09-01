@@ -35,6 +35,9 @@
 
 .siteHeader { width: min(1480px, calc(100% - 48px)); min-height: 82px; position: relative; z-index: 2; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
 .siteHeader a { display: inline-flex; align-items: center; gap: 12px; color: #f1faf6; text-decoration: none; font-size: .96rem; font-weight: 780; letter-spacing: -.02em; }
+.headerNav { display: flex; align-items: center; gap: 14px; }
+.siteHeader .backLink { min-height: 38px; padding: 0 13px; border: 1px solid var(--line); border-radius: 12px; color: #bad0c5; background: rgba(255, 255, 255, .035); font-size: .76rem; font-weight: 800; letter-spacing: 0; transition: border-color 180ms ease, background 180ms ease, color 180ms ease, transform 150ms var(--ease-out); }
+.siteHeader .backLink:focus-visible { outline: 3px solid rgba(156, 226, 194, .38); outline-offset: 3px; }
 .siteHeader > span:last-child { min-height: 34px; display: inline-flex; align-items: center; gap: 8px; padding: 0 13px; border: 1px solid var(--line); border-radius: 999px; color: #a8c4b7; background: rgba(8, 18, 15, .55); font-size: .68rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .siteHeader > span:last-child::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(123, 224, 177, .09); }
 .brandMark { width: 34px; height: 34px; flex: 0 0 34px; overflow: hidden; border: 1px solid rgba(156, 226, 194, .55); border-radius: 10px; background: var(--candidate-mascot-image) 50% 16% / 320% no-repeat; box-shadow: 0 8px 24px rgba(36, 190, 128, .28), inset 0 0 0 1px rgba(255, 255, 255, .08); filter: brightness(1.2) contrast(1.08); }
@@ -166,6 +169,7 @@
 .srOnly { width: 1px; height: 1px; position: absolute; margin: -1px; padding: 0; overflow: hidden; border: 0; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
 @media (hover: hover) and (pointer: fine) {
+  .siteHeader .backLink:hover { border-color: rgba(174, 242, 212, .35); color: #f1faf6; background: rgba(255, 255, 255, .065); }
   .primaryButton:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 16px 34px rgba(55, 194, 136, .2); }
   .secondaryButton:hover:not(:disabled) { border-color: rgba(174, 242, 212, .35); background: rgba(255, 255, 255, .065); }
   .dangerButton:hover:not(:disabled) { box-shadow: 0 16px 32px rgba(122, 42, 29, .28); }
@@ -216,6 +220,9 @@
 }
 
 @media (max-width: 440px) {
+  .brandLabel { display: none; }
+  .headerNav { gap: 9px; }
+  .siteHeader .backLink { padding-inline: 10px; }
   .introCopy h1 { font-size: 3rem; }
   .startCard, .demoCard, .resultHero, .leaderboard, .review, .state { padding: 28px 20px; }
   .questionHeader { display: grid; }
