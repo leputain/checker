@@ -153,6 +153,7 @@ export type RawQuestionAggregate = {
   base_incorrect: number;
   base_timeout: number;
   base_earned: number;
+  base_penalty?: number;
   base_max: number;
   additional_assigned: number;
   additional_presented: number;
@@ -161,6 +162,7 @@ export type RawQuestionAggregate = {
   additional_incorrect: number;
   additional_timeout: number;
   additional_earned: number;
+  additional_penalty?: number;
   additional_max: number;
   discrimination_n: number | null;
   discrimination_sum_x: number | null;
@@ -203,7 +205,7 @@ export function questionAggregateStatement(query: ParsedAnalyticsQuery): Analyti
         q.topic, q.difficulty, q.prompt, q.context_type, q.context_text,
         json_array_length(q.choices_json) AS choice_count, q.correct_index,
         qri.active, a.id AS answer_id, a.fact_version, a.answer_origin,
-        a.canonical_selected_index, a.awarded_score, a.is_correct, a.timed_out,
+        a.canonical_selected_index, a.awarded_score, a.penalty_score, a.is_correct, a.timed_out,
         a.elapsed_seconds, a.answered_at, bs.base_awarded
       FROM eligible_attempts ea
       JOIN base_scores bs ON bs.attempt_id = ea.id
@@ -289,6 +291,9 @@ export function questionAggregateStatement(query: ParsedAnalyticsQuery): Analyti
         SUM(CASE WHEN question_kind = 'base' AND presented_at IS NOT NULL
           AND fact_version = ${ANALYTICS_FACTS_VERSION} AND answer_origin IN (${PRESENTED_ORIGINS_SQL})
           THEN COALESCE(awarded_score, 0) ELSE 0 END) AS base_earned,
+        SUM(CASE WHEN question_kind = 'base' AND presented_at IS NOT NULL
+          AND fact_version = ${ANALYTICS_FACTS_VERSION} AND answer_origin IN (${PRESENTED_ORIGINS_SQL})
+          THEN COALESCE(penalty_score, 0) ELSE 0 END) AS base_penalty,
         SUM(CASE WHEN question_kind = 'base' THEN score_value ELSE 0 END) AS base_max,
         SUM(CASE WHEN question_kind = 'additional' THEN 1 ELSE 0 END) AS additional_assigned,
         SUM(CASE WHEN question_kind = 'additional' AND presented_at IS NOT NULL THEN 1 ELSE 0 END) AS additional_presented,
@@ -307,6 +312,9 @@ export function questionAggregateStatement(query: ParsedAnalyticsQuery): Analyti
         SUM(CASE WHEN question_kind = 'additional' AND presented_at IS NOT NULL
           AND fact_version = ${ANALYTICS_FACTS_VERSION} AND answer_origin IN (${PRESENTED_ORIGINS_SQL})
           THEN COALESCE(awarded_score, 0) ELSE 0 END) AS additional_earned,
+        SUM(CASE WHEN question_kind = 'additional' AND presented_at IS NOT NULL
+          AND fact_version = ${ANALYTICS_FACTS_VERSION} AND answer_origin IN (${PRESENTED_ORIGINS_SQL})
+          THEN COALESCE(penalty_score, 0) ELSE 0 END) AS additional_penalty,
         SUM(CASE WHEN question_kind = 'additional' THEN score_value ELSE 0 END) AS additional_max
       FROM filtered_facts GROUP BY question_id
     )
@@ -355,6 +363,7 @@ function split(row: RawQuestionAggregate, prefix: 'base' | 'additional', minSamp
     incorrect: row[`${prefix}_incorrect`],
     timedOut: row[`${prefix}_timeout`],
     earned: row[`${prefix}_earned`],
+    penaltyScore: row[`${prefix}_penalty`] ?? 0,
     max: row[`${prefix}_max`],
     successRate: resolved >= minSample ? roundedRate(correct, resolved) : null,
   } satisfies QuestionKindSplitDto;
@@ -719,14 +728,14 @@ async function fetchCandidateAttempt(
   const row = await bind(db, {
     sql: `${cohort.sql}
       SELECT id, candidate_name, bank_revision, app_version, score, correct_count,
-        wrong_count, verdict, completed_at, duration_seconds, base_max_score
+        wrong_count, verdict, completed_at, duration_seconds, base_max_score, scoring_version
       FROM eligible_attempts WHERE id = ? LIMIT 1`,
     bindings: [...cohort.bindings, attemptId],
   }).first<{
     id: string; candidate_name: string | null; bank_revision: string; app_version: string;
     score: number; correct_count: number; wrong_count: number;
     verdict: 'PASS' | 'REVIEW' | 'FAIL'; completed_at: number;
-    duration_seconds: number; base_max_score: number;
+    duration_seconds: number; base_max_score: number; scoring_version: number;
   }>();
   if (!row) return null;
   return {
@@ -742,6 +751,7 @@ async function fetchCandidateAttempt(
     completedAt: row.completed_at,
     durationSeconds: row.duration_seconds,
     baseMaxScore: row.base_max_score,
+    scoringVersion: row.scoring_version,
   } satisfies AnalyticsAttemptRow;
 }
 
@@ -754,7 +764,7 @@ async function fetchCandidateFacts(
       q.topic, q.dedupe_key, q.difficulty, qri.active, q.prompt,
       q.context_type, q.context_text, json_array_length(q.choices_json) AS choice_count,
       q.correct_index, a.id AS answer_id, a.fact_version, a.answer_origin,
-      a.canonical_selected_index, a.awarded_score, a.is_correct, a.timed_out,
+      a.canonical_selected_index, a.awarded_score, a.penalty_score, a.is_correct, a.timed_out,
       a.elapsed_seconds, a.answered_at
     FROM attempt_questions aq
     JOIN attempts attempt ON attempt.id = aq.attempt_id
@@ -769,7 +779,7 @@ async function fetchCandidateFacts(
       context_type: string | null; context_text: string | null; choice_count: number;
       correct_index: number; answer_id: number | null; fact_version: number | null;
       answer_origin: string | null; canonical_selected_index: number | null;
-      awarded_score: number | null; is_correct: number | null; timed_out: number | null;
+      awarded_score: number | null; penalty_score: number | null; is_correct: number | null; timed_out: number | null;
       elapsed_seconds: number | null; answered_at: number | null;
     }>();
   return rows.results.map((row) => ({
@@ -794,6 +804,7 @@ async function fetchCandidateFacts(
     answerOrigin: row.answer_origin,
     canonicalSelectedIndex: row.canonical_selected_index,
     awardedScore: row.awarded_score,
+    penaltyScore: row.penalty_score ?? 0,
     isCorrect: row.is_correct === 1,
     timedOut: row.timed_out === 1,
     elapsedSeconds: row.elapsed_seconds,

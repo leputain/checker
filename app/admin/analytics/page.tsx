@@ -1953,6 +1953,28 @@ function CandidateDetail({
               <button className={styles.secondaryButton} onClick={downloadReport}>JSON</button>
             </div>
           </div>
+          {detail.data.scoringVersion === 3 ? (
+            <section aria-label="Расчёт оценки кандидата">
+              {detail.data.statisticsCompleteness === 'complete' ? (
+                <p>
+                  Основные <strong>{detail.data.breakdown.base.earnedScore}</strong>
+                  {' + '}дополнительные <strong>{detail.data.breakdown.additional.earnedScore}</strong>
+                  {' − '}штрафы <strong>{detail.data.breakdown.base.penaltyScore + detail.data.breakdown.additional.penaltyScore}</strong>
+                  {' = '}итог <strong>{detail.data.score}</strong> / 100
+                </p>
+              ) : (
+                <p className={styles.candidateAlias}>Подробный расчёт недоступен: исходные факты попытки неполны.</p>
+              )}
+              <p className={styles.candidateAlias}>
+                Итог ограничен диапазоном 0–100. Для рекомендации: не менее 80 баллов и 17 верных основных ответов из 20.
+                {detail.data.score >= 80 && detail.data.baseCorrect < 17
+                  ? ` Баллов достаточно, но верных основных ответов — ${detail.data.baseCorrect}.`
+                  : ''}
+              </p>
+            </section>
+          ) : detail.data.scoringVersion === 2 ? (
+            <p className={styles.candidateAlias}>Оценка по прежним правилам: без штрафов за ошибки.</p>
+          ) : null}
           <div className={styles.detailMetrics}>
             <MetricCard label="Точность" value={`${detail.data.accuracy}%`} />
             <MetricCard label="Основные" value={`${detail.data.baseCorrect} / ${detail.data.baseAnswered}`} />
@@ -2010,7 +2032,10 @@ function CandidateDetail({
                         <div><dt>Ответ кандидата</dt><dd>{question.status === 'timeout' ? 'Время истекло' : question.selectedAnswer ?? 'Нет ответа'}</dd></div>
                         <div><dt>Правильный ответ</dt><dd>{question.correctAnswer}</dd></div>
                         <div><dt>Время</dt><dd>{question.elapsedSeconds === null ? '—' : `${question.elapsedSeconds} сек.`}</dd></div>
-                        <div><dt>Баллы</dt><dd>{question.awardedScore} из {question.scoreValue}</dd></div>
+                        <div><dt>Начислено</dt><dd>{question.awardedScore} из {question.scoreValue}</dd></div>
+                        {detail.data?.scoringVersion === 3 && (
+                          <div><dt>Штраф</dt><dd>−{question.penaltyScore ?? 0}</dd></div>
+                        )}
                       </dl>
                       {(question.status === 'incorrect' || question.status === 'timeout') && (
                         <p className={styles.questionExplanation}><strong>Пояснение:</strong> {question.explanation}</p>
@@ -2070,7 +2095,9 @@ function ProfileTable({
               <span className={styles.barTrack} aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, row.base.accuracy ?? 0))}%` }} /></span>
               <small>
                 Основные: {row.base.earned}/{row.base.max} баллов
+                {row.base.penaltyScore > 0 ? ` · штраф: −${row.base.penaltyScore}` : ''}
                 {row.additional.presented > 0 ? ` · дополнительные: ${row.additional.correct}/${row.additional.resolved}` : ''}
+                {row.additional.penaltyScore > 0 ? ` · штраф дополнительных: −${row.additional.penaltyScore}` : ''}
               </small>
             </div>
           ))}
@@ -2107,7 +2134,8 @@ function QuestionKindBreakdown({
               <div><dt>Верно</dt><dd>{row.data.correct}</dd></div>
               <div><dt>Неверно</dt><dd>{row.data.incorrect}</dd></div>
               <div><dt>Тайм-ауты</dt><dd>{row.data.timedOut}</dd></div>
-              <div><dt>Баллы</dt><dd>{row.data.earned} / {row.data.max}</dd></div>
+              <div><dt>Начислено</dt><dd>{row.data.earned} / {row.data.max}</dd></div>
+              {row.data.penaltyScore > 0 && <div><dt>Штраф</dt><dd>−{row.data.penaltyScore}</dd></div>}
             </dl>
           </article>
         ))}

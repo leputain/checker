@@ -24,6 +24,7 @@ type AttemptQuestionReviewRow = {
   timed_out: number | null;
   elapsed_seconds: number | null;
   awarded_score: number | null;
+  penalty_score: number | null;
 };
 
 export async function loadAttemptQuestionReview(
@@ -35,7 +36,7 @@ export async function loadAttemptQuestionReview(
       q.topic, q.difficulty, q.prompt, q.context_type, q.context_text,
       q.choices_json, q.correct_index,
       a.id AS answer_id, a.canonical_selected_index, a.is_correct, a.timed_out,
-      a.elapsed_seconds, a.awarded_score
+      a.elapsed_seconds, a.awarded_score, a.penalty_score
     FROM attempt_questions aq
     JOIN questions q ON q.id = aq.question_id
     LEFT JOIN answers a
@@ -74,6 +75,7 @@ export async function loadAttemptQuestionReview(
       correctAnswer,
       elapsedSeconds: row.elapsed_seconds,
       awardedScore: row.awarded_score ?? 0,
+      penaltyScore: row.penalty_score ?? 0,
       explanation: reviewExplanation({
         topic: row.topic,
         correctAnswer,

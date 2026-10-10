@@ -20,6 +20,7 @@ export type QuestionGroupStats = {
   incorrectCount: number;
   timeoutCount: number;
   earnedScore: number;
+  penaltyScore: number;
   maxEarnableScore: number;
 };
 
@@ -31,6 +32,7 @@ export type AttemptBreakdownFact = {
   correct: boolean;
   timedOut: boolean;
   awardedScore: number;
+  penaltyScore?: number;
   scoreValue: number;
 };
 
@@ -39,6 +41,7 @@ export type AttemptFactsValidationOptions = {
   maxAdditionalAssigned: number;
   expectedBaseMaxScore: number;
   attemptScore: number;
+  scoringVersion?: number;
 };
 
 function emptyQuestionGroupStats(): QuestionGroupStats {
@@ -50,6 +53,7 @@ function emptyQuestionGroupStats(): QuestionGroupStats {
     incorrectCount: 0,
     timeoutCount: 0,
     earnedScore: 0,
+    penaltyScore: 0,
     maxEarnableScore: 0,
   };
 }
@@ -73,6 +77,7 @@ export function summarizeAttemptBreakdown(facts: readonly AttemptBreakdownFact[]
     group.timeoutCount += fact.resolved && fact.timedOut ? 1 : 0;
     group.incorrectCount += fact.resolved && !fact.correct && !fact.timedOut ? 1 : 0;
     group.earnedScore += fact.resolved ? Math.max(0, fact.awardedScore) : 0;
+    group.penaltyScore += fact.resolved ? Math.max(0, fact.penaltyScore ?? 0) : 0;
     group.maxEarnableScore += fact.assigned ? Math.max(0, fact.scoreValue) : 0;
   }
   return result;
@@ -88,8 +93,22 @@ export function validateAttemptFacts(
     !Number.isInteger(fact.scoreValue) || fact.scoreValue <= 0
     || !Number.isInteger(fact.awardedScore) || fact.awardedScore < 0
     || fact.awardedScore > fact.scoreValue
+    || !Number.isInteger(fact.penaltyScore ?? 0) || (fact.penaltyScore ?? 0) < 0
   ))) {
     errors.push('score_fact_invalid');
+  }
+  const scoringVersion = options.scoringVersion ?? 2;
+  if (scoringVersion === 3) {
+    if (facts.some((fact) => {
+      const expectedAward = fact.resolved && fact.correct ? fact.scoreValue : 0;
+      const expectedPenalty = fact.resolved && fact.presented && !fact.correct
+        ? fact.scoreValue / (fact.questionKind === 'base' ? 2 : 1)
+        : 0;
+      return fact.awardedScore !== expectedAward
+        || (fact.penaltyScore ?? 0) !== expectedPenalty;
+    })) errors.push('scoring_v3_fact_mismatch');
+  } else if (facts.some((fact) => (fact.penaltyScore ?? 0) !== 0)) {
+    errors.push('legacy_penalty_nonzero');
   }
   const validateGroup = (name: 'base' | 'additional') => {
     const group = breakdown[name];
@@ -112,9 +131,12 @@ export function validateAttemptFacts(
   if (breakdown.base.maxEarnableScore !== options.expectedBaseMaxScore) {
     errors.push('base_max_score_invalid');
   }
-  if (
-    breakdown.base.earnedScore + breakdown.additional.earnedScore !== options.attemptScore
-  ) {
+  const earned = breakdown.base.earnedScore + breakdown.additional.earnedScore;
+  const penalty = breakdown.base.penaltyScore + breakdown.additional.penaltyScore;
+  const expectedScore = scoringVersion === 3
+    ? Math.max(0, Math.min(options.expectedBaseMaxScore, earned - penalty))
+    : earned;
+  if (expectedScore !== options.attemptScore) {
     errors.push('awarded_score_sum_mismatch');
   }
   return { valid: errors.length === 0, errors, breakdown };

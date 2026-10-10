@@ -351,7 +351,8 @@ async function testAnalyticsFactsIntegrityQuery() {
         id TEXT PRIMARY KEY, status TEXT NOT NULL, score INTEGER NOT NULL,
         base_max_score INTEGER NOT NULL, correct_count INTEGER NOT NULL,
         wrong_count INTEGER NOT NULL, analytics_facts_version INTEGER NOT NULL,
-        base_question_ids TEXT NOT NULL, bank_revision TEXT NOT NULL
+        base_question_ids TEXT NOT NULL, bank_revision TEXT NOT NULL,
+        scoring_version INTEGER NOT NULL DEFAULT 2
       )`),
       db.prepare(`CREATE TABLE attempt_questions (
         attempt_id TEXT NOT NULL, question_id INTEGER NOT NULL, question_kind TEXT NOT NULL,
@@ -371,6 +372,7 @@ async function testAnalyticsFactsIntegrityQuery() {
         id INTEGER PRIMARY KEY, attempt_id TEXT NOT NULL, question_id INTEGER NOT NULL,
         fact_version INTEGER NOT NULL, answer_origin TEXT NOT NULL,
         canonical_selected_index INTEGER, awarded_score INTEGER,
+        penalty_score INTEGER NOT NULL DEFAULT 0,
         is_correct INTEGER NOT NULL, timed_out INTEGER NOT NULL,
         elapsed_seconds INTEGER NOT NULL DEFAULT 0
       )`),
@@ -413,6 +415,31 @@ async function testAnalyticsFactsIntegrityQuery() {
     )?.violations ?? 0;
 
     assert.equal(await violations(), 0, 'complete exact facts must pass integrity');
+    await db.prepare("UPDATE answers SET penalty_score = 2 WHERE id = 1").run();
+    assert.equal(await violations(), 1, 'legacy v2 must reject penalties');
+    await db.batch([
+      db.prepare("UPDATE attempts SET scoring_version = 3, score = 94, correct_count = 19, wrong_count = 1 WHERE id = 'exact'"),
+      db.prepare("UPDATE answers SET is_correct = 0, canonical_selected_index = 1, awarded_score = 0 WHERE id = 1"),
+    ]);
+    assert.equal(await violations(), 0, 'v3 must validate earned 96 minus weighted penalty 2');
+    await db.prepare("UPDATE answers SET penalty_score = 0 WHERE id = 1").run();
+    assert.equal(await violations(), 1, 'v3 must reject a missing penalty on a shown mistake');
+    await db.batch([
+      db.prepare(`UPDATE answers SET is_correct = 0, canonical_selected_index = 1,
+        awarded_score = 0, penalty_score = (SELECT aq.score_value / 2 FROM attempt_questions aq
+          WHERE aq.attempt_id = answers.attempt_id AND aq.question_id = answers.question_id)`),
+      db.prepare("UPDATE attempts SET score = 0, correct_count = 0, wrong_count = 20 WHERE id = 'exact'"),
+    ]);
+    assert.equal(await violations(), 0, 'negative v3 raw balance is clamped only to the displayed zero');
+    await db.prepare("UPDATE attempts SET score = 1 WHERE id = 'exact'").run();
+    assert.equal(await violations(), 1, 'v3 must reject a score different from the clamped ledger');
+    await db.batch([
+      db.prepare(`UPDATE answers SET is_correct = 1, canonical_selected_index = 0,
+        penalty_score = 0, awarded_score = (SELECT aq.score_value FROM attempt_questions aq
+          WHERE aq.attempt_id = answers.attempt_id AND aq.question_id = answers.question_id)`),
+      db.prepare("UPDATE attempts SET scoring_version = 2, score = 100, correct_count = 20, wrong_count = 0 WHERE id = 'exact'"),
+    ]);
+    assert.equal(await violations(), 0, 'v2 historical facts still pass after v3 checks');
     await db.prepare('DELETE FROM answers WHERE attempt_id = ? AND question_id = 20')
       .bind('exact').run();
     assert.equal(await violations(), 1, 'a presented base question without an exact answer must fail');

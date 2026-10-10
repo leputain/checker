@@ -1,4 +1,5 @@
 import type { AttemptQuestionReviewDto } from './attempt-review.ts';
+import type { QuestionGroupStats } from './attempt-statistics.ts';
 
 export const ANALYTICS_SAMPLE_GATES = [30, 50, 100] as const;
 export const QUESTION_ANALYTICS_MODEL_VERSION = 2 as const;
@@ -236,6 +237,7 @@ export type AnalyticsBreakdownDto = {
   incorrect: number;
   timedOut: number;
   earned: number;
+  penaltyScore: number;
   max: number;
 };
 
@@ -322,6 +324,8 @@ export type CandidateAnalyticsItemDto = {
 };
 
 export type CandidatePrintDto = CandidateAnalyticsItemDto & {
+  scoringVersion: number;
+  breakdown: { base: QuestionGroupStats; additional: QuestionGroupStats };
   generatedAt: string;
   statisticsCompleteness: StatisticsCompleteness;
   topics: CandidateDimensionPerformanceDto[];

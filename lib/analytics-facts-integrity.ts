@@ -7,12 +7,15 @@ import {
 
 export const ANALYTICS_FACTS_READINESS_LIMIT = 100;
 
-function buildAnalyticsFactsIntegrityQuery(recentLimit?: number) {
+function buildAnalyticsFactsIntegrityQuery(recentLimit?: number, penaltiesAvailable = true) {
+  // Historical backups predate migration 0020. They contain only v2 facts;
+  // verification reads their original schema without migrating the backup.
+  const penaltyValue = penaltiesAvailable ? 'an.penalty_score' : '0';
   const limitClause = recentLimit === undefined
     ? ''
     : ` ORDER BY completed_at DESC LIMIT ${recentLimit}`;
   return `WITH exact_attempts AS (
-    SELECT id, score, base_max_score, base_question_ids, bank_revision,
+    SELECT id, score, base_max_score, base_question_ids, bank_revision, scoring_version,
       correct_count AS attempt_correct_count,
       wrong_count AS attempt_wrong_count, analytics_facts_version
     FROM attempts
@@ -22,6 +25,7 @@ function buildAnalyticsFactsIntegrityQuery(recentLimit?: number) {
     SELECT ea.id,
       ea.score,
       ea.base_max_score,
+      ea.scoring_version,
       ea.attempt_correct_count,
       ea.attempt_wrong_count,
       COUNT(aq.question_id) AS assigned_count,
@@ -118,6 +122,8 @@ function buildAnalyticsFactsIntegrityQuery(recentLimit?: number) {
         THEN 1 ELSE 0 END) AS fact_incorrect_count,
       SUM(CASE WHEN an.id IS NOT NULL THEN COALESCE(an.awarded_score, 0) ELSE 0 END)
         AS awarded_score,
+      SUM(CASE WHEN an.id IS NOT NULL THEN COALESCE(${penaltyValue}, 0) ELSE 0 END)
+        AS penalty_score,
       SUM(CASE WHEN an.id IS NOT NULL AND (
         an.awarded_score IS NULL
         OR typeof(an.awarded_score) != 'integer'
@@ -128,6 +134,17 @@ function buildAnalyticsFactsIntegrityQuery(recentLimit?: number) {
         OR an.timed_out NOT IN (0, 1)
         OR an.awarded_score < 0
         OR an.awarded_score > aq.score_value
+        OR typeof(${penaltyValue}) != 'integer'
+        OR ${penaltyValue} < 0
+        OR (ea.scoring_version = 2 AND ${penaltyValue} != 0)
+        OR (ea.scoring_version = 3 AND (
+          an.awarded_score != CASE WHEN an.is_correct = 1 THEN aq.score_value ELSE 0 END
+          OR ${penaltyValue} != CASE
+            WHEN an.is_correct = 0 AND aq.presented_at IS NOT NULL
+              AND an.answer_origin IN ('submitted', 'question_timeout', 'total_timeout_presented')
+            THEN CASE WHEN aq.question_kind = 'base' THEN aq.score_value / 2 ELSE aq.score_value END
+            ELSE 0 END
+        ))
         OR (an.is_correct = 0 AND an.awarded_score != 0)
         OR (an.is_correct = 1 AND an.timed_out = 1)
         OR an.answer_origin NOT IN (
@@ -196,7 +213,11 @@ function buildAnalyticsFactsIntegrityQuery(recentLimit?: number) {
       OR fact_correct_count + fact_incorrect_count + fact_timeout_count != resolved_count
       OR fact_correct_count != attempt_correct_count
       OR fact_incorrect_count + fact_timeout_count != attempt_wrong_count
-      OR awarded_score != score
+      OR typeof(score) != 'integer' OR score < 0 OR score > base_max_score
+      OR scoring_version NOT IN (${penaltiesAvailable ? '2, 3' : '2'})
+      OR score != CASE WHEN scoring_version = 3
+        THEN MAX(0, MIN(base_max_score, awarded_score - penalty_score))
+        ELSE awarded_score END
       OR invalid_answer_facts > 0
       OR base_max_earned != ${BASE_MAX_SCORE}
       OR base_max_score != ${BASE_MAX_SCORE}
@@ -214,6 +235,7 @@ function buildAnalyticsFactsIntegrityQuery(recentLimit?: number) {
 }
 
 export const ANALYTICS_FACTS_INTEGRITY_QUERY = buildAnalyticsFactsIntegrityQuery();
+export const LEGACY_ANALYTICS_FACTS_INTEGRITY_QUERY = buildAnalyticsFactsIntegrityQuery(undefined, false);
 export const ANALYTICS_FACTS_READINESS_QUERY = buildAnalyticsFactsIntegrityQuery(
   ANALYTICS_FACTS_READINESS_LIMIT,
 );

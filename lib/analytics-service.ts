@@ -1,4 +1,5 @@
 import { calculateAccuracy } from './scoring.ts';
+import { summarizeAttemptBreakdown } from './attempt-statistics.ts';
 import {
   analyticsCursor,
   questionAnalyticsMatches,
@@ -161,6 +162,7 @@ function kindSplit(rows: readonly AnalyticsFactRow[], minSample: number): Questi
     incorrect: outcomes.filter((row) => !row.isCorrect && !row.timedOut).length,
     timedOut: outcomes.filter((row) => row.timedOut).length,
     earned,
+    penaltyScore: outcomes.reduce((total, row) => total + (row.penaltyScore ?? 0), 0),
     max: rows.reduce((total, row) => total + row.scoreValue, 0),
     successRate: outcomes.length >= minSample ? roundedRate(correct, outcomes.length) : null,
   };
@@ -615,6 +617,7 @@ export function buildCandidatePrint(
     timedOut: row.timedOut,
     answerOrigin: row.answerOrigin,
     awardedScore: row.awardedScore ?? 0,
+    penaltyScore: row.penaltyScore ?? 0,
     elapsedSeconds: row.elapsedSeconds,
   }));
   const insights = buildCandidateInsights(insightFacts);
@@ -638,6 +641,7 @@ export function buildCandidatePrint(
       incorrect: base.incorrectCount,
       timedOut: base.timeoutCount,
       earned: base.earnedScore,
+      penaltyScore: base.penaltyScore,
       max: base.maxEarnableScore,
       accuracy: base.accuracy,
       averageSubmittedSeconds: base.averageSubmittedSeconds,
@@ -650,6 +654,7 @@ export function buildCandidatePrint(
       incorrect: additional.incorrectCount,
       timedOut: additional.timeoutCount,
       earned: additional.earnedScore,
+      penaltyScore: additional.penaltyScore,
       max: additional.maxEarnableScore,
       accuracy: additional.accuracy,
       recovered: additional.earnedScore,
@@ -669,6 +674,8 @@ export function buildCandidatePrint(
   ));
   return {
     ...candidate,
+    scoringVersion: attempt.scoringVersion ?? 2,
+    breakdown: summarizeAttemptBreakdown(insightFacts),
     generatedAt: new Date(attempt.completedAt).toISOString(),
     statisticsCompleteness: attemptFacts.some(
       (row) => row.answerId !== null && !isResolvedFact(row),

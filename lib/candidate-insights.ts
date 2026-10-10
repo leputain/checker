@@ -13,6 +13,7 @@ export type CandidateInsightFact = {
   timedOut: boolean;
   answerOrigin: string | null;
   awardedScore: number;
+  penaltyScore?: number;
   elapsedSeconds: number | null;
 };
 
@@ -26,6 +27,7 @@ export type CandidateTopicGroup = {
   incorrectCount: number;
   timeoutCount: number;
   earnedScore: number;
+  penaltyScore: number;
   maxEarnableScore: number;
   accuracy: number | null;
   averageSubmittedSeconds: number | null;
@@ -60,6 +62,7 @@ function emptyGroup(): MutableTopicGroup {
     incorrectCount: 0,
     timeoutCount: 0,
     earnedScore: 0,
+    penaltyScore: 0,
     maxEarnableScore: 0,
     submittedElapsedSeconds: 0,
     submittedCount: 0,
@@ -75,6 +78,7 @@ function finishGroup(group: MutableTopicGroup): CandidateTopicGroup {
     incorrectCount: group.incorrectCount,
     timeoutCount: group.timeoutCount,
     earnedScore: group.earnedScore,
+    penaltyScore: group.penaltyScore,
     maxEarnableScore: group.maxEarnableScore,
     accuracy: group.resolvedCount > 0
       ? Math.round((group.correctCount * 1000) / group.resolvedCount) / 10
@@ -108,6 +112,7 @@ export function buildCandidateInsights(facts: readonly CandidateInsightFact[]) {
     group.incorrectCount += fact.resolved && !fact.correct && !fact.timedOut ? 1 : 0;
     group.timeoutCount += fact.resolved && fact.timedOut ? 1 : 0;
     group.earnedScore += fact.resolved ? Math.max(0, fact.awardedScore) : 0;
+    group.penaltyScore += fact.resolved ? Math.max(0, fact.penaltyScore ?? 0) : 0;
     group.maxEarnableScore += fact.assigned ? Math.max(0, fact.scoreValue) : 0;
     if (
       fact.resolved && fact.answerOrigin === 'submitted' && !fact.timedOut &&

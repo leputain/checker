@@ -4,7 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { executeLocalD1File, queryLocalD1 } from './local-d1.ts';
 import { resolveOpsContext, type OpsContextOptions } from './ops-context.ts';
-import { ANALYTICS_FACTS_INTEGRITY_QUERY } from '../lib/analytics-facts-integrity.ts';
+import {
+  ANALYTICS_FACTS_INTEGRITY_QUERY,
+  LEGACY_ANALYTICS_FACTS_INTEGRITY_QUERY,
+} from '../lib/analytics-facts-integrity.ts';
 import {
   normalizeQuestionCategoryName,
   validateQuestionCategoryName,
@@ -486,8 +489,15 @@ export function assertLocalDatabaseIntegrity(
     localD1,
   );
   if (!attemptColumns.some((column) => column.name === 'analytics_facts_version')) return;
+  const answerColumns = queryLocalD1<{ name: string }>(
+    'PRAGMA table_info(answers)',
+    persistTo,
+    localD1,
+  );
   const facts = queryLocalD1<{ violations: number }>(
-    ANALYTICS_FACTS_INTEGRITY_QUERY,
+    answerColumns.some((column) => column.name === 'penalty_score')
+      ? ANALYTICS_FACTS_INTEGRITY_QUERY
+      : LEGACY_ANALYTICS_FACTS_INTEGRITY_QUERY,
     persistTo,
     localD1,
   )[0];

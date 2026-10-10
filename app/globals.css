@@ -136,6 +136,13 @@ button:focus-visible,input:focus-visible,[tabindex]:focus-visible { outline:3px 
 .result-summary .eyebrow { margin-bottom:10px; color:var(--verdict-accent); }
 .result-card h1 { margin:0; font-size:clamp(36px,5vw,54px); line-height:1.04; letter-spacing:-.055em; }
 .result-copy { max-width:510px; margin:11px 0 0; }
+.result-scoring { margin:0 0 24px; padding:16px 18px; border:1px solid var(--line); border-radius:16px; background:rgba(255,255,255,.025); }
+.result-scoring p { margin:0; font-size:12px; line-height:1.6; }
+.result-scoring p + p { margin-top:8px; }
+.score-formula { display:flex; flex-wrap:wrap; gap:6px 12px; font-variant-numeric:tabular-nums; }
+.score-formula strong { color:var(--ink); }
+.score-formula .score-penalty,.score-formula .score-penalty strong { color:#ffb3a4; }
+.scoring-rules { max-width:570px; margin:20px 0 0; color:var(--muted); font-size:12px; line-height:1.7; }
 .stats-grid { display:grid; border:1px solid var(--line); border-radius:18px; overflow:hidden; background:rgba(255,255,255,.018); }
 .stats-grid div { display:grid; gap:5px; min-width:0; padding:18px 12px; border-right:1px solid var(--line); text-align:center; }
 .stats-grid div:last-child { border-right:0; }

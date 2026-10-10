@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { Miniflare } from 'miniflare';
+import { LEGACY_ANALYTICS_FACTS_INTEGRITY_QUERY } from '../lib/analytics-facts-integrity.ts';
 import {
   cachedAnalyticsReport,
   invalidateAnalyticsAggregates,
@@ -85,6 +86,8 @@ import {
   ANALYTICS_FACTS_VERSION,
   BALANCED_TEST_CONFIG_ID,
   BALANCED_TEST_PROFILE_ID,
+  LEGACY_V2_TEST_CONFIG_ID,
+  LEGACY_V2_BALANCED_TEST_CONFIG_ID,
   SCORING_VERSION,
   TEST_CONFIG_ID,
   TEST_PROFILE_ID,
@@ -94,6 +97,8 @@ const now = Date.parse('2026-08-28T12:00:00.000Z');
 const revisionA = 'a'.repeat(64);
 const revisionB = 'b'.repeat(64);
 const revisionC = 'c'.repeat(64);
+assert.doesNotMatch(LEGACY_ANALYTICS_FACTS_INTEGRITY_QUERY, /an\.penalty_score/u,
+  'pre-0020 backup validation must not reference the new answer column');
 
 const defaults = parseAnalyticsQuery('http://localhost/api/admin/analytics/questions', now);
 assert.equal(defaults.questionKind, 'base');
@@ -132,6 +137,14 @@ const explicitModel = applyCurrentModelDefaults(
 );
 assert.equal(explicitModel.testConfigId, TEST_CONFIG_ID);
 assert.equal(explicitModel.testProfileId, TEST_PROFILE_ID);
+const legacyDefaults = parseAnalyticsQuery('http://localhost/x?scoringVersion=2', now);
+assert.equal(legacyDefaults.testConfigId, LEGACY_V2_TEST_CONFIG_ID);
+assert.equal(applyCurrentModelDefaults(
+  legacyDefaults, 'http://localhost/x?scoringVersion=2', true,
+).testConfigId, LEGACY_V2_BALANCED_TEST_CONFIG_ID);
+assert.equal(parseAnalyticsQuery(
+  `http://localhost/x?scoringVersion=2&testProfileId=${BALANCED_TEST_PROFILE_ID}`, now,
+).testConfigId, LEGACY_V2_BALANCED_TEST_CONFIG_ID);
 
 const cursor = analyticsCursor(25);
 const aliases = parseAnalyticsQuery(
@@ -596,6 +609,32 @@ function fact(overrides: Partial<AnalyticsFactRow> = {}): AnalyticsFactRow {
   };
 }
 
+// Fifteen correct base answers and five correct additional answers used to
+// yield 90. The v3 print contract keeps 90 earned and 10 penalty separate.
+const v3BaseValues = [2, 2, 2, 2, 2, 4, 4, 4, 4, 4, 4, 4, 6, 6, 6, 6, 6, 6, 6, 20];
+const v3WrongIndexes = new Set([0, 1, 5, 12, 13]);
+const v3Facts = v3BaseValues.map((value, index) => fact({
+  attemptId: 'weighted-v3', questionId: index + 1, ordinal: index + 1,
+  scoreValue: value, answerId: index + 1, isCorrect: !v3WrongIndexes.has(index),
+  awardedScore: v3WrongIndexes.has(index) ? 0 : value,
+  penaltyScore: v3WrongIndexes.has(index) ? value / 2 : 0,
+}));
+v3Facts.push(...[...v3WrongIndexes].map((baseIndex, index) => fact({
+  attemptId: 'weighted-v3', questionId: 21 + index, ordinal: 21 + index,
+  questionKind: 'additional', scoreValue: v3BaseValues[baseIndex] / 2,
+  answerId: 21 + index, awardedScore: v3BaseValues[baseIndex] / 2, penaltyScore: 0,
+})));
+const v3Print = buildCandidatePrint([
+  attempt('weighted-v3', { scoringVersion: 3, score: 80, correctCount: 20, wrongCount: 5 }),
+], v3Facts, 'weighted-v3');
+assert(v3Print);
+assert.equal(v3Print.scoringVersion, 3);
+assert.equal(v3Print.breakdown.base.correctCount, 15);
+assert.equal(v3Print.breakdown.base.earnedScore, 80);
+assert.equal(v3Print.breakdown.base.penaltyScore, 10);
+assert.equal(v3Print.breakdown.additional.earnedScore, 10);
+assert.equal(v3Print.topics[0].base.penaltyScore, 10);
+
 const serviceAttempts = Array.from({ length: 30 }, (_, index) => attempt(`attempt-${index + 1}`, {
   score: index < 18 ? 70 : 40,
   correctCount: index < 18 ? 1 : 0,
@@ -946,6 +985,7 @@ try {
     '0013_productive_darkstar.sql',
     '0014_supreme_domino.sql',
     '0016_free_khan.sql',
+    '0020_scoring_v3_penalties.sql',
   ]) {
     const aggregateMigration = await readFile(
       new URL(`../drizzle/${migrationName}`, import.meta.url),
@@ -995,6 +1035,7 @@ try {
     insertAttempt.bind('rank-old', revisionA, SCORING_VERSION, TEST_CONFIG_ID, TEST_PROFILE_ID, 65, now - 6_000, ANALYTICS_FACTS_VERSION, now - 10_000),
     insertAttempt.bind('rank-new', revisionA, SCORING_VERSION, TEST_CONFIG_ID, TEST_PROFILE_ID, 75, now + 2 * 24 * 60 * 60 * 1_000, ANALYTICS_FACTS_VERSION, now + 2 * 24 * 60 * 60 * 1_000 - 10_000),
     insertAttempt.bind('legacy', revisionA, SCORING_VERSION, TEST_CONFIG_ID, TEST_PROFILE_ID, 99, now - 2_000, 0, now - 10_000),
+    insertAttempt.bind('scoring-v2', revisionA, 2, LEGACY_V2_TEST_CONFIG_ID, TEST_PROFILE_ID, 90, now - 1_000, ANALYTICS_FACTS_VERSION, now - 10_000),
     db.prepare("UPDATE attempts SET candidate_key = 'other-candidate' WHERE id = 'additional-a'"),
     db.prepare("UPDATE attempts SET candidate_key = 'historical-candidate' WHERE id = 'old-history'"),
     db.prepare("UPDATE attempts SET candidate_key = 'revision-c-candidate' WHERE id = 'old-revision-c'"),
@@ -1010,10 +1051,10 @@ try {
       .bind(now - 9_000, now - 8_000, now - 9_000, now - 8_000, now - 9_000, now - 8_000),
     db.prepare(`INSERT INTO answers (
       id, attempt_id, question_id, fact_version, answer_origin, canonical_selected_index,
-      awarded_score, is_correct, timed_out, elapsed_seconds, answered_at
-    ) VALUES (1, 'new-a', 101, 1, 'submitted', 1, 2, 1, 0, 9, ?),
-      (2, 'only-b', 101, 1, 'submitted', 0, 0, 0, 0, 10, ?),
-      (3, 'additional-a', 101, 1, 'submitted', 0, 0, 0, 0, 30, ?)`)
+      awarded_score, is_correct, timed_out, elapsed_seconds, answered_at, penalty_score
+    ) VALUES (1, 'new-a', 101, 1, 'submitted', 1, 2, 1, 0, 9, ?, 0),
+      (2, 'only-b', 101, 1, 'submitted', 0, 0, 0, 0, 10, ?, 1),
+      (3, 'additional-a', 101, 1, 'submitted', 0, 0, 0, 0, 30, ?, 2)`)
       .bind(now - 7_000, now - 7_000, now - 7_000),
   ]);
   const rebuilt = await rebuildAnalyticsAggregates(db, now);
@@ -1048,6 +1089,14 @@ try {
     'historical active state comes from the selected bank revision, not current question state',
   );
   assert.equal(repositoryFacts.find((row) => row.attemptId === 'only-b')?.active, false);
+  assert.equal(repositoryFacts.find((row) => row.attemptId === 'only-b')?.penaltyScore, 1);
+  assert.equal(repositoryFacts.find((row) => row.attemptId === 'additional-a')?.penaltyScore, 2);
+  const legacyV2Attempts = await fetchAnalyticsAttempts(db, {
+    ...parseAnalyticsQuery('http://localhost/x?scoringVersion=2', now), bankRevision: revisionA,
+  });
+  assert.deepEqual(legacyV2Attempts.map((item) => ({ id: item.id, score: item.score, version: item.scoringVersion })),
+    [{ id: 'scoring-v2', score: 90, version: 2 }],
+    'historical scoring v2 remains visible with its original score in a separate cohort');
 
   const equivalenceQuery = {
     ...repositoryQuery,
@@ -1057,6 +1106,11 @@ try {
   const equivalenceAttempts = await fetchAnalyticsAttempts(db, equivalenceQuery);
   const equivalenceFacts = await fetchAnalyticsFacts(db, equivalenceQuery);
   const directQuestions = await fetchQuestionListReport(db, equivalenceQuery);
+  const penaltyQuery = { ...equivalenceQuery, bankRevision: null, questionKind: 'all' as const };
+  const penaltyQuestions = await fetchQuestionListReport(db, penaltyQuery);
+  assert.equal(penaltyQuestions.items[0].base.penaltyScore, 1);
+  assert.equal(penaltyQuestions.items[0].additional.penaltyScore, 2);
+  assert.deepEqual((await fetchDerivedQuestionListReport(db, penaltyQuery)).items, penaltyQuestions.items);
   assert.deepEqual(
     directQuestions.items,
     buildQuestionList(equivalenceQuery, equivalenceAttempts, equivalenceFacts).items,

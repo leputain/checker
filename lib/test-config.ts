@@ -19,8 +19,16 @@ export const TEST_CONFIG = {
   maxAdditionalQuestions: 10,
   verdict: {
     passScore: 80,
-    passAccuracy: 70,
+    passBaseCorrect: 17,
     reviewScore: 50,
+  },
+  scoringPolicy: {
+    correctAward: 'full-score-value',
+    baseIncorrectPenaltyMultiplier: 0.5,
+    additionalIncorrectPenaltyMultiplier: 1,
+    penaltyEligibility: 'presented',
+    timeoutPolicy: { presented: 'incorrect', unshown: 'no-penalty' },
+    scoreClamp: 'after-ledger-net',
   },
 } as const;
 
@@ -29,7 +37,9 @@ export const TEST_CONFIG = {
  * contract and must be bumped instead of being silently re-used when the
  * corresponding semantics change.
  */
-export const SCORING_VERSION = 2;
+export const SCORING_VERSION = 3;
+export const LEGACY_SCORING_VERSION = 2;
+export const LEGACY_PASS_ACCURACY = 70;
 export const ANALYTICS_FACTS_VERSION = 1;
 export const TEST_PROFILE_ID = 'general-v1';
 export const REMEDIAL_POLICY_VERSION = 2;
@@ -73,11 +83,12 @@ export const TEST_CONFIG_SNAPSHOT = {
   additionalQuestionMultiplier: TEST_CONFIG.additionalQuestionMultiplier,
   maxAdditionalQuestions: TEST_CONFIG.maxAdditionalQuestions,
   verdict: TEST_CONFIG.verdict,
+  scoringPolicy: TEST_CONFIG.scoringPolicy,
 } as const;
 
 /** Canonical JSON is deliberately ordered and covered by a fixed SHA-256 id. */
 export const TEST_CONFIG_JSON = JSON.stringify(TEST_CONFIG_SNAPSHOT);
-export const TEST_CONFIG_ID = '8c50cc5d8d7b8b0c738b1357d0acbfef0242e3600a2fe140aa2b2b8d375c76da';
+export const TEST_CONFIG_ID = 'e60467ba5bb702975c3b8d15cd6cd8ae1a43e85b54aec85b7423cdfd1a229925';
 
 export const BALANCED_TEST_CONFIG_SNAPSHOT = {
   ...TEST_CONFIG_SNAPSHOT,
@@ -93,7 +104,57 @@ export const BALANCED_TEST_CONFIG_SNAPSHOT = {
   },
 } as const;
 export const BALANCED_TEST_CONFIG_JSON = JSON.stringify(BALANCED_TEST_CONFIG_SNAPSHOT);
-export const BALANCED_TEST_CONFIG_ID = '073e57b6087c34e14c697d4f22d4fb4add5f82525e8799e3c58e7a9c99b8fd63';
+export const BALANCED_TEST_CONFIG_ID = '5a82cc35c5cd2d30d9c6dcb7b3a8e1ed517deb0e6efe4a4def1fdaf210d140a6';
+
+/**
+ * Historical v2 snapshots are literals, independent of current configuration.
+ * Preserve their JSON order and contents: persisted attempts refer to these ids.
+ */
+export const LEGACY_V2_TEST_CONFIG_SNAPSHOT = {
+  scoringVersion: 2,
+  testProfileId: 'general-v1',
+  remedialPolicy: {
+    version: 2,
+    sourceQuestionKind: 'base',
+    maxAdditionalQuestions: 10,
+    allowChains: false,
+    queuePlacement: 'after-base',
+    difficultyPolicy: 'same',
+    topicPolicy: 'prefer-same',
+    uniqueness: ['question-id', 'dedupe-key'],
+  },
+  selectionPolicy: {
+    version: 1,
+    strategy: 'random-difficulty-quota-v1',
+    reservePerDifficulty: 1,
+  },
+  totalTimeSeconds: 600,
+  questionTimeSeconds: 30,
+  plan: { easy: 5, medium: 7, hard: 7, expert: 1 },
+  weights: { easy: 1, medium: 2, hard: 3, expert: 10 },
+  baseQuestionMultiplier: 2,
+  additionalQuestionMultiplier: 1,
+  maxAdditionalQuestions: 10,
+  verdict: { passScore: 80, passAccuracy: 70, reviewScore: 50 },
+} as const;
+export const LEGACY_V2_TEST_CONFIG_JSON = JSON.stringify(LEGACY_V2_TEST_CONFIG_SNAPSHOT);
+export const LEGACY_V2_TEST_CONFIG_ID = '8c50cc5d8d7b8b0c738b1357d0acbfef0242e3600a2fe140aa2b2b8d375c76da';
+
+export const LEGACY_V2_BALANCED_TEST_CONFIG_SNAPSHOT = {
+  ...LEGACY_V2_TEST_CONFIG_SNAPSHOT,
+  testProfileId: 'general-balanced-v2',
+  selectionPolicy: {
+    version: 2,
+    strategy: 'coverage-weighted-v2',
+    reservePerDifficulty: 1,
+    iterations: 200,
+    topicPlan: { 'Сети': 5, 'Linux': 5, 'Windows и AD': 5, 'Информационная безопасность': 5 },
+    coverageWeights: { topicFit: 50, frequency: 35, recency: 15 },
+    recencyWindowDays: 30,
+  },
+} as const;
+export const LEGACY_V2_BALANCED_TEST_CONFIG_JSON = JSON.stringify(LEGACY_V2_BALANCED_TEST_CONFIG_SNAPSHOT);
+export const LEGACY_V2_BALANCED_TEST_CONFIG_ID = '073e57b6087c34e14c697d4f22d4fb4add5f82525e8799e3c58e7a9c99b8fd63';
 
 export type Difficulty = keyof typeof TEST_CONFIG.plan;
 

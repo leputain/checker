@@ -403,14 +403,9 @@ test('ошибки базовых hard и expert добавляют только
       }
 
       const scoreValue = scoreValues[state.difficulty][questionKind];
-      const pointsLabel = scoreValue % 10 === 1 && scoreValue % 100 !== 11
-        ? `${scoreValue} балл`
-        : scoreValue % 10 >= 2 && scoreValue % 10 <= 4
-          && !(scoreValue % 100 >= 12 && scoreValue % 100 <= 14)
-          ? `${scoreValue} балла`
-          : `${scoreValue} баллов`;
+      const penaltyValue = questionKind === 'base' ? scoreValue / 2 : scoreValue;
       await expect(page.getByText(
-        `${difficultyLabels[state.difficulty]} · ${pointsLabel}`,
+        `${difficultyLabels[state.difficulty]} · +${scoreValue} / −${penaltyValue}`,
         { exact: true },
       )).toBeVisible();
 
@@ -429,8 +424,8 @@ test('ошибки базовых hard и expert добавляют только
     expect(additionalSeen).toBe(2);
     expect([...missedDifficulties].sort()).toEqual(['expert', 'hard']);
     await expect(page.getByRole('heading', { name: 'Результат готов.' })).toBeVisible();
-    await expect(page.getByRole('img', { name: '87 из 100 баллов' })).toBeVisible();
-    await expect(page.getByText('Рекомендован', { exact: true })).toBeVisible();
+    await expect(page.getByRole('img', { name: '74 из 100 баллов' })).toBeVisible();
+    await expect(page.getByText('К просмотру', { exact: true })).toBeVisible();
     const resultStats = page.locator('.result-stats');
     await expect(resultStats.getByText('20 из 22', { exact: true })).toBeVisible();
     await expect(resultStats.getByText('18 из 20', { exact: true })).toBeVisible();
@@ -468,11 +463,11 @@ test('ошибки базовых hard и expert добавляют только
       GROUP BY attempts.id
     `, E2E_STATE_PATH)[0];
     expect(completed).toEqual({
-      score: 87,
+      score: 74,
       baseMaxScore: 100,
       correctCount: 20,
       wrongCount: 2,
-      verdict: 'PASS',
+      verdict: 'REVIEW',
       baseAnsweredCount: 20,
       baseCorrectCount: 18,
       additionalAnsweredCount: 2,

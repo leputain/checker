@@ -250,6 +250,7 @@ export async function POST(request: Request) {
         score: 0,
         baseMaxScore,
         totalRemainingSeconds: TEST_CONFIG.totalTimeSeconds,
+        scoringVersion: SCORING_VERSION,
       });
       statements.push(
         db.prepare(`INSERT INTO telegram_outbox (

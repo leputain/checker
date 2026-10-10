@@ -13,6 +13,8 @@ import {
   ANALYTICS_FACTS_VERSION,
   BALANCED_TEST_CONFIG_ID,
   BALANCED_TEST_PROFILE_ID,
+  LEGACY_V2_TEST_CONFIG_ID,
+  LEGACY_V2_BALANCED_TEST_CONFIG_ID,
   SCORING_VERSION,
   TEST_CONFIG_ID,
   TEST_PROFILE_ID,
@@ -175,12 +177,17 @@ export function parseAnalyticsQuery(input: URL | string, now = Date.now()): Pars
   if (!Number.isInteger(scoringVersion) || scoringVersion < 1 || scoringVersion > 1_000) {
     throw new AnalyticsQueryError('invalid_scoringVersion');
   }
-  const testConfigId = one(params, 'testConfigId') ?? TEST_CONFIG_ID;
-  if (!SHA256_PATTERN.test(testConfigId)) throw new AnalyticsQueryError('invalid_testConfigId');
   const testProfileId = optionalIdentifier(
     one(params, 'testProfileId') ?? TEST_PROFILE_ID,
     'testProfileId',
   )!;
+  const defaultConfigId = scoringVersion === 2
+    ? testProfileId === BALANCED_TEST_PROFILE_ID
+      ? LEGACY_V2_BALANCED_TEST_CONFIG_ID
+      : LEGACY_V2_TEST_CONFIG_ID
+    : testProfileId === BALANCED_TEST_PROFILE_ID ? BALANCED_TEST_CONFIG_ID : TEST_CONFIG_ID;
+  const testConfigId = one(params, 'testConfigId') ?? defaultConfigId;
+  if (!SHA256_PATTERN.test(testConfigId)) throw new AnalyticsQueryError('invalid_testConfigId');
   const appVersion = optionalIdentifier(one(params, 'appVersion'), 'appVersion');
   const topic = one(params, 'topic');
   if (topic && (topic.length > 100 || /[\u0000-\u001f]/u.test(topic))) {
@@ -331,14 +338,18 @@ export function applyCurrentModelDefaults(
 ) {
   if (!balancedSelection) return query;
   const url = typeof input === 'string' ? new URL(input) : input;
+  const testProfileId = url.searchParams.has('testProfileId')
+    ? query.testProfileId : BALANCED_TEST_PROFILE_ID;
+  const balanced = testProfileId === BALANCED_TEST_PROFILE_ID;
+  const defaultConfigId = query.scoringVersion === 2
+    ? balanced ? LEGACY_V2_BALANCED_TEST_CONFIG_ID : LEGACY_V2_TEST_CONFIG_ID
+    : balanced ? BALANCED_TEST_CONFIG_ID : TEST_CONFIG_ID;
   return {
     ...query,
     testConfigId: url.searchParams.has('testConfigId')
       ? query.testConfigId
-      : BALANCED_TEST_CONFIG_ID,
-    testProfileId: url.searchParams.has('testProfileId')
-      ? query.testProfileId
-      : BALANCED_TEST_PROFILE_ID,
+      : defaultConfigId,
+    testProfileId,
   };
 }
 

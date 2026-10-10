@@ -228,7 +228,7 @@ async function deterministicSnapshot(db: D1Database) {
   const answers = await db.prepare(`SELECT answers.attempt_id, answers.question_id,
       answers.selected_index, answers.is_correct, answers.answered_at,
       answers.elapsed_seconds, answers.timed_out, answers.answer_origin,
-      answers.canonical_selected_index, answers.awarded_score
+      answers.canonical_selected_index, answers.awarded_score, answers.penalty_score
     FROM answers JOIN attempts ON attempts.id = answers.attempt_id
     WHERE ${DEMO_TARGET_SQL_PREDICATE}
     ORDER BY answers.attempt_id, answers.question_id`)
@@ -279,6 +279,38 @@ try {
   const exactIntegrity = await db.prepare(ANALYTICS_FACTS_INTEGRITY_QUERY)
     .first<{ violations: number }>();
   assert.equal(exactIntegrity?.violations, 0);
+  const scoring = await db.prepare(`SELECT attempts.id, attempts.score, attempts.verdict,
+      SUM(answers.awarded_score) AS earned,
+      SUM(answers.penalty_score) AS penalties,
+      SUM(CASE WHEN aq.question_kind = 'base' AND answers.is_correct = 1 THEN 1 ELSE 0 END) AS base_correct
+    FROM attempts JOIN attempt_questions aq ON aq.attempt_id = attempts.id
+      JOIN answers ON answers.attempt_id = aq.attempt_id AND answers.question_id = aq.question_id
+    WHERE ${DEMO_TARGET_SQL_PREDICATE}
+    GROUP BY attempts.id`)
+    .all<{ id: string; score: number; verdict: string; earned: number; penalties: number; base_correct: number }>();
+  assert.equal(scoring.results.length, 50);
+  assert.ok(scoring.results.some((row) => row.penalties > 0));
+  assert.ok(scoring.results.some((row) => row.earned - row.penalties < 0), 'negative raw scores must survive until the final clamp');
+  for (const row of scoring.results) {
+    assert.equal(row.score, Math.max(0, Math.min(100, row.earned - row.penalties)));
+    assert.equal(row.verdict, row.score >= 80 && row.base_correct >= 17
+      ? 'PASS' : row.score >= 50 ? 'REVIEW' : 'FAIL');
+  }
+  const penaltyCoverage = await db.prepare(`SELECT aq.question_kind, answers.timed_out,
+      COUNT(*) AS count,
+      SUM(CASE WHEN answers.is_correct = 0 AND answers.penalty_score =
+        CASE WHEN aq.question_kind = 'base' THEN aq.score_value / 2 ELSE aq.score_value END
+        THEN 0 ELSE 1 END) AS violations
+    FROM answers JOIN attempt_questions aq ON aq.attempt_id = answers.attempt_id
+      AND aq.question_id = answers.question_id
+      JOIN attempts ON attempts.id = answers.attempt_id
+    WHERE ${DEMO_TARGET_SQL_PREDICATE} AND answers.is_correct = 0
+    GROUP BY aq.question_kind, answers.timed_out`)
+    .all<{ question_kind: string; timed_out: number; count: number; violations: number }>();
+  assert.ok(penaltyCoverage.results.some((row) => row.question_kind === 'base' && row.count > 0));
+  assert.ok(penaltyCoverage.results.some((row) => row.question_kind === 'additional' && row.count > 0));
+  assert.ok(penaltyCoverage.results.some((row) => row.timed_out === 1 && row.count > 0));
+  assert.ok(penaltyCoverage.results.every((row) => row.violations === 0));
   const outbox = await db.prepare(`SELECT COUNT(*) AS count FROM telegram_outbox
     WHERE attempt_id IN (
       SELECT id FROM attempts WHERE ${DEMO_TARGET_SQL_PREDICATE}

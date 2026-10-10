@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import {
   BASE_MAX_SCORE,
   calculateAccuracy,
+  calculateNetScore,
+  calculatePenalty,
   calculateScore,
   calculateVerdict,
   questionScoreValue,
@@ -12,6 +14,7 @@ import {
   BALANCED_TEST_CONFIG_ID,
   BALANCED_TEST_CONFIG_JSON,
   DIFFICULTIES,
+  LEGACY_SCORING_VERSION,
   TEST_CONFIG,
   TEST_CONFIG_ID,
   TEST_CONFIG_JSON,
@@ -48,10 +51,19 @@ for (const difficulty of DIFFICULTIES) {
   }
 }
 
-assert.equal(calculateVerdict(80, 70), 'PASS');
-assert.equal(calculateVerdict(100, 70), 'PASS');
-assert.equal(calculateVerdict(79, 100), 'REVIEW');
-assert.equal(calculateVerdict(80, 69), 'REVIEW');
+assert.equal(calculateVerdict(80, 70, undefined, LEGACY_SCORING_VERSION), 'PASS');
+assert.equal(calculateVerdict(100, 70, undefined, LEGACY_SCORING_VERSION), 'PASS');
+assert.equal(calculateVerdict(79, 100, undefined, LEGACY_SCORING_VERSION), 'REVIEW');
+assert.equal(calculateVerdict(80, 69, undefined, LEGACY_SCORING_VERSION), 'REVIEW');
+assert.equal(calculateVerdict(80, 70, 17), 'PASS');
+assert.equal(calculateVerdict(80, 0, 17), 'PASS', 'v3 uses base correct count rather than diluted overall accuracy');
+assert.equal(calculateVerdict(100, 100, 16), 'REVIEW');
+assert.equal(calculateVerdict(79, 100, 20), 'REVIEW');
+assert.equal(calculateVerdict(100, 100), 'REVIEW', 'missing base counts must not produce PASS');
+assert.equal(calculateVerdict(100, 100, 21), 'REVIEW', 'invalid base count must not produce PASS');
+assert.equal(calculateVerdict(100, 100, 17.5), 'REVIEW');
+assert.equal(calculateVerdict(100, 100, 20, 99), 'REVIEW', 'unknown scoring versions fail closed for PASS');
+assert.equal(calculateVerdict(Number.NaN, 100, 20), 'FAIL');
 assert.equal(calculateVerdict(50, 50), 'REVIEW');
 assert.equal(calculateVerdict(49, 100), 'FAIL');
 assert.equal(calculateVerdict(0, 100), 'FAIL');
@@ -90,6 +102,49 @@ assert.equal(
 );
 assert.equal(calculateScore(100, 10, BASE_MAX_SCORE, true), 100);
 assert.equal(calculateAccuracy(20, 2), 91);
+
+for (const difficulty of DIFFICULTIES) {
+  for (const questionKind of ['base', 'additional'] as const) {
+    const value = questionScoreValue(TEST_CONFIG.weights[difficulty], questionKind);
+    assert.equal(calculatePenalty(value, questionKind, false, true), TEST_CONFIG.weights[difficulty]);
+    assert.equal(calculatePenalty(value, questionKind, true, true), 0);
+    assert.equal(calculatePenalty(value, questionKind, false, false), 0, 'unshown timeouts have no penalty');
+    assert.equal(calculatePenalty(value, questionKind, false, true, LEGACY_SCORING_VERSION), 0);
+  }
+}
+assert.throws(() => calculatePenalty(3, 'base', false, true), RangeError);
+assert.throws(() => calculatePenalty(6, 'base', false, true, 99), RangeError);
+assert.throws(() => calculateNetScore(-1, 0, 100), RangeError);
+assert.throws(() => calculateNetScore(10, Number.NaN, 100), RangeError);
+assert.equal(calculateNetScore(0, 10, 100), 0);
+assert.equal(calculateNetScore(20, 10, 100), 10, 'an early penalty survives a displayed zero balance');
+assert.equal(calculateNetScore(150, 10, 100), 100);
+assert.equal(calculateNetScore(10, 10, 100), 0);
+
+const ledgerFacts = [
+  { scoreValue: 20, kind: 'base' as const, correct: false },
+  { scoreValue: 20, kind: 'base' as const, correct: true },
+  { scoreValue: 10, kind: 'additional' as const, correct: true },
+];
+for (const order of [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]) {
+  const totals = order.reduce((sum, index) => {
+    const fact = ledgerFacts[index];
+    return {
+      earned: sum.earned + (fact.correct ? fact.scoreValue : 0),
+      penalty: sum.penalty + calculatePenalty(fact.scoreValue, fact.kind, fact.correct, true),
+    };
+  }, { earned: 0, penalty: 0 });
+  assert.equal(calculateNetScore(totals.earned, totals.penalty, 100), 20, 'ledger score is order independent');
+}
+
+// The three formerly identical 90s: expert mistake, five medium mistakes,
+// and seven mixed mistakes. All have base earned80, recovery10 and penalty10.
+for (const [baseCorrect, verdict] of [[19, 'PASS'], [15, 'REVIEW'], [13, 'REVIEW']] as const) {
+  const score = calculateNetScore(80 + 10, 10, 100);
+  assert.equal(score, 80);
+  assert.equal(calculateVerdict(score, 95, baseCorrect), verdict);
+}
+assert.equal(calculateNetScore(80, 10 + 10, 100), 60, 'expert base and remedial errors both retain their penalties');
 
 const answerStatistics = summarizeAttemptStatistics([
   {
@@ -195,6 +250,7 @@ assert.deepEqual(summarizeAttemptBreakdown(exactFacts), {
     incorrectCount: 0,
     timeoutCount: 1,
     earnedScore: 6,
+    penaltyScore: 0,
     maxEarnableScore: 10,
   },
   additional: {
@@ -205,6 +261,7 @@ assert.deepEqual(summarizeAttemptBreakdown(exactFacts), {
     incorrectCount: 0,
     timeoutCount: 0,
     earnedScore: 0,
+    penaltyScore: 0,
     maxEarnableScore: 3,
   },
 });

@@ -243,6 +243,114 @@ assert.match(completedMessage, /Дата теста: 15\.11\.2023 · 01:13 МС�
 assert.match(completedMessage, /<code>#ATTEMPT1<\/code>/);
 assert.doesNotMatch(completedMessage, /банк|\/ COMPLETED-/i);
 assert.doesNotMatch(completedMessage, /tg-spoiler/);
+assert.doesNotMatch(completedMessage, /Расчёт:|Для рекомендации:/);
+
+const v3CompletedInput = {
+  attemptId: 'v3-summary-87654321',
+  candidateName: 'Тестовый кандидат',
+  verdict: 'REVIEW' as const,
+  score: 80,
+  baseMaxScore: 100,
+  accuracy: 80,
+  timeoutCount: 0,
+  durationSeconds: 300,
+  averageAnswerSeconds: 12,
+  completedAt: 1_700_000_000_000,
+  baseAnsweredCount: 20,
+  baseCorrectCount: 15,
+  additionalAnsweredCount: 5,
+  additionalCorrectCount: 5,
+  scoringVersion: 3,
+  scoreBreakdown: {
+    earnedBase: 80,
+    earnedAdditional: 10,
+    basePenalty: 10,
+    additionalPenalty: 0,
+    totalPenalty: 10,
+    rawScore: 80,
+    netScore: 80,
+  },
+};
+const v3CompletedMessage = completedTelegramMessage(v3CompletedInput);
+assert.match(v3CompletedMessage, /Расчёт: основные 80 \+ дополнительные 10 − штрафы 10 = 80/);
+assert.match(v3CompletedMessage, /Для рекомендации: ≥80 баллов и ≥17\/20 основных ответов верно/);
+assert.match(v3CompletedMessage, /Баллов достаточно, но основных ответов верно: 15 из 20/);
+assert.ok(telegramVisibleTextLength(v3CompletedMessage, 'HTML') <= TELEGRAM_MESSAGE_VISIBLE_LIMIT);
+
+const v2CompletedMessage = completedTelegramMessage({
+  ...v3CompletedInput,
+  scoringVersion: 2,
+  score: 90,
+  verdict: 'PASS',
+});
+assert.match(v2CompletedMessage, /Прежние правила: без штрафов за ошибки/);
+assert.doesNotMatch(v2CompletedMessage, /Расчёт:|Для рекомендации:|Баллов достаточно/);
+
+const clampedCompletedMessage = completedTelegramMessage({
+  ...v3CompletedInput,
+  score: 0,
+  scoreBreakdown: {
+    earnedBase: 0,
+    earnedAdditional: 0,
+    basePenalty: 50,
+    additionalPenalty: 20,
+    totalPenalty: 70,
+    rawScore: -70,
+    netScore: 0,
+  },
+});
+assert.match(clampedCompletedMessage, /После штрафов: -70; итог ограничен снизу нулём/);
+assert.doesNotMatch(clampedCompletedMessage, /Баллов достаточно/);
+
+const v3WrongAnswerMessage = answerTelegramMessage({
+  attemptId: 'v3-answer-12345678',
+  position: 1,
+  totalQuestions: 20,
+  difficulty: 'hard',
+  questionKind: 'base',
+  scoreValue: 6,
+  scoringVersion: 3,
+  penaltyScore: 3,
+  prompt: 'Тестовый вопрос',
+  selectedAnswer: 'Ошибка',
+  correctAnswer: 'Верный ответ',
+  correct: false,
+  timedOut: false,
+  questionElapsedSeconds: 12,
+});
+assert.match(v3WrongAnswerMessage, /Баллы за ответ: \+0 · штраф: −3/);
+
+const v3ProgressMessage = progressTelegramMessage({
+  attemptId: v3CompletedInput.attemptId,
+  candidateName: v3CompletedInput.candidateName,
+  state: 'completed',
+  answeredCount: 25,
+  totalQuestions: 25,
+  correctCount: 20,
+  wrongCount: 5,
+  score: 80,
+  baseMaxScore: 100,
+  totalRemainingSeconds: 0,
+  scoringVersion: 3,
+  scoreBreakdown: v3CompletedInput.scoreBreakdown,
+});
+assert.match(v3ProgressMessage, /Расчёт: основные 80 \+ дополнительные 10 − штрафы 10 = 80/);
+
+const v3StartedMessage = progressTelegramMessage({
+  attemptId: 'v3-start-12345678',
+  candidateName: 'Тестовый кандидат',
+  state: 'started',
+  answeredCount: 0,
+  totalQuestions: 20,
+  correctCount: 0,
+  wrongCount: 0,
+  score: 0,
+  baseMaxScore: 100,
+  totalRemainingSeconds: 600,
+  scoringVersion: 3,
+});
+assert.match(v3StartedMessage, /Для рекомендации: ≥80 баллов и ≥17\/20 основных ответов верно/);
+assert.match(v3StartedMessage, /ошибки и тайм-ауты отнимают баллы/);
 
 const boundaryCompletedMessage = completedTelegramMessage({
   attemptId: 'boundary-summary-87654321',

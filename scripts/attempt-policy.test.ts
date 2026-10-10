@@ -9,6 +9,12 @@ import {
 import { BASE_MAX_SCORE } from '../lib/scoring.ts';
 import {
   LEGACY_SELECTION_VERSION,
+  LEGACY_SCORING_VERSION,
+  LEGACY_V2_TEST_CONFIG_ID,
+  LEGACY_V2_BALANCED_TEST_CONFIG_ID,
+  BALANCED_TEST_CONFIG_ID,
+  BALANCED_TEST_PROFILE_ID,
+  BALANCED_TEST_SELECTION_VERSION,
   SCORING_VERSION,
   TEST_CONFIG,
   TEST_CONFIG_ID,
@@ -91,5 +97,26 @@ assert.equal(
   'an active row without persisted model identity must not be resumed',
 );
 assert.equal(ATTEMPT_VERSION_UNSUPPORTED_CODE, 'attempt_version_unsupported');
+
+for (const scoringVersion of [LEGACY_SCORING_VERSION, SCORING_VERSION]) {
+  for (const balanced of [false, true]) {
+    const configId = scoringVersion === LEGACY_SCORING_VERSION
+      ? (balanced ? LEGACY_V2_BALANCED_TEST_CONFIG_ID : LEGACY_V2_TEST_CONFIG_ID)
+      : (balanced ? BALANCED_TEST_CONFIG_ID : TEST_CONFIG_ID);
+    const attempt = {
+      status: 'active', base_max_score: BASE_MAX_SCORE,
+      scoring_version: scoringVersion, test_config_id: configId,
+      test_profile_id: balanced ? BALANCED_TEST_PROFILE_ID : TEST_PROFILE_ID,
+      selection_version: balanced ? BALANCED_TEST_SELECTION_VERSION : LEGACY_SELECTION_VERSION,
+    };
+    assert.equal(isUnsupportedActiveAttempt(attempt), false, 'active v2 and v3 preserve their own semantics');
+    assert.equal(isUnsupportedActiveAttempt({ ...attempt, scoring_version: 99 }), true);
+    assert.equal(isUnsupportedActiveAttempt({
+      ...attempt,
+      scoring_version: scoringVersion === SCORING_VERSION ? LEGACY_SCORING_VERSION : SCORING_VERSION,
+    }), true, 'a config hash cannot be reused across scoring versions');
+    assert.equal(isUnsupportedActiveAttempt({ ...attempt, test_profile_id: 'unknown' }), true);
+  }
+}
 
 console.log('attempt policy tests: PASS');

@@ -18,6 +18,7 @@ export type AttemptQuestionReviewDto = {
   correctAnswer: string;
   elapsedSeconds: number | null;
   awardedScore: number;
+  penaltyScore?: number;
   explanation: string;
 };
 

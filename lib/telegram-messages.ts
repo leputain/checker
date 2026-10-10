@@ -14,6 +14,29 @@ export type TelegramInterviewerProfile = {
   checkAreas: readonly string[];
 };
 
+export type TelegramScoreBreakdown = {
+  earnedBase: number;
+  earnedAdditional: number;
+  basePenalty: number;
+  additionalPenalty: number;
+  totalPenalty: number;
+  rawScore: number;
+  netScore: number;
+};
+
+function scoringLines(input: {
+  scoringVersion?: number;
+  scoreBreakdown?: TelegramScoreBreakdown;
+}) {
+  if (input.scoringVersion === 2) return ['Прежние правила: без штрафов за ошибки'];
+  if (input.scoringVersion !== 3 || !input.scoreBreakdown) return [];
+  const breakdown = input.scoreBreakdown;
+  return [
+    `Расчёт: основные ${breakdown.earnedBase} + дополнительные ${breakdown.earnedAdditional} − штрафы ${breakdown.totalPenalty} = ${breakdown.netScore}`,
+    ...(breakdown.rawScore < 0 ? [`После штрафов: ${breakdown.rawScore}; итог ограничен снизу нулём`] : []),
+  ];
+}
+
 const difficultyLabels: Record<Difficulty, string> = {
   easy: 'Базовый',
   medium: 'Средний',
@@ -121,6 +144,8 @@ export function progressTelegramMessage(input: {
   score: number;
   baseMaxScore: number;
   totalRemainingSeconds: number;
+  scoringVersion?: number;
+  scoreBreakdown?: TelegramScoreBreakdown;
 }) {
   const headings = {
     started: ['🧪', 'Тестирование начато'],
@@ -140,6 +165,10 @@ export function progressTelegramMessage(input: {
     '',
     `✅ ${input.correctCount}   ❌ ${input.wrongCount}`,
     `Баллы: <b>${input.score} из ${input.baseMaxScore}</b>`,
+    ...scoringLines(input),
+    ...(input.state === 'started' && input.scoringVersion === 3
+      ? ['Для рекомендации: ≥80 баллов и ≥17/20 основных ответов верно; ошибки и тайм-ауты отнимают баллы']
+      : []),
     `Осталось: <b>${durationLabel(input.totalRemainingSeconds)}</b>`,
     '',
     `<code>#${shortId(input.attemptId)}</code>`,
@@ -153,6 +182,8 @@ export function answerTelegramMessage(input: {
   difficulty: Difficulty;
   questionKind: 'base' | 'additional';
   scoreValue: number;
+  scoringVersion?: number;
+  penaltyScore?: number;
   additionalNumber?: number;
   prompt: string;
   contextType?: 'text' | 'code' | 'command' | 'log' | 'config';
@@ -201,6 +232,9 @@ export function answerTelegramMessage(input: {
       input.correctAnswer,
       TELEGRAM_FIELD_LIMITS.answer,
     ))}`,
+    ...(input.scoringVersion === 3 && input.penaltyScore !== undefined
+      ? [`Баллы за ответ: +${input.correct ? input.scoreValue : 0} · штраф: −${input.penaltyScore}`]
+      : []),
     '',
     `⏱ ${durationLabel(input.questionElapsedSeconds)}`,
     `<code>#${shortId(input.attemptId)}</code>`,
@@ -223,6 +257,8 @@ export function completedTelegramMessage(input: {
   additionalAnsweredCount: number;
   additionalCorrectCount: number;
   interviewerProfile?: TelegramInterviewerProfile;
+  scoringVersion?: number;
+  scoreBreakdown?: TelegramScoreBreakdown;
 }) {
   const additionalLine = input.additionalAnsweredCount === 0
     ? 'Дополнительные: не задавались'
@@ -236,8 +272,17 @@ export function completedTelegramMessage(input: {
     `<b>${verdictLabels[input.verdict]}</b>`,
     '',
     `<b>${input.score} / ${input.baseMaxScore} баллов</b>`,
+    ...scoringLines(input),
     `Основные: ${input.baseCorrectCount} / ${input.baseAnsweredCount}`,
     additionalLine,
+    ...(input.scoringVersion === 3
+      ? [
+          'Для рекомендации: ≥80 баллов и ≥17/20 основных ответов верно',
+          ...(input.score >= 80 && input.baseCorrectCount < 17
+            ? [`Баллов достаточно, но основных ответов верно: ${input.baseCorrectCount} из 20`]
+            : []),
+        ]
+      : []),
     `Точность: ${input.accuracy}% · таймаутов: ${input.timeoutCount}`,
     `Время: ${durationLabel(input.durationSeconds)} · среднее на ответ: ${durationLabel(input.averageAnswerSeconds)}`,
     ...interviewerProfileLines(input.interviewerProfile),

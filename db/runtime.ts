@@ -19,18 +19,26 @@ import migration0016 from '../drizzle/0016_free_khan.sql?raw';
 import migration0017 from '../drizzle/0017_narrow_baron_zemo.sql?raw';
 import migration0018 from '../drizzle/0018_abnormal_captain_midlands.sql?raw';
 import migration0019 from '../drizzle/0019_mute_rhino.sql?raw';
+import migration0020 from '../drizzle/0020_scoring_v3_penalties.sql?raw';
 import {
   BASE_MAX_SCORE,
   calculateAccuracy,
+  calculatePenalty,
   calculateVerdict,
   questionScoreValue,
   type Verdict,
 } from '@/lib/scoring.ts';
+import { scoreBreakdown } from '@/lib/score-breakdown.ts';
 import {
   ANALYTICS_FACTS_VERSION,
   BALANCED_TEST_CONFIG_ID,
   BALANCED_TEST_CONFIG_JSON,
   BASE_QUESTION_COUNT,
+  LEGACY_SCORING_VERSION,
+  LEGACY_V2_TEST_CONFIG_ID,
+  LEGACY_V2_TEST_CONFIG_JSON,
+  LEGACY_V2_BALANCED_TEST_CONFIG_ID,
+  LEGACY_V2_BALANCED_TEST_CONFIG_JSON,
   SCORING_VERSION,
   TEST_CONFIG,
   TEST_CONFIG_ID,
@@ -71,7 +79,7 @@ import {
 
 export type { Difficulty, Verdict };
 
-export const CURRENT_SCHEMA_VERSION = 18;
+export const CURRENT_SCHEMA_VERSION = 19;
 
 export type QuestionRow = {
   id: number;
@@ -167,11 +175,14 @@ const MANAGED_MIGRATIONS = [
   { version: 16, name: 'question-bank-admin-0017-narrow-baron-zemo', sql: migration0017 },
   { version: 17, name: 'question-bank-workflow-0018-abnormal-captain-midlands', sql: migration0018 },
   { version: 18, name: 'security-challenge-0019-mute-rhino', sql: migration0019 },
+  { version: 19, name: 'scoring-v3-penalties-0020', sql: migration0020 },
 ] as const;
 
 async function ensureCurrentTestConfigVersion() {
   const db = database();
   const configs = [
+    { id: LEGACY_V2_TEST_CONFIG_ID, json: LEGACY_V2_TEST_CONFIG_JSON, scoringVersion: LEGACY_SCORING_VERSION, hashed: true },
+    { id: LEGACY_V2_BALANCED_TEST_CONFIG_ID, json: LEGACY_V2_BALANCED_TEST_CONFIG_JSON, scoringVersion: LEGACY_SCORING_VERSION, hashed: true },
     { id: TEST_CONFIG_ID, json: TEST_CONFIG_JSON, scoringVersion: SCORING_VERSION, hashed: true },
     { id: BALANCED_TEST_CONFIG_ID, json: BALANCED_TEST_CONFIG_JSON, scoringVersion: SCORING_VERSION, hashed: true },
   ];
@@ -683,6 +694,7 @@ type AttemptStatisticRow = {
   elapsed_seconds: number;
   selected_index: number | null;
   awarded_score: number | null;
+  penalty_score: number;
   fact_version: number;
   answer_origin: string;
 };
@@ -696,6 +708,7 @@ type AttemptLedgerStatisticRow = {
   is_correct: number | null;
   timed_out: number | null;
   awarded_score: number | null;
+  penalty_score: number | null;
   fact_version: number | null;
   answer_origin: string | null;
   canonical_selected_index: number | null;
@@ -705,7 +718,7 @@ async function loadAttemptResultStats(attempt: AttemptRow, baseQuestionIds: Read
   const rows = await database()
     .prepare(`SELECT answers.question_id, questions.difficulty, questions.topic,
       answers.is_correct, answers.timed_out, answers.elapsed_seconds, answers.selected_index,
-      answers.awarded_score, answers.fact_version, answers.answer_origin
+      answers.awarded_score, answers.penalty_score, answers.fact_version, answers.answer_origin
       FROM answers JOIN questions ON questions.id = answers.question_id
       WHERE answers.attempt_id = ?`)
     .bind(attempt.id)
@@ -733,6 +746,7 @@ async function loadAttemptResultStats(attempt: AttemptRow, baseQuestionIds: Read
       answers.is_correct,
       answers.timed_out,
       answers.awarded_score,
+      answers.penalty_score,
       answers.fact_version,
       answers.answer_origin,
       answers.canonical_selected_index
@@ -754,6 +768,7 @@ async function loadAttemptResultStats(attempt: AttemptRow, baseQuestionIds: Read
   const answerFactsComplete = ledger.results.every((row) => row.answer_id === null || (
     row.fact_version === attempt.analytics_facts_version
     && row.awarded_score !== null
+    && row.penalty_score !== null
     && row.answer_origin !== null
     && supportedOrigins.has(row.answer_origin)
     && (row.answer_origin !== 'submitted' || (
@@ -778,6 +793,7 @@ async function loadAttemptResultStats(attempt: AttemptRow, baseQuestionIds: Read
     correct: row.is_correct === 1,
     timedOut: row.timed_out === 1,
     awardedScore: row.awarded_score ?? 0,
+    penaltyScore: row.penalty_score ?? 0,
     scoreValue: row.score_value,
   }));
   const ledgerValidation = validateAttemptFacts(ledgerFacts, {
@@ -785,12 +801,19 @@ async function loadAttemptResultStats(attempt: AttemptRow, baseQuestionIds: Read
     maxAdditionalAssigned: TEST_CONFIG.maxAdditionalQuestions,
     expectedBaseMaxScore: BASE_MAX_SCORE,
     attemptScore: attempt.score,
+    scoringVersion: attempt.scoring_version,
   });
   const ledgerIsComplete = attempt.analytics_facts_version >= ANALYTICS_FACTS_VERSION
     && ledger.results.length >= baseQuestionIds.size
     && rows.results.every((row) => ledgerQuestionIds.has(row.question_id))
     && answerFactsComplete
-    && ledgerValidation.valid;
+    && ledgerValidation.valid
+    && ledgerValidation.breakdown.base.resolvedCount === baseQuestionIds.size
+    && ledgerValidation.breakdown.base.correctCount + ledgerValidation.breakdown.additional.correctCount
+      === attempt.correct_count
+    && ledgerValidation.breakdown.base.incorrectCount + ledgerValidation.breakdown.base.timeoutCount
+      + ledgerValidation.breakdown.additional.incorrectCount + ledgerValidation.breakdown.additional.timeoutCount
+      === attempt.wrong_count;
 
   let breakdownFacts: AttemptBreakdownFact[];
   if (ledgerIsComplete) {
@@ -831,6 +854,7 @@ async function loadAttemptResultStats(attempt: AttemptRow, baseQuestionIds: Read
         correct: answer?.is_correct === 1,
         timedOut: answer?.timed_out === 1,
         awardedScore: answer?.awarded_score ?? (answer?.is_correct === 1 ? scoreValue : 0),
+        penaltyScore: answer?.penalty_score ?? 0,
         scoreValue,
       }];
     });
@@ -880,11 +904,19 @@ export async function attemptPayload(attempt: AttemptRow) {
         : 0;
     // Stored legacy verdicts are authoritative. Normalization is only a read-time
     // fallback for old/test rows that were completed before verdict persistence.
-    const verdict = attempt.verdict ?? calculateVerdict(scoreForVerdict, accuracy);
     const [resultStats, questionReview] = await Promise.all([
       loadAttemptResultStats(attempt, baseQuestionIds),
       loadAttemptQuestionReview(database(), attempt.id),
     ]);
+    const verdict = attempt.verdict ?? calculateVerdict(
+      scoreForVerdict, accuracy, resultStats.baseCorrectCount,
+      attempt.scoring_version >= SCORING_VERSION ? attempt.scoring_version : LEGACY_SCORING_VERSION,
+    );
+    const groups = resultStats.breakdown;
+    const scoreDetails = scoreBreakdown(
+      groups.base.earnedScore, groups.additional.earnedScore,
+      groups.base.penaltyScore, groups.additional.penaltyScore, attempt.base_max_score || BASE_MAX_SCORE,
+    );
     return {
       attemptId: attempt.id,
       alias: attempt.public_alias,
@@ -892,6 +924,9 @@ export async function attemptPayload(attempt: AttemptRow) {
       serverNowMs,
       model: attemptModel(attempt, resultStats.statisticsCompleteness),
       result: {
+        scoringVersion: attempt.scoring_version,
+        ...(attempt.scoring_version === SCORING_VERSION && resultStats.statisticsCompleteness === 'complete'
+          ? { scoreBreakdown: scoreDetails } : {}),
         verdict,
         score: attempt.score,
         baseMaxScore: attempt.base_max_score,
@@ -956,6 +991,10 @@ export async function attemptPayload(attempt: AttemptRow) {
       choices: permutation.map((index) => choices[index]),
       difficulty: question.difficulty,
       scoreValue: ledgerQuestion?.score_value ?? questionScoreValue(question.weight, questionKind),
+      penaltyValue: calculatePenalty(
+        ledgerQuestion?.score_value ?? questionScoreValue(question.weight, questionKind),
+        questionKind, false, true, attempt.scoring_version,
+      ),
       questionKind,
       ...(additionalNumber === undefined ? {} : { additionalNumber }),
       position: askedQuestionIds.length,

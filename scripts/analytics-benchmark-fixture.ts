@@ -177,6 +177,7 @@ export async function createAnalyticsBenchmarkFixture(options: { seed?: boolean 
     '0013_productive_darkstar.sql',
     '0014_supreme_domino.sql',
     '0016_free_khan.sql',
+    '0020_scoring_v3_penalties.sql',
   ]) {
     const migration = await readFile(new URL(`../drizzle/${migrationName}`, import.meta.url), 'utf8');
     await db.batch(migration

@@ -24,7 +24,7 @@ const result = buildCandidateInsights([
   fact({ questionId: 1 }),
   fact({ questionId: 2 }),
   fact({ questionId: 3, correct: false, awardedScore: 0 }),
-  fact({ questionId: 4, topic: 'Сети', dedupeKey: 'dns', correct: false, awardedScore: 0 }),
+  fact({ questionId: 4, topic: 'Сети', dedupeKey: 'dns', correct: false, awardedScore: 0, penaltyScore: 2 }),
   fact({ questionId: 5, topic: 'Сети', dedupeKey: 'routing', correct: false, timedOut: true, answerOrigin: 'question_timeout', awardedScore: 0, elapsedSeconds: 30 }),
   fact({ questionId: 6, topic: 'Сети', dedupeKey: 'routing', correct: true }),
   fact({ questionId: 7, questionKind: 'additional', topic: 'Сети', dedupeKey: 'routing', scoreValue: 2, correct: true, awardedScore: 2 }),
@@ -39,6 +39,9 @@ const network = result.topics.find((topic) => topic.topic === 'Сети');
 assert(network);
 assert.equal(network.classification, 'review');
 assert.equal(network.additional.correctCount, 1);
+assert.equal(network.base.penaltyScore, 2);
+assert.equal(network.base.earnedScore, 4, 'earned score keeps gross positive awards separate from penalties');
+assert.equal(linux.base.penaltyScore, 0, 'legacy facts without penalty stay compatible');
 assert.equal(result.checkAreas.length, 3);
 assert.equal(result.checkAreas[0].lostBaseScore, 4);
 assert.deepEqual(result.telegramProfile.strongTopics, []);

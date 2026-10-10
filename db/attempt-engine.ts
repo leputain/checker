@@ -1,9 +1,11 @@
 import {
   calculateAccuracy,
+  calculatePenalty,
   calculateScore,
   calculateVerdict,
   questionScoreValue,
 } from '@/lib/scoring.ts';
+import { scoreBreakdown } from '@/lib/score-breakdown.ts';
 import {
   answerTelegramMessage,
   completedTelegramMessage,
@@ -18,7 +20,7 @@ import {
   summarizeAttemptStatistics,
   type AttemptStatisticBucket,
 } from '@/lib/attempt-statistics.ts';
-import { TEST_CONFIG } from '@/lib/test-config.ts';
+import { LEGACY_SCORING_VERSION, TEST_CONFIG } from '@/lib/test-config.ts';
 import {
   classifyQuestion,
   countAdditionalQuestions,
@@ -154,6 +156,7 @@ type CompletionOutcome = {
   timedOut: boolean;
   answerOrigin: string;
   awardedScore: number;
+  penaltyScore: number;
   elapsedSeconds: number;
 };
 
@@ -173,6 +176,7 @@ async function completionInsightFacts(
       answers.timed_out,
       answers.answer_origin,
       answers.awarded_score,
+      answers.penalty_score,
       answers.elapsed_seconds
     FROM attempt_questions
     JOIN questions ON questions.id = attempt_questions.question_id
@@ -194,6 +198,7 @@ async function completionInsightFacts(
       timed_out: number | null;
       answer_origin: string | null;
       awarded_score: number | null;
+      penalty_score: number | null;
       elapsed_seconds: number | null;
     }>();
   return rows.results.map((row): CandidateInsightFact => {
@@ -212,6 +217,7 @@ async function completionInsightFacts(
       timedOut: outcome?.timedOut ?? row.timed_out === 1,
       answerOrigin: outcome?.answerOrigin ?? row.answer_origin,
       awardedScore: outcome?.awardedScore ?? row.awarded_score ?? 0,
+      penaltyScore: outcome?.penaltyScore ?? row.penalty_score ?? 0,
       elapsedSeconds: outcome?.elapsedSeconds ?? row.elapsed_seconds,
     };
   });
@@ -316,13 +322,41 @@ export async function processAttemptAnswer(
   const completed = nextId === null;
   const scoreValue = ledgerQuestion?.score_value
     ?? questionScoreValue(question.weight, questionKind);
-  const score = calculateScore(attempt.score, scoreValue, attempt.base_max_score, correct);
-  const awardedScore = score - attempt.score;
+  const penaltyScore = calculatePenalty(scoreValue, questionKind, correct, true, attempt.scoring_version);
+  const awardedScore = correct ? scoreValue : 0;
+  // Preserve every penalty in the answer ledger, including when the displayed
+  // score is zero. Clamping the running score would erase early mistakes.
+  const priorTotals = await database().prepare(`SELECT
+      COALESCE(SUM(CASE WHEN aq.question_kind = 'base' THEN an.awarded_score ELSE 0 END), 0) AS earned_base,
+      COALESCE(SUM(CASE WHEN aq.question_kind = 'additional' THEN an.awarded_score ELSE 0 END), 0) AS earned_additional,
+      COALESCE(SUM(CASE WHEN aq.question_kind = 'base' THEN an.penalty_score ELSE 0 END), 0) AS base_penalty,
+      COALESCE(SUM(CASE WHEN aq.question_kind = 'additional' THEN an.penalty_score ELSE 0 END), 0) AS additional_penalty,
+      COALESCE(SUM(CASE WHEN aq.question_kind = 'base' AND an.is_correct = 1 THEN 1 ELSE 0 END), 0) AS base_correct
+    FROM answers an JOIN attempt_questions aq
+      ON aq.attempt_id = an.attempt_id AND aq.question_id = an.question_id
+    WHERE an.attempt_id = ? AND an.question_id != ?`)
+    .bind(attempt.id, question.id)
+    .first<{ earned_base: number; earned_additional: number; base_penalty: number;
+      additional_penalty: number; base_correct: number }>();
+  if (!priorTotals) throw new Error('attempt_score_ledger_unavailable');
+  const scoreDetails = scoreBreakdown(
+    priorTotals.earned_base + (questionKind === 'base' ? awardedScore : 0),
+    priorTotals.earned_additional + (questionKind === 'additional' ? awardedScore : 0),
+    priorTotals.base_penalty + (questionKind === 'base' ? penaltyScore : 0),
+    priorTotals.additional_penalty + (questionKind === 'additional' ? penaltyScore : 0),
+    attempt.base_max_score,
+  );
+  const score = attempt.scoring_version === LEGACY_SCORING_VERSION
+    ? calculateScore(attempt.score, scoreValue, attempt.base_max_score, correct)
+    : scoreDetails.netScore;
   const correctCount = attempt.correct_count + (correct ? 1 : 0);
   const wrongCount = attempt.wrong_count + (correct ? 0 : 1) + skippedQuestions.length;
   const answeredCount = correctCount + wrongCount;
   const accuracy = calculateAccuracy(correctCount, wrongCount);
-  const verdict = completed ? calculateVerdict(score, accuracy) : null;
+  const baseCorrectCount = priorTotals.base_correct + (questionKind === 'base' && correct ? 1 : 0);
+  const verdict = completed
+    ? calculateVerdict(score, accuracy, baseCorrectCount, attempt.scoring_version)
+    : null;
   const completedAt = completed ? now : null;
   const durationSeconds = completed
     ? Math.min(TEST_CONFIG.totalTimeSeconds, Math.ceil((now - attempt.started_at) / 1_000))
@@ -372,6 +406,7 @@ export async function processAttemptAnswer(
                 ? 'question_timeout'
                 : 'submitted',
             awardedScore,
+            penaltyScore,
             elapsedSeconds,
           }],
           ...skippedQuestions.map((skipped): [number, CompletionOutcome] => [skipped.id, {
@@ -379,6 +414,7 @@ export async function processAttemptAnswer(
             timedOut: true,
             answerOrigin: 'total_timeout_unshown',
             awardedScore: 0,
+            penaltyScore: 0,
             elapsedSeconds: 0,
           }]),
         ]),
@@ -402,8 +438,8 @@ export async function processAttemptAnswer(
         `INSERT OR IGNORE INTO answers (
           attempt_id, question_id, selected_index, is_correct, answered_at,
           elapsed_seconds, timed_out, fact_version, answer_origin,
-          canonical_selected_index, awarded_score
-        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM attempts
+          canonical_selected_index, awarded_score, penalty_score
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM attempts
           WHERE id = ? AND status = 'active' AND current_question_id = ?
             AND current_question_started_at = ?`,
       )
@@ -423,6 +459,7 @@ export async function processAttemptAnswer(
             : 'submitted',
         originalIndex,
         awardedScore,
+        penaltyScore,
         attempt.id,
         question.id,
         claimMarker,
@@ -553,6 +590,8 @@ export async function processAttemptAnswer(
         score,
         baseMaxScore: attempt.base_max_score,
         totalRemainingSeconds: completed ? 0 : totalRemainingSeconds,
+        scoringVersion: attempt.scoring_version,
+        scoreBreakdown: scoreDetails,
       });
       const startedEventId = `started-${attempt.id}`;
       statements.push(
@@ -639,6 +678,8 @@ export async function processAttemptAnswer(
         difficulty: question.difficulty,
         questionKind,
         scoreValue,
+        scoringVersion: attempt.scoring_version,
+        penaltyScore,
         ...(additionalNumber === undefined ? {} : { additionalNumber }),
         prompt: question.prompt,
         contextType: question.context_type ?? undefined,
@@ -689,6 +730,8 @@ export async function processAttemptAnswer(
         difficulty: skipped.difficulty,
         questionKind: 'base',
         scoreValue: questionScoreValue(skipped.weight, 'base'),
+        scoringVersion: attempt.scoring_version,
+        penaltyScore: 0,
         prompt: skipped.prompt,
         contextType: skipped.context_type ?? undefined,
         context: skipped.context_text ?? undefined,
@@ -747,6 +790,8 @@ export async function processAttemptAnswer(
         baseCorrectCount: completionStats.baseCorrectCount,
         additionalAnsweredCount: completionStats.additionalAnsweredCount,
         additionalCorrectCount: completionStats.additionalCorrectCount,
+        scoringVersion: attempt.scoring_version,
+        scoreBreakdown: scoreDetails,
         interviewerProfile: interviewerProfile ?? undefined,
       });
       statements.push(

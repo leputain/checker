@@ -38,6 +38,7 @@ type ResultBreakdownSection = {
   incorrectCount: number;
   timeoutCount: number;
   earnedScore: number;
+  penaltyScore?: number;
   maxEarnableScore: number;
 };
 
@@ -52,6 +53,7 @@ type QuestionView = {
   choices: string[];
   difficulty: Difficulty;
   scoreValue: number;
+  penaltyValue?: number;
   questionKind: 'base' | 'additional';
   additionalNumber?: number;
   position: number;
@@ -80,6 +82,16 @@ type Result = {
   baseCorrectCount: number;
   additionalAnsweredCount: number;
   additionalCorrectCount: number;
+  scoringVersion?: number;
+  scoreBreakdown?: {
+    earnedBase: number;
+    earnedAdditional: number;
+    basePenalty: number;
+    additionalPenalty: number;
+    totalPenalty: number;
+    rawScore: number;
+    netScore: number;
+  };
   difficultyStats: DifficultyStat[];
   breakdown?: ResultBreakdown;
   review: AttemptQuestionReviewDto[];
@@ -972,6 +984,7 @@ export default function Home() {
 
   if (attempt?.status === 'completed' && attempt.result) {
     const result = attempt.result;
+    const resultScoringVersion = result.scoringVersion ?? attempt.model?.scoringVersion;
     return (
       <main className="app-shell result-shell">
         {connectivityBanner}
@@ -1009,6 +1022,29 @@ export default function Home() {
               </p>
             </div>
           </div>
+          {resultScoringVersion === 3 ? (
+            <div className="result-scoring" aria-label="Расчёт итоговой оценки">
+              {result.scoreBreakdown && (
+                <p className="score-formula">
+                  <span>Основные <strong>{result.scoreBreakdown.earnedBase}</strong></span>
+                  <span>+ дополнительные <strong>{result.scoreBreakdown.earnedAdditional}</strong></span>
+                  <span className="score-penalty">− штрафы <strong>{result.scoreBreakdown.totalPenalty}</strong></span>
+                  <span>= итог <strong>{result.scoreBreakdown.netScore}</strong></span>
+                </p>
+              )}
+              {result.scoreBreakdown && result.scoreBreakdown.rawScore < 0 && (
+                <p className="muted">После штрафов: {result.scoreBreakdown.rawScore}. Минимальная итоговая оценка — 0.</p>
+              )}
+              <p className="muted">
+                Для рекомендации: не менее 80 баллов и 17 верных основных ответов из {BASE_QUESTION_COUNT}.
+                {result.score >= 80 && result.baseCorrectCount < 17
+                  ? ` Баллов достаточно, но верных основных ответов — ${result.baseCorrectCount}.`
+                  : ''}
+              </p>
+            </div>
+          ) : resultScoringVersion === 2 ? (
+            <p className="muted result-scoring">Оценка по прежним правилам: без штрафов за ошибки.</p>
+          ) : null}
           <div className="stats-grid result-stats">
             <div><strong>{result.correctCount} из {result.answeredCount}</strong><span>верно</span></div>
             <div><strong>{result.baseCorrectCount} из {result.baseAnsweredCount}</strong><span>основные вопросы</span></div>
@@ -1089,7 +1125,9 @@ export default function Home() {
             <div className="quiz-meta">
               <span className="question-tags">
                 <span className={`difficulty difficulty-${question.difficulty}`}>
-                  {difficultyLabels[question.difficulty]} · {formatPoints(question.scoreValue)}
+                  {difficultyLabels[question.difficulty]} · {question.penaltyValue
+                    ? `+${question.scoreValue} / −${question.penaltyValue}`
+                    : formatPoints(question.scoreValue)}
                 </span>
                 {question.questionKind === 'additional' && (
                   <span className="additional-chip">
@@ -1114,7 +1152,11 @@ export default function Home() {
                 disabled={busy}
               />
               <div className="question-footer">
-                <p>{transitioning ? 'Проверяем время…' : 'Ответ нельзя изменить после отправки.'}</p>
+                <p>{transitioning
+                  ? 'Проверяем время…'
+                  : question.penaltyValue
+                    ? `Верный ответ: +${question.scoreValue}. Ошибка или тайм-аут: −${question.penaltyValue}. Ответ нельзя изменить.`
+                    : 'Ответ нельзя изменить после отправки.'}</p>
                 <button
                   className="primary-button"
                   disabled={selectedChoice === null || busy || connectivity === 'offline'}
@@ -1279,6 +1321,11 @@ export default function Home() {
             <span><strong>{BASE_QUESTION_COUNT}+</strong> вопросов</span>
             <span><strong>{BASE_MAX_SCORE}</strong> баллов</span>
           </div>
+          <p className="scoring-rules">
+            Ошибка или тайм-аут основного вопроса отнимает половину его стоимости.
+            Дополнительный даёт половину стоимости основного; ошибка отнимает стоимость дополнительного.
+            Для рекомендации нужно не менее 80 баллов и 17 верных основных ответов из {BASE_QUESTION_COUNT}.
+          </p>
         </div>
         {/* Nginx serves this versioned asset directly; image optimization would route it back through the Vinext runtime. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}

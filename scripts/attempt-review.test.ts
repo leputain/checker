@@ -23,7 +23,7 @@ try {
     db.prepare(`CREATE TABLE answers (
       id INTEGER PRIMARY KEY, attempt_id TEXT NOT NULL, question_id INTEGER NOT NULL,
       canonical_selected_index INTEGER, is_correct INTEGER NOT NULL, timed_out INTEGER NOT NULL,
-      elapsed_seconds INTEGER, awarded_score INTEGER
+      elapsed_seconds INTEGER, awarded_score INTEGER, penalty_score INTEGER NOT NULL DEFAULT 0
     )`),
   ]);
   const insertQuestion = db.prepare(`INSERT INTO questions (
@@ -42,10 +42,10 @@ try {
     insertLedger.bind(3, 3, 300),
     insertLedger.bind(4, 4, null),
     db.prepare(`INSERT INTO answers VALUES
-      (1, 'attempt', 1, 1, 1, 0, 5, 2),
-      (2, 'attempt', 2, 0, 0, 0, 8, 0),
-      (3, 'attempt', 3, NULL, 0, 1, 30, 0),
-      (4, 'attempt', 4, NULL, 0, 1, 0, 0)`),
+      (1, 'attempt', 1, 1, 1, 0, 5, 2, 0),
+      (2, 'attempt', 2, 0, 0, 0, 8, 0, 1),
+      (3, 'attempt', 3, NULL, 0, 1, 30, 0, 1),
+      (4, 'attempt', 4, NULL, 0, 1, 0, 0, 0)`),
   ]);
 
   const review = await loadAttemptQuestionReview(db, 'attempt');
@@ -57,6 +57,7 @@ try {
   ]);
   assert.equal(review[1].selectedAnswer, 'Неверно');
   assert.equal(review[1].correctAnswer, 'Верно');
+  assert.deepEqual(review.map((item) => item.penaltyScore), [0, 1, 1, 0]);
   assert.match(review[1].explanation, /Верный вариант/u);
   assert.match(review[2].explanation, /Время ответа истекло/u);
   assert.deepEqual(

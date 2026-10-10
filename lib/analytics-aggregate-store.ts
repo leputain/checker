@@ -86,7 +86,7 @@ const SELECTED_FACTS_CTE = `${SELECTED_COMPLETED_CTE}, base_scores AS (
     selected.base_max_score, aq.question_id, aq.question_kind, aq.score_value,
     aq.presented_at, q.topic, q.difficulty, qri.active, q.correct_index,
     a.id AS answer_id, a.fact_version, a.answer_origin, a.canonical_selected_index,
-    a.awarded_score, a.is_correct, a.timed_out, a.elapsed_seconds, a.answered_at,
+    a.awarded_score, a.penalty_score, a.is_correct, a.timed_out, a.elapsed_seconds, a.answered_at,
     base_scores.base_awarded
   FROM selected_completed selected
   JOIN base_scores ON base_scores.policy = selected.policy
@@ -107,7 +107,7 @@ INSERT INTO analytics_daily_question_aggregates (
   test_profile_id, question_id, question_kind, topic, difficulty, active,
   assigned_count, presented_count, outcome_count, correct_count, incorrect_count,
   timeout_count, response_count, elapsed_sum, elapsed_min, elapsed_max,
-  last_presented_at, last_answered_at, earned_score, max_score,
+  last_presented_at, last_answered_at, earned_score, penalty_score, max_score,
   discrimination_n, discrimination_sum_x, discrimination_sum_y,
   discrimination_sum_y2, discrimination_sum_xy
 )
@@ -142,6 +142,9 @@ SELECT policy, day, bank_revision, app_version, scoring_version, test_config_id,
   SUM(CASE WHEN presented_at IS NOT NULL AND fact_version = ${ANALYTICS_FACTS_VERSION}
     AND answer_origin IN (${PRESENTED_ORIGINS_SQL})
     THEN COALESCE(awarded_score, 0) ELSE 0 END),
+  SUM(CASE WHEN presented_at IS NOT NULL AND fact_version = ${ANALYTICS_FACTS_VERSION}
+    AND answer_origin IN (${PRESENTED_ORIGINS_SQL})
+    THEN COALESCE(penalty_score, 0) ELSE 0 END),
   SUM(score_value),
   SUM(CASE WHEN question_kind = 'base' AND presented_at IS NOT NULL
     AND fact_version = ${ANALYTICS_FACTS_VERSION}

@@ -157,6 +157,7 @@ const emptyBreakdown = {
   incorrect: 0,
   timedOut: 0,
   earned: 0,
+  penaltyScore: 0,
   max: 0,
   successRate: null,
 } as const;
@@ -238,10 +239,10 @@ function mockCandidate(attemptId: string, score: number): CandidateAnalyticsItem
     completedAt: '2026-08-28T11:30:00.000Z',
     score,
     accuracy: score,
-    verdict: score >= 75 ? 'PASS' : 'REVIEW',
+    verdict: score >= 80 ? 'PASS' : 'REVIEW',
     durationSeconds: 360,
     baseAnswered: 20,
-    baseCorrect: Math.round(score / 5),
+    baseCorrect: score >= 80 ? 17 : 14,
     additionalAnswered: 0,
     additionalCorrect: 0,
     timeoutCount: 0,
@@ -251,8 +252,8 @@ function mockCandidate(attemptId: string, score: number): CandidateAnalyticsItem
 async function mockAdminAnalyticsUi(page: Page) {
   const questionA = mockQuestion(101, 'Сети');
   const questionB = mockQuestion(202, 'Linux');
-  const candidateA = mockCandidate('attempt-00000101', 84);
-  const candidateB = mockCandidate('attempt-00000202', 68);
+  const candidateA = mockCandidate('attempt-00000101', 82);
+  const candidateB = mockCandidate('attempt-00000202', 70);
   const overviewPeriod: AnalyticsOverviewPeriodDto = {
     from: '2026-07-29',
     to: '2026-08-28',
@@ -294,6 +295,31 @@ async function mockAdminAnalyticsUi(page: Page) {
   };
   const candidateDetail: CandidatePrintDto = {
     ...candidateA,
+    scoringVersion: SCORING_VERSION,
+    breakdown: {
+      base: {
+        assignedCount: 20,
+        presentedCount: 20,
+        resolvedCount: 20,
+        correctCount: 17,
+        incorrectCount: 3,
+        timeoutCount: 0,
+        earnedScore: 88,
+        penaltyScore: 6,
+        maxEarnableScore: 100,
+      },
+      additional: {
+        assignedCount: 0,
+        presentedCount: 0,
+        resolvedCount: 0,
+        correctCount: 0,
+        incorrectCount: 0,
+        timeoutCount: 0,
+        earnedScore: 0,
+        penaltyScore: 0,
+        maxEarnableScore: 0,
+      },
+    },
     generatedAt: candidateA.completedAt,
     statisticsCompleteness: 'complete',
     topics: [],
@@ -314,6 +340,7 @@ async function mockAdminAnalyticsUi(page: Page) {
       correctAnswer: 'DNS',
       elapsedSeconds: 12,
       awardedScore: 0,
+      penaltyScore: 2,
       explanation: 'DNS сопоставляет доменные имена с IP-адресами.',
     }],
   };
@@ -635,11 +662,14 @@ test('admin analytics показывает пагинацию, детали, д�
   const candidateDialog = page.getByRole('dialog', { name: 'Анна Петрова' });
   await expect(candidateDialog).toBeVisible();
   await expect(candidateDialog.getByRole('heading', { name: 'Анна Петрова' })).toBeVisible();
+  await expect(candidateDialog.getByRole('region', { name: 'Расчёт оценки кандидата' })).toContainText('Основные 88 + дополнительные 0 − штрафы 6 = итог 82 / 100');
+  await expect(candidateDialog.getByRole('region', { name: 'Расчёт оценки кандидата' })).toContainText('не менее 80 баллов и 17 верных основных ответов из 20');
   await expect(candidateDialog.getByText('Вопросы и ответы', { exact: true })).toBeVisible();
   await expect(candidateDialog.getByText('Какой протокол разрешает имена в IP-адреса?', { exact: true })).toBeVisible();
   await candidateDialog.getByText('Какой протокол разрешает имена в IP-адреса?', { exact: true }).click();
   await expect(candidateDialog.getByText('DHCP', { exact: true })).toBeVisible();
   await expect(candidateDialog.getByText('DNS', { exact: true })).toBeVisible();
+  await expect(candidateDialog.getByText('−2', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Печать' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'JSON' })).toBeVisible();
   await expectNoHorizontalOverflow(page);

@@ -12,6 +12,8 @@ import {
 import { APP_RELEASE } from '../lib/release.ts';
 import {
   calculateAccuracy,
+  calculateNetScore,
+  calculatePenalty,
   calculateVerdict,
   questionScoreValue,
 } from '../lib/scoring.ts';
@@ -102,6 +104,7 @@ type DemoAnswerInsert = {
   answerOrigin: 'submitted' | 'question_timeout';
   canonicalSelectedIndex: number | null;
   awardedScore: number;
+  penaltyScore: number;
 };
 
 type PlannedAnswer = {
@@ -451,7 +454,9 @@ function buildCandidateFacts(options: {
   const startedAt = options.anchorDay - dayOffset * DAY_MS
     + (8 * 60 + slot * 40) * 60 * 1_000;
   let cursor = startedAt;
-  let score = 0;
+  let earnedScore = 0;
+  let penaltyScore = 0;
+  let baseCorrectCount = 0;
   let correctCount = 0;
   let wrongCount = 0;
   const ledger: DemoLedgerInsert[] = [];
@@ -461,8 +466,11 @@ function buildCandidateFacts(options: {
     const presentedAt = cursor;
     const answeredAt = presentedAt + answer.elapsedSeconds * 1_000;
     const scoreValue = questionScoreValue(answer.question.weight, answer.questionKind);
-    const awardedScore = answer.correct ? Math.min(scoreValue, 100 - score) : 0;
-    score += awardedScore;
+    const awardedScore = answer.correct ? scoreValue : 0;
+    const penalty = calculatePenalty(scoreValue, answer.questionKind, answer.correct, true);
+    earnedScore += awardedScore;
+    penaltyScore += penalty;
+    if (answer.questionKind === 'base' && answer.correct) baseCorrectCount += 1;
     correctCount += answer.correct ? 1 : 0;
     wrongCount += answer.correct ? 0 : 1;
     const choices = JSON.parse(answer.question.choices_json) as string[];
@@ -492,6 +500,7 @@ function buildCandidateFacts(options: {
       answerOrigin: answer.timedOut ? 'question_timeout' : 'submitted',
       canonicalSelectedIndex: answer.canonicalSelectedIndex,
       awardedScore,
+      penaltyScore: penalty,
     });
     answeredAtByQuestion.set(answer.question.id, answeredAt);
     cursor = answeredAt + 1_000;
@@ -501,7 +510,8 @@ function buildCandidateFacts(options: {
   if (durationSeconds > TEST_CONFIG.totalTimeSeconds) throw new Error('demo_duration_exceeded');
   if (completedAt >= options.anchorDay + DAY_MS) throw new Error('demo_timestamp_in_future');
   const accuracy = calculateAccuracy(correctCount, wrongCount);
-  const verdict = calculateVerdict(score, accuracy);
+  const score = calculateNetScore(earnedScore, penaltyScore, 100);
+  const verdict = calculateVerdict(score, accuracy, baseCorrectCount);
   const alias = `Демо-кандидат ${String(options.candidateNumber).padStart(3, '0')}`;
   const attempt: DemoAttemptInsert = {
     id: attemptId,
@@ -605,12 +615,13 @@ function insertAnswersStatements(db: D1Database, answers: readonly DemoAnswerIns
   return chunks(answers).map((chunk) => db.prepare(`INSERT INTO answers (
       attempt_id, question_id, selected_index, is_correct, answered_at,
       elapsed_seconds, timed_out, fact_version, answer_origin,
-      canonical_selected_index, awarded_score
+      canonical_selected_index, awarded_score, penalty_score
     ) SELECT json_extract(value, '$.attemptId'), json_extract(value, '$.questionId'),
       json_extract(value, '$.selectedIndex'), json_extract(value, '$.isCorrect'),
       json_extract(value, '$.answeredAt'), json_extract(value, '$.elapsedSeconds'),
       json_extract(value, '$.timedOut'), ?, json_extract(value, '$.answerOrigin'),
-      json_extract(value, '$.canonicalSelectedIndex'), json_extract(value, '$.awardedScore')
+      json_extract(value, '$.canonicalSelectedIndex'), json_extract(value, '$.awardedScore'),
+      json_extract(value, '$.penaltyScore')
     FROM json_each(?)`).bind(ANALYTICS_FACTS_VERSION, JSON.stringify(chunk)));
 }
 

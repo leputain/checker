@@ -23,6 +23,7 @@ export type AnalyticsAttemptRow = {
   completedAt: number;
   durationSeconds: number;
   baseMaxScore: number;
+  scoringVersion?: number;
 };
 
 export type AnalyticsOverviewAttemptRow = AnalyticsAttemptRow & {
@@ -57,6 +58,7 @@ export type AnalyticsFactRow = {
   answerOrigin: string | null;
   canonicalSelectedIndex: number | null;
   awardedScore: number | null;
+  penaltyScore?: number | null;
   isCorrect: boolean;
   timedOut: boolean;
   elapsedSeconds: number | null;
@@ -86,6 +88,7 @@ type RawAttempt = {
   completed_at: number;
   duration_seconds: number;
   base_max_score: number;
+  scoring_version: number;
 };
 
 function bind(statement: D1PreparedStatement, bindings: Array<string | number>) {
@@ -106,6 +109,7 @@ function mapAttempt(row: RawAttempt): AnalyticsAttemptRow {
     completedAt: row.completed_at,
     durationSeconds: row.duration_seconds,
     baseMaxScore: row.base_max_score,
+    scoringVersion: row.scoring_version,
   };
 }
 
@@ -123,7 +127,7 @@ export function analyticsAttemptsStatement(query: ParsedAnalyticsQuery): Analyti
   return {
     sql: `${cohort.sql}
     SELECT id, candidate_name, public_alias, bank_revision, app_version, score, correct_count,
-      wrong_count, verdict, completed_at, duration_seconds, base_max_score
+      wrong_count, verdict, completed_at, duration_seconds, base_max_score, scoring_version
     FROM eligible_attempts
     ORDER BY completed_at DESC, id DESC`,
     bindings: cohort.bindings,
@@ -152,6 +156,7 @@ type RawFact = {
   answer_origin: string | null;
   canonical_selected_index: number | null;
   awarded_score: number | null;
+  penalty_score: number | null;
   is_correct: number | null;
   timed_out: number | null;
   elapsed_seconds: number | null;
@@ -186,6 +191,7 @@ export async function fetchAnalyticsFacts(
     answerOrigin: row.answer_origin,
     canonicalSelectedIndex: row.canonical_selected_index,
     awardedScore: row.awarded_score,
+    penaltyScore: row.penalty_score ?? 0,
     isCorrect: row.is_correct === 1,
     timedOut: row.timed_out === 1,
     elapsedSeconds: row.elapsed_seconds,
@@ -203,7 +209,7 @@ export function analyticsFactsStatement(query: ParsedAnalyticsQuery): AnalyticsS
       q.prompt, q.context_type, q.context_text,
       json_array_length(q.choices_json) AS choice_count, q.correct_index,
       a.id AS answer_id, a.fact_version, a.answer_origin,
-      a.canonical_selected_index, a.awarded_score, a.is_correct, a.timed_out,
+      a.canonical_selected_index, a.awarded_score, a.penalty_score, a.is_correct, a.timed_out,
       a.elapsed_seconds, a.answered_at
     FROM eligible_attempts ea
     JOIN attempt_questions aq ON aq.attempt_id = ea.id
@@ -289,7 +295,7 @@ export function overviewAttemptsStatement(query: ParsedAnalyticsQuery): Analytic
   return {
     sql: `SELECT id, candidate_key, public_alias,
       bank_revision, app_version, score, correct_count, wrong_count, verdict,
-      completed_at, duration_seconds, base_max_score, status,
+      completed_at, duration_seconds, base_max_score, scoring_version, status,
       selection_version, selection_strategy, coverage_score, shadow_coverage_score,
       COALESCE(completed_at, started_at) AS event_at
     FROM attempts

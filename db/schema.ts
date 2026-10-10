@@ -138,6 +138,7 @@ export const answers = sqliteTable(
     answerOrigin: text('answer_origin').notNull().default('unknown'),
     canonicalSelectedIndex: integer('canonical_selected_index'),
     awardedScore: integer('awarded_score'),
+    penaltyScore: integer('penalty_score').notNull().default(0),
   },
   (table) => [
     uniqueIndex('idx_answers_attempt_question').on(table.attemptId, table.questionId),
@@ -577,6 +578,7 @@ export const analyticsDailyQuestionAggregates = sqliteTable(
     lastPresentedAt: integer('last_presented_at'),
     lastAnsweredAt: integer('last_answered_at'),
     earnedScore: integer('earned_score').notNull(),
+    penaltyScore: integer('penalty_score').notNull().default(0),
     maxScore: integer('max_score').notNull(),
     discriminationN: integer('discrimination_n').notNull(),
     discriminationSumX: real('discrimination_sum_x').notNull(),

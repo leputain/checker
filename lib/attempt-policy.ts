@@ -3,6 +3,10 @@ import {
   BALANCED_TEST_CONFIG_ID,
   BALANCED_TEST_PROFILE_ID,
   BALANCED_TEST_SELECTION_VERSION,
+  LEGACY_SCORING_VERSION,
+  LEGACY_SELECTION_VERSION,
+  LEGACY_V2_BALANCED_TEST_CONFIG_ID,
+  LEGACY_V2_TEST_CONFIG_ID,
   SCORING_VERSION,
   TEST_CONFIG,
   TEST_CONFIG_ID,
@@ -51,16 +55,19 @@ export function isUnsupportedActiveAttempt(attempt: {
 }) {
   if (attempt.status !== 'active') return false;
   const supportedProfile = (
-    attempt.selection_version === 1 && attempt.test_profile_id === TEST_PROFILE_ID
+    attempt.selection_version === LEGACY_SELECTION_VERSION && attempt.test_profile_id === TEST_PROFILE_ID
   ) || (
     attempt.selection_version === BALANCED_TEST_SELECTION_VERSION
     && attempt.test_profile_id === BALANCED_TEST_PROFILE_ID
   );
-  const expectedConfigId = attempt.selection_version === BALANCED_TEST_SELECTION_VERSION
-    ? BALANCED_TEST_CONFIG_ID
-    : TEST_CONFIG_ID;
+  const balanced = attempt.selection_version === BALANCED_TEST_SELECTION_VERSION;
+  const supportedScoring = attempt.scoring_version === SCORING_VERSION
+    || attempt.scoring_version === LEGACY_SCORING_VERSION;
+  const expectedConfigId = attempt.scoring_version === LEGACY_SCORING_VERSION
+    ? (balanced ? LEGACY_V2_BALANCED_TEST_CONFIG_ID : LEGACY_V2_TEST_CONFIG_ID)
+    : (balanced ? BALANCED_TEST_CONFIG_ID : TEST_CONFIG_ID);
   return attempt.base_max_score !== BASE_MAX_SCORE
-    || attempt.scoring_version !== SCORING_VERSION
+    || !supportedScoring
     || attempt.test_config_id !== expectedConfigId
     || !supportedProfile;
 }

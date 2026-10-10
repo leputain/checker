@@ -141,6 +141,13 @@
       "when": 1788264485728,
       "tag": "0019_mute_rhino",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1791621201898,
+      "tag": "0020_scoring_v3_penalties",
+      "breakpoints": true
     }
   ]
 }
