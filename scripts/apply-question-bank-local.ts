@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Miniflare } from 'miniflare';
+import { Miniflare } from './miniflare-runtime.ts';
 import { applyQuestionImport, previewQuestionImport } from '../lib/question-bank-workflow.ts';
 import { readLocalD1DatabaseId, resolveOpsContext, type OpsContextOptions } from './ops-context.ts';
 
@@ -26,7 +26,7 @@ export async function applyLocalQuestionImport(options: ApplyLocalQuestionImport
     modules: true,
     script: 'export default { fetch() { return new Response("ok") } }',
     d1Databases: { DB: databaseId },
-    d1Persist: path.join(context.persistPath, 'v3', 'd1'),
+    resourcePersistencePath: path.join(context.persistPath, 'v3'),
   });
   try {
     const db = await miniflare.getD1Database('DB');

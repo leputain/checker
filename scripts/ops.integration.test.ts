@@ -4,7 +4,7 @@ import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Miniflare } from 'miniflare';
+import { Miniflare } from './miniflare-runtime.ts';
 import { createBackup } from './ops-backup.ts';
 import { verifyBackup, assertLocalDatabaseIntegrity } from './ops-backup-verify.ts';
 import { executeLocalD1File, queryLocalD1, runWrangler } from './local-d1.ts';

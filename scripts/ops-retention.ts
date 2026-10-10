@@ -1,4 +1,4 @@
-import { Miniflare } from 'miniflare';
+import { Miniflare } from './miniflare-runtime.ts';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBackup, type BackupOptions } from './ops-backup.ts';
@@ -131,7 +131,7 @@ export async function runRetention(options: RetentionRunOptions = {}) {
       modules: true,
       script: 'export default { fetch() { return new Response("ok") } }',
       d1Databases: { DB: databaseId },
-      d1Persist: path.join(context.persistPath, 'v3', 'd1'),
+      resourcePersistencePath: path.join(context.persistPath, 'v3'),
     });
     try {
       const db = await miniflare.getD1Database('DB');

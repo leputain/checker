@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { Miniflare } from 'miniflare';
+import { Miniflare } from './miniflare-runtime.ts';
 import {
   applyRuntimeRetention,
   RUNTIME_RETENTION_MAX_AGE_MS,

@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { readFile } from 'node:fs/promises';
-import { Miniflare } from 'miniflare';
+import { Miniflare } from './miniflare-runtime.ts';
 import {
   ANALYTICS_FACTS_VERSION,
   SCORING_VERSION,

@@ -10,7 +10,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -18,5 +18,7 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
+      - name: Prepare synthetic CI question bank
+        run: node --experimental-strip-types scripts/prepare-ci-question-bank.ts
       - run: npx playwright install --with-deps webkit
       - run: npm run verify

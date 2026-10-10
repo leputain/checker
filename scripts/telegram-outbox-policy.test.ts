@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { Miniflare } from 'miniflare';
+import { Miniflare } from './miniflare-runtime.ts';
 import {
   OUTBOX_CLAIM_SQL,
   OUTBOX_MAINTENANCE_NEXT_ATTEMPT_SQL,

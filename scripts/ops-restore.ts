@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { access, mkdir, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Miniflare } from 'miniflare';
+import { Miniflare } from './miniflare-runtime.ts';
 import { createBackup } from './ops-backup.ts';
 import { assertLocalDatabaseIntegrity, verifyBackup } from './ops-backup-verify.ts';
 import { executeLocalD1File } from './local-d1.ts';
@@ -44,7 +44,7 @@ async function enforceRestoredPrivacy(
     modules: true,
     script: 'export default { fetch() { return new Response("ok") } }',
     d1Databases: { DB: databaseId },
-    d1Persist: path.join(statePath, 'v3', 'd1'),
+    resourcePersistencePath: path.join(statePath, 'v3'),
   });
   try {
     await applyRuntimeRetention(await miniflare.getD1Database('DB'), nowMs);

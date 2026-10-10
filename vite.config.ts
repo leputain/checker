@@ -11,6 +11,9 @@ const localStatePath = process.env.CANDIDATE_CHECK_STATE_PATH ?? '.wrangler/stat
 
 const localBindingConfig = {
   main: 'vinext/server/app-router-entry',
+  // Freeze the date used by the published runtime; an SDK upgrade must not
+  // silently enable new Workers behavior.
+  compatibility_date: '2026-05-15',
   compatibility_flags: ['nodejs_compat'],
   secrets: {
     required: [
@@ -66,6 +69,7 @@ export default defineConfig(async () => {
     plugins: [
       vinext(),
       cloudflare({
+        inspectorPort: false,
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },
         config: localBindingConfig,
         persistState: { path: localStatePath },

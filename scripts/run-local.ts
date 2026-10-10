@@ -1,7 +1,7 @@
-import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { MAINTENANCE_REQUEST_TIMEOUT_MS } from '../lib/analytics-refresh-policy.ts';
+import { readRuntimeMaintenancePolicy, spawnManagedRuntimeProcess } from '../lib/runtime-process-policy.ts';
 import { loadAdminRuntimeConfig } from './admin-config.ts';
 import { enforceBackupRetentionBestEffort } from './backup-retention.ts';
 import { registerRuntimeLock } from './runtime-lock.ts';
@@ -33,6 +33,13 @@ function cliPort(args: string[]) {
 
 const cliArguments = process.argv.slice(3);
 const port = cliPort(cliArguments);
+let maintenancePolicy: ReturnType<typeof readRuntimeMaintenancePolicy>;
+try {
+  maintenancePolicy = readRuntimeMaintenancePolicy(process.env);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : 'Некорректная конфигурация обслуживания.');
+  process.exit(2);
+}
 const workspaceRoot = path.resolve(process.cwd());
 const configuredStatePath = process.env.CANDIDATE_CHECK_STATE_PATH?.trim() || '.wrangler/state';
 const runtimeLock = await registerRuntimeLock({
@@ -45,12 +52,14 @@ const runtimeLock = await registerRuntimeLock({
 });
 process.once('exit', runtimeLock.releaseSync);
 
-const backupRetention = await enforceBackupRetentionBestEffort({
-  workspaceRoot,
-  apply: true,
-});
-if (backupRetention === null || backupRetention.skippedUnsafe > 0) {
-  console.warn('Не удалось полностью применить безопасную очистку локальных backup-артефактов.');
+if (maintenancePolicy.enabled) {
+  const backupRetention = await enforceBackupRetentionBestEffort({
+    workspaceRoot,
+    apply: true,
+  });
+  if (backupRetention === null || backupRetention.skippedUnsafe > 0) {
+    console.warn('Не удалось полностью применить безопасную очистку локальных backup-артефактов.');
+  }
 }
 
 const childEnvironment = { ...process.env };
@@ -99,7 +108,7 @@ const maintenanceUrl = `http://localhost:${port}${basePath}/api/internal/mainten
 const retryDelays = [2_000, 5_000, 15_000, 30_000, 50_000] as const;
 let maintenanceTimer: NodeJS.Timeout | null = null;
 let maintenanceRequest: AbortController | null = null;
-let maintenanceStopped = false;
+let maintenanceStopped = !maintenancePolicy.enabled;
 let maintenanceFailures = 0;
 
 function scheduleMaintenance(delay: number) {
@@ -151,23 +160,16 @@ const executable = command === 'preview'
 const executableArguments = command === 'preview'
   ? [executable, 'preview', ...cliArguments]
   : [executable, command, ...cliArguments];
-const child = spawn(process.execPath, executableArguments, {
+const runtimeProcess = spawnManagedRuntimeProcess(process.execPath, executableArguments, {
   env: childEnvironment,
   stdio: 'inherit',
-  shell: false,
+}, {
+  onStopping: stopMaintenance,
+  onStopError: () => console.error('Не удалось полностью остановить дочерние процессы runtime.'),
 });
 
-scheduleMaintenance(2_000);
-
-child.on('error', async () => {
-  stopMaintenance();
-  await runtimeLock.release().catch(() => undefined);
-  console.error('Не удалось запустить локальный сервер.');
-  process.exitCode = 1;
-});
-child.on('exit', async (code, signal) => {
-  stopMaintenance();
-  await runtimeLock.release().catch(() => undefined);
-  if (signal) process.kill(process.pid, signal);
-  else process.exitCode = code ?? 1;
-});
+scheduleMaintenance(maintenancePolicy.startDelayMs);
+const runtimeExit = await runtimeProcess.exited;
+await runtimeLock.release().catch(() => undefined);
+if (runtimeExit.failedToStart) console.error('Не удалось запустить локальный сервер.');
+process.exitCode = runtimeExit.code;

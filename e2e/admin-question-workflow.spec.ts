@@ -18,6 +18,7 @@ import type {
   QuestionCategoryMutationDto,
 } from '../lib/question-admin-contract.ts';
 import { GENERAL_TOPIC_PLAN } from '../lib/test-config.ts';
+import { MAX_CHANGE_SET_OPERATIONS } from '../lib/question-bank-workflow.ts';
 import { queryLocalD1, runWrangler } from '../scripts/local-d1.ts';
 
 const E2E_ADMIN_PIN_PATH = path.resolve('.data', 'e2e-admin-pin.txt');
@@ -459,46 +460,149 @@ test('rename required category сохраняет selection identity и frozen r
   test.skip(testInfo.project.name.includes('landscape'), 'API/D1 семантика не зависит от orientation.');
   test.setTimeout(120_000);
   const csrfToken = await login(page);
-  const categoriesBefore = await json<QuestionCategoryListDto>(
+  let categoriesBefore = await json<QuestionCategoryListDto>(
     await page.request.get('/api/admin/questions/categories'),
     200,
   );
-  const required = categoriesBefore.items.find((category) => category.selectionKey === 'Linux');
-  expect(required).toBeTruthy();
-  const other = categoriesBefore.items.find((category) => (
-    category.active && category.id !== required!.id
-  ));
-  expect(other).toBeTruthy();
-  const renamedName = `${required!.name} E2E ${randomUUID().slice(0, 8)}`;
-  const startKey = randomUUID();
-  const token = randomBytes(32).toString('base64url');
+  let required: QuestionCategoryListDto['items'][number] | undefined;
+  let renamedName = '';
+  let token = '';
   const newStartKey = randomUUID();
   const newToken = randomBytes(32).toString('base64url');
   let frozenAttemptId = '';
   let newAttemptId = '';
   let renamed = false;
+  const fixtureDedupeKeys: string[] = [];
 
   try {
-    const start = await page.request.post('/api/attempts', {
-      headers: startAttemptHeaders(startKey),
-      data: { name: `E2E rename frozen ${Date.now()}`, startKey, token },
-    });
-    expect(start.status()).toBe(201);
-    let payload = await start.json() as {
+    const canonical = (category: QuestionCategoryListDto['items'][number]) => (
+      category.active && Object.hasOwn(GENERAL_TOPIC_PLAN, category.selectionKey)
+    );
+    // Category rename plans one operation per current leaf, including inactive
+    // leaves. Use the service's real cap rather than only the active count.
+    const renamable = (category: QuestionCategoryListDto['items'][number]) => (
+      canonical(category)
+      && category.activeQuestionCount + category.inactiveQuestionCount <= MAX_CHANGE_SET_OPERATIONS
+    );
+    if (!categoriesBefore.items.some((category) => (
+      renamable(category) && (category.difficultyCounts.hard >= 2 || category.difficultyCounts.expert >= 2)
+    ))) {
+      // A small public/example bank may lack two hard/expert concepts in any
+      // required topic. Eight unique hard fixtures leave a reserve even if all
+      // seven base hard slots choose this topic; no production selector changes.
+      const fixtureCount = 8;
+      const fixtureCategory = categoriesBefore.items.find((category) => (
+        canonical(category) && category.activeQuestionCount + category.inactiveQuestionCount
+          <= MAX_CHANGE_SET_OPERATIONS - fixtureCount
+      ));
+      expect(fixtureCategory, 'Fixture requires a canonical category with room for eight hard reserves within the rename cap.').toBeTruthy();
+      let revision = categoriesBefore.currentBankRevision;
+      for (let index = 0; index < fixtureCount; index += 1) {
+        const draft = { ...questionDraft(fixtureCategory!.name, `required-reserve-${randomUUID()}-${index}`, revision),
+          difficulty: 'hard' };
+        const created = await json<QuestionAdminMutationDto>(await page.request.post('/api/admin/questions', {
+          headers: mutationHeaders(csrfToken), data: draft,
+        }), 201);
+        fixtureDedupeKeys.push(draft.dedupeKey);
+        revision = created.currentBankRevision;
+      }
+      categoriesBefore = await json<QuestionCategoryListDto>(
+        await page.request.get('/api/admin/questions/categories'), 200,
+      );
+    }
+    const eligibleCategories = categoriesBefore.items.filter(renamable);
+    expect(eligibleCategories.length, 'Fixture requires a renamable canonical category within the current-leaf operation cap.').toBeGreaterThan(0);
+    const eligibleCategoryIds = eligibleCategories.map((category) => category.id);
+    expect(eligibleCategoryIds.every((id) => Number.isSafeInteger(id) && id > 0)).toBe(true);
+    type FrozenPayload = {
       attemptId: string;
       question: { id: number; choices: string[] };
     };
-    frozenAttemptId = payload.attemptId;
-    const target = queryLocalD1<{ questionId: number; ordinal: number }>(`
-      SELECT ledger.question_id AS questionId, ledger.ordinal
+    type FrozenTarget = {
+      questionId: number;
+      ordinal: number;
+      categoryId: number;
+      selectionKey: string;
+    };
+    let selected: { payload: FrozenPayload; target: FrozenTarget; token: string } | undefined;
+    // Fixture filtering, not mutation retries: every API start must succeed and
+    // create the full quota plan. Rejected plans are checked and removed before
+    // generating another one. A missing suitable fixture is an explicit failure.
+    const maximumFixturePlans = 12;
+    for (let planNumber = 0; planNumber < maximumFixturePlans; planNumber += 1) {
+      const startKey = randomUUID();
+      const planToken = randomBytes(32).toString('base64url');
+      const start = await page.request.post('/api/attempts', {
+        headers: startAttemptHeaders(startKey),
+        data: { name: `E2E rename frozen ${Date.now()} ${planNumber}`, startKey, token: planToken },
+      });
+      expect(start.status()).toBe(201);
+      const candidate = await start.json() as FrozenPayload;
+      frozenAttemptId = candidate.attemptId;
+      expect(frozenAttemptId).toMatch(ATTEMPT_ID_PATTERN);
+      const quota = queryLocalD1<{ total: number; easy: number; medium: number; hard: number; expert: number }>(`
+        SELECT COUNT(*) AS total,
+          SUM(questions.difficulty = 'easy') AS easy, SUM(questions.difficulty = 'medium') AS medium,
+          SUM(questions.difficulty = 'hard') AS hard, SUM(questions.difficulty = 'expert') AS expert
+        FROM attempt_questions JOIN questions ON questions.id = attempt_questions.question_id
+        WHERE attempt_questions.attempt_id = '${frozenAttemptId}' AND question_kind = 'base'
+      `, E2E_STATE_PATH)[0];
+      expect(quota).toEqual({ total: 20, easy: 5, medium: 7, hard: 7, expert: 1 });
+      const target = queryLocalD1<FrozenTarget>(`
+      SELECT ledger.question_id AS questionId, ledger.ordinal,
+        category.id AS categoryId, category.selection_key AS selectionKey
       FROM attempt_questions AS ledger
+      JOIN attempts ON attempts.id = ledger.attempt_id
       JOIN questions ON questions.id = ledger.question_id
       JOIN question_categories AS category ON category.id = questions.category_id
       WHERE ledger.attempt_id = '${frozenAttemptId}'
-        AND ledger.question_kind = 'base' AND category.id = ${required!.id}
+        AND ledger.question_kind = 'base' AND questions.difficulty IN ('hard', 'expert')
+        AND category.active = 1 AND category.id IN (${eligibleCategoryIds.join(',')})
+        AND EXISTS (
+          SELECT 1 FROM questions AS reserve
+          JOIN question_bank_revision_items AS membership
+            ON membership.question_id = reserve.id
+              AND membership.revision_hash = attempts.bank_revision AND membership.active = 1
+          WHERE reserve.category_id = category.id AND reserve.topic = questions.topic
+            AND reserve.difficulty = questions.difficulty
+            AND NOT EXISTS (
+              SELECT 1 FROM attempt_questions AS assigned
+              JOIN questions AS planned ON planned.id = assigned.question_id
+              WHERE assigned.attempt_id = ledger.attempt_id
+                AND (planned.id = reserve.id OR
+                  COALESCE(NULLIF(planned.dedupe_key, ''), 'question:' || planned.id) =
+                  COALESCE(NULLIF(reserve.dedupe_key, ''), 'question:' || reserve.id))
+            )
+        )
       ORDER BY ledger.ordinal LIMIT 1
-    `, E2E_STATE_PATH)[0];
-    expect(target).toBeTruthy();
+      `, E2E_STATE_PATH)[0];
+      if (target) {
+        selected = { payload: candidate, target, token: planToken };
+        break;
+      }
+      cleanupAttempt(frozenAttemptId);
+      const remaining = queryLocalD1<{ attempts: number; ledger: number; outbox: number }>(`
+        SELECT (SELECT COUNT(*) FROM attempts WHERE id = '${frozenAttemptId}') AS attempts,
+          (SELECT COUNT(*) FROM attempt_questions WHERE attempt_id = '${frozenAttemptId}') AS ledger,
+          (SELECT COUNT(*) FROM telegram_outbox WHERE attempt_id = '${frozenAttemptId}') AS outbox
+      `, E2E_STATE_PATH)[0];
+      expect(remaining).toEqual({ attempts: 0, ledger: 0, outbox: 0 });
+      frozenAttemptId = '';
+    }
+    expect(selected, `Fixture filtering exhausted ${maximumFixturePlans} valid quota plans without a renamable required hard/expert topic and frozen reserve.`).toBeTruthy();
+    const target = selected!.target;
+    let payload = selected!.payload;
+    token = selected!.token;
+    required = categoriesBefore.items.find((category) => category.id === target.categoryId);
+    expect(required).toMatchObject({ active: true, selectionKey: target.selectionKey });
+    const requiredKey = required!.selectionKey as keyof typeof GENERAL_TOPIC_PLAN;
+    expect(Object.hasOwn(GENERAL_TOPIC_PLAN, requiredKey)).toBe(true);
+    const requiredTotal = GENERAL_TOPIC_PLAN[requiredKey];
+    const other = categoriesBefore.items.find((category) => (
+      category.active && category.id !== required!.id
+    ));
+    expect(other).toBeTruthy();
+    renamedName = `${required!.name} E2E ${randomUUID().slice(0, 8)}`;
 
     const renameBody = {
       name: renamedName,
@@ -618,7 +722,7 @@ test('rename required category сохраняет selection identity и frozen r
     );
     expect(coverage.ready).toBe(true);
     expect(coverage.categories.find((category) => category.categoryId === required!.id))
-      .toMatchObject({ name: renamedName, requiredTotal: GENERAL_TOPIC_PLAN.Linux, status: 'enough' });
+      .toMatchObject({ name: renamedName, requiredTotal, status: 'enough' });
 
     const newStart = await page.request.post('/api/attempts', {
       headers: startAttemptHeaders(newStartKey),
@@ -644,10 +748,10 @@ test('rename required category сохраняет selection identity и frozen r
         ON membership.revision_hash = state.current_revision AND membership.active = 1
       JOIN questions ON questions.id = membership.question_id
       JOIN question_categories AS category ON category.id = questions.category_id
-      WHERE state.id = 1 AND category.selection_key = 'Linux'
+      WHERE state.id = 1 AND category.selection_key = '${requiredKey.replaceAll("'", "''")}'
         AND category.name = '${renamedName.replaceAll("'", "''")}'
     `, E2E_STATE_PATH)[0];
-    expect(renamedCurrentMembers.count).toBeGreaterThanOrEqual(GENERAL_TOPIC_PLAN.Linux);
+    expect(renamedCurrentMembers.count).toBeGreaterThanOrEqual(requiredTotal);
   } finally {
     if (renamed) {
       const currentCategories = await json<QuestionCategoryListDto>(
@@ -668,6 +772,27 @@ test('rename required category сохраняет selection identity и frozen r
     }
     if (frozenAttemptId) cleanupAttempt(frozenAttemptId);
     if (newAttemptId) cleanupAttempt(newAttemptId);
+    if (fixtureDedupeKeys.length) {
+      const keysSql = fixtureDedupeKeys.map((key) => `'${key.replaceAll("'", "''")}'`).join(',');
+      const leaves = queryLocalD1<{ id: number }>(`
+        SELECT questions.id FROM questions
+        JOIN question_bank_state AS state ON state.id = 1
+        JOIN question_bank_revision_items AS membership
+          ON membership.revision_hash = state.current_revision AND membership.question_id = questions.id
+        WHERE questions.dedupe_key IN (${keysSql}) AND membership.active = 1
+          AND NOT EXISTS (SELECT 1 FROM question_version_links WHERE predecessor_question_id = questions.id)
+      `, E2E_STATE_PATH);
+      if (leaves.length) {
+        const current = await json<QuestionCategoryListDto>(await page.request.get('/api/admin/questions/categories'), 200);
+        await json<QuestionBankBatchMutationDto>(await page.request.post('/api/admin/questions/bulk', {
+          headers: mutationHeaders(csrfToken), data: {
+            questionIds: leaves.map((leaf) => leaf.id), patch: { active: false },
+            expectedBankRevision: current.currentBankRevision,
+            idempotencyKey: `required-reserve-cleanup-${randomUUID()}`, note: 'E2E archive synthetic reserves',
+          },
+        }), 200);
+      }
+    }
   }
 });
 

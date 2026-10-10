@@ -411,10 +411,12 @@ async function directQuestionItems(
       } : item;
     }).filter((item) => questionAnalyticsMatches({ ...query, q: null }, item, item.prompt)));
   }
-  const [aggregateResult, choiceResult] = await Promise.all([
-    bind(db, questionAggregateStatement(query)).all<RawQuestionAggregate>(),
-    bind(db, choiceAggregateStatement(query)).all<RawChoiceAggregate>(),
-  ]);
+  // Both reads describe one question set: a batch keeps their snapshot
+  // consistent and avoids overlapping prepared-statement RPCs in local runtime.
+  const [aggregateResult, choiceResult] = await db.batch([
+    bind(db, questionAggregateStatement(query)),
+    bind(db, choiceAggregateStatement(query)),
+  ]) as [D1Result<RawQuestionAggregate>, D1Result<RawChoiceAggregate>];
   return buildQuestionItemsFromAggregates(
     query,
     aggregateResult.results,

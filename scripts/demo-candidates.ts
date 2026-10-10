@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Miniflare } from 'miniflare';
+import { Miniflare } from './miniflare-runtime.ts';
 import { calculateCoverageScore } from '../lib/balanced-selection.ts';
 import { ANALYTICS_FACTS_INTEGRITY_QUERY } from '../lib/analytics-facts-integrity.ts';
 import { rebuildAnalyticsAggregates } from '../lib/analytics-aggregate-store.ts';
@@ -786,7 +786,7 @@ export async function runDemoCandidates(options: RunDemoCandidatesOptions = {}) 
       modules: true,
       script: 'export default { fetch() { return new Response("ok") } }',
       d1Databases: { DB: databaseId },
-      d1Persist: path.join(context.persistPath, 'v3', 'd1'),
+      resourcePersistencePath: path.join(context.persistPath, 'v3'),
     });
     try {
       const db = await miniflare.getD1Database('DB');
