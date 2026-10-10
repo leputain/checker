@@ -28,6 +28,9 @@ export default defineConfig({
     url: 'http://localhost:3101/api/health/ready',
     timeout: 120_000,
     reuseExistingServer: false,
+    // The runtime owns a detached POSIX child group. Let its SIGTERM handler
+    // stop that group before Playwright forcefully kills the web-server wrapper.
+    gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },
     env: {
       ...process.env,
       CANDIDATE_CHECK_STATE_PATH: '.wrangler/e2e',
