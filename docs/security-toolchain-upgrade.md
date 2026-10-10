@@ -1,6 +1,6 @@
 # Аудит и обновление Vinext и Cloudflare
 
-Обычный тест и ИБ-челлендж используют Vinext и Cloudflare runtime на DE VPS. Подготовлен выпуск **1.7.1** на согласованном актуальном Cloudflare bundle с Miniflare 5 alpha; scoring v2/v3 и managed schema 19 сохраняются. Два связанных read-only аналитических SQL теперь выполняются одним D1 batch, без изменения запросов и формул. Рабочий выпуск 1.7.0 остаётся активным до завершения приёмки и отдельного переключения; окончательные локальные проверки и production deployment пока не завершены.
+Обычный тест и ИБ-челлендж используют Vinext и Cloudflare runtime на DE VPS. Выпуск **1.7.1 опубликован 10.10.2026** на согласованном актуальном Cloudflare bundle с Miniflare 5 alpha; scoring v2/v3 и managed schema 19 сохранены. Два связанных read-only аналитических SQL выполняются одним D1 batch, без изменения запросов и формул. Финальные локальные, Linux CI, stage и production-проверки пройдены; все 29 application tables и sqlite_sequence сохранены при переносе и запуске под барьером записи.
 
 ## Исходное состояние
 
@@ -76,7 +76,7 @@ Matched Linux контроль старого May SDK на исходной ре
 
 ## Persistence и проверенный перенос данных
 
-Synthetic SDK 5 SQL transfer сохранил schema 19, активные/завершённые v2/v3, challenge/events/feedback, pending/sending outbox, банк, черновик и новые post-cutover изменения при повторном чтении fresh old SDK 4 и fresh new SDK 5. Проверяются fingerprints **29 application tables**: 21 business, 7 derived и 1 runtime; отдельно сохраняется `sqlite_sequence`, включая high water после удалений. Manifest хеширует typed values, NULL, PK и schema, не выводит строки, имена кандидатов, токены или payloads. Неизвестная таблица останавливает проверку. Финальная stage-проверка актуальной production clone выбранным SDK ещё обязательна.
+Synthetic SDK 5 SQL transfer сохранил schema 19, активные/завершённые v2/v3, challenge/events/feedback, pending/sending outbox, банк, черновик и новые post-cutover изменения при повторном чтении fresh old SDK 4 и fresh new SDK 5. Проверяются fingerprints **29 application tables**: 21 business, 7 derived и 1 runtime; отдельно сохраняется `sqlite_sequence`, включая high water после удалений. Manifest хеширует typed values, NULL, PK и schema, не выводит строки, имена кандидатов, токены или payloads. Неизвестная таблица останавливает проверку. Финальная Linux stage-проверка актуальной production clone выбранным SDK пройдена, включая обратный SQL-перенос в fresh старый SDK.
 
 Выпуск разворачивается в **fresh Miniflare 5 state через актуальный application SQL**, с проверкой всех 29 tables и sequence до включения записи/maintenance. Source state остаётся нетронутым. После переключения нельзя подставлять прежний snapshot поверх новых результатов, feedback, drafts или outbox.
 
@@ -136,9 +136,13 @@ python3 -B scripts/sqlite-business-manifest.py compare "$TARGET_DB" "$BEFORE_MAN
 
 Production cutover выполняется под временным Nginx admission `503`: новые публичные запросы не доходят до приложения. Первый запуск нового state — с `CANDIDATE_CHECK_MAINTENANCE_ENABLED=0`, чтобы сравнить 29 application tables/sequence и очередь без фоновых записей. После совпадения fingerprints остановить экземпляр и подтвердить отсутствие PID/FD writers; затем перезапустить с `CANDIDATE_CHECK_MAINTENANCE_ENABLED=1` и `CANDIDATE_CHECK_MAINTENANCE_START_DELAY_MS=60000`. Выполнить private smoke до открытия admission; через 60 секунд maintenance запускается автоматически.
 
+`systemctl reload nginx` может вернуться до переключения worker-поколений. После reload ограниченно ждать публичный `503` с `Cache-Control: no-store` и `Retry-After: 5` (deadline 10 секунд), закрывая probe responses. Если барьер не подтверждён, восстановить исходный snippet/marker и maintenance, не останавливать service и не начинать export/rename. После изменения конфигурации выполнять `nginx -t`; один немедленный HTTP probe не доказывает применение reload.
+
 Допустимый start delay — целое `1..120000`, default `2000`; enabled принимает `0|1`, default `1`. Grace не отключает startup backup retention и не останавливает foreground API-записи, поэтому сама по себе не заменяет admission barrier. На каждом переключении проверить service/process journal; при провале этапа выполняется компенсация, а состояние не объявляется принятым по одному health 200.
 
 Node wrapper передаёт SIGTERM/SIGINT в собственную POSIX process group, завершает оставшихся descendants и освобождает lock после остановки runtime. На Windows stop path использует `taskkill /T /F` для собственного child tree; POSIX delivery не эмулируется. `scripts/runtime-process.test.ts` проверяет реальный synthetic child/grandchild, отключённый maintenance/retention, grace и освобождение lock. На production дополнительно сохраняется systemd `KillMode=control-group`.
+
+Playwright останавливает wrapper через `gracefulShutdown: { signal: 'SIGTERM', timeout: 10000 }`, чтобы его handler успел завершить detached child group. Default SIGKILL оставлял detached runtime и открытые stdout pipes: исходный CI дошёл до 74-го E2E-сценария, но не выдал summary и исчерпал общий timeout. Изолированный Linux probe воспроизвёл зависание после успешного synthetic test; SIGTERM завершил тот же запуск за 1,85 с без orphan. Это исправление teardown; успешность всего E2E подтверждается только итоговым summary. [Playwright webServer](https://playwright.dev/docs/test-webserver).
 
 ## План внедрения
 
@@ -171,7 +175,15 @@ Node wrapper передаёт SIGTERM/SIGINT в собственную POSIX pro
 
 Откат возвращает старый toolchain с **актуальными** данными через fresh SQL transfer. Старый snapshot нельзя восстанавливать поверх post-cutover ответов, feedback, очереди или публикаций банка. Прямой code-only rollback с SDK 5 или July SDK 4 к May 4.20260515.0 уже проверенно несовместим: остановить writers, экспортировать актуальный application SQL и создать свежий old-toolchain state по процедуре выше. Дата Workers, модель оценки и schema 19 остаются прежними, но vendor state формат изменён.
 
+Аварийный возврат 1.7.0 также возвращает его известные dependency findings. Такой выпуск восстанавливает прежний рабочий контур, но не является долгосрочным исправлением безопасности: после инцидента нужен исправленный forward release. Успешный SQL rollback не означает, что старый toolchain очищен от уязвимостей.
+
 Готовность означает: нет runtime GHSA в исправляемых цепочках; остаточные findings перечислены; локальный/CI gate проходит; все business facts/outbox/sequence сохранены; inspector отключён; forward SDK 5 и SQL → fresh old reader доказаны на финальном stage. Linux overview 549,4 мс на 10k capacity fixture фиксируется отдельным P2 с сохранением SLA 500 и исходного baseline 735,7; это не маркируется full performance PASS. Любой новый провал сохранности, transport completion или совместимости оставляет production на предыдущем выпуске.
+
+## Следующие работы
+
+- **До 10.11.2026:** пересмотреть maintainer fix для `braces` и содержащие его Vinext/ESLint цепочки; применить проверенное исправление либо безопасно убрать цепочку. Автоматически продлевать исключение или снижать severity threshold нельзя.
+- **P2 — ёмкость VPS:** довести overview p95 до 500 мс на той же fixture 10k/300k, с matched baseline, EXPLAIN и analytics golden checks. Порог сохраняется; текущие 549,4 мс не считаются завершением этой работы.
+- **P1 — управляемость и скорость CI:** измерить subprocess/cold-start время ops. Одна проверка запускает миграции 49 раз и выполняет сотни отдельных CLI-команд. Рассмотреть группировку независимых read-only запросов и ограниченные child deadlines с завершением собственного process tree. В persistence `runPhase` сначала отклонять `result.error`, сигнал и `status=null`, затем проверять ожидаемый `ERR_RUNTIME_FAILURE`; timeout не должен засчитываться как ожидаемая несовместимость. Сценарии backup/restore, negative checks и assertions сохранить. Изменения качества/скорости CI выполнять отдельно от принятого dependency bundle.
 
 ## Итог выполнения
 
@@ -179,6 +191,14 @@ Node wrapper передаёт SIGTERM/SIGINT в собственную POSIX pro
 
 На финальном Linux stage: fresh install/build/artifact scan, process cleanup, 12 assets, SSR, live/ready и debug 404 подтверждены. Все 29 таблиц приложения и sqlite_sequence после переноса, запуска и обратного SQL-переноса идентичны; старый SDK читает fresh rollback state. Сохранены 9 обычных результатов, 1 ИБ-результат и 336 outbox rows. Девять синтетических fault-сценариев switch/rollback подтвердили компенсацию каждого rename и сохранение post-cutover данных.
 
-Matched Linux transport завершает все 11 измерений, 10 ниже 500 мс, overview 549,4 мс против существовавших 735,7 baseline. Это открытый P2 capacity risk, без снижения SLA. Приватный банк не передаётся в CI: workflow теперь создаёт 160 синтетических вопросов с каноническими темами и ИБ-пулом, exclusive-create допускается только в GitHub Actions. Это исправляет прежний CI mismatch с неполным example-bank; timeout общего verify увеличен до 30 минут.
+Matched Linux transport завершает все 11 измерений, 10 ниже 500 мс, overview 549,4 мс против существовавших 735,7 baseline. Это открытый P2 capacity risk, без снижения SLA. Приватный банк не передаётся в CI: workflow теперь создаёт 160 синтетических вопросов с каноническими темами и ИБ-пулом, exclusive-create допускается только в GitHub Actions. Это исправляет прежний CI mismatch с неполным example-bank. Внешний timeout общего verify — 45 минут: фактические проверки Linux занимают около 26 минут, оставлен запас на runner/network. Скрипты, assertions и индивидуальные лимиты проверок не ослаблены.
 
-Удалённый CI и production переключение пока не завершены. Deployment manifest и актуальные counts добавляются после приёмки; production success здесь не заявляется.
+Полный [Linux CI](https://github.com/leputain/checker/actions/runs/38049129382) для runtime commit `1a5bb6c521868365629878b31cabc87ce96740bd` завершён успешно: verify **24 мин 45 с**, весь job **25 мин 55 с**; WebKit **51 passed / 23 skipped**, 11,9 минуты. Проверки ops, persistence, benchmark, audit, TypeScript, lint, build и secrets пройдены. CI gated benchmark: 10k attempts / 300k answers / 300k ledger, **11/11 PASS**, максимальный p95 **380 мс**, лимит **500 мс**. Ungated raw-fact измерения не смешиваются с SLA persisted/derived reads. Private question bank в CI не передавался.
+
+Production 1.7.1 принят 10.10.2026. Пауза service — **9,27 с**; это время остановки/двух запусков, а не отдельное измерение полного окна public 503. Первое ожидание admission было безопасно прервано до stop/export/rename; bounded probe после Nginx reload подтвердил `503`, no-store и Retry-After для повторного переключения. Все 29 application tables и sqlite_sequence совпали после импорта и при обоих startup за закрытым admission. Frozen state: schema 19; **9 обычных completed, 1 ИБ completed**, active 0; **317 sent / 19 dead outbox**, pending/sending 0; integrity OK, foreign-key violations 0. Оценки и ответы не пересчитаны.
+
+Публичная приёмка: admin PIN-auth, ordinary history по когортам **2 + 7**, ИБ-history **1**, live/ready/challenge HTTP 200 и **17 текущих/прежних JS/CSS resources** HTTP 200. Debug middleware вернул 404, inspector listener 9229 отсутствует. Smoke не создавал production попытки и не отправлял Telegram-сообщения. После открытия admission новые операции допускаются; post-check сверяет schema/integrity и HTTP counters между read-only DB snapshots, вместо ложного требования неизменного whole-table SHA при работающем приложении. Строгое совпадение данных доказано внутри fenced cutover.
+
+После истечения maintenance grace: service active/running, automatic restarts **0**, maintenance enabled, live/ready 200, schema 19, completed **9 + 1**, quick-check OK/FK violations 0; новых runtime/maintenance error markers в journal нет. Это подтверждает здоровое состояние после grace, без заявления о каждом отдельном background job.
+
+После dry-run и проверки отсутствия живых cwd/FD удалены **30 временных объектов**: stage/rollback-proof клоны, старый raw state и защищённые SQL/process logs этого обновления. Canonical APP/STATE не затронуты; сохранены предыдущий код 1.7.0, runtime source SHA, cutover/public/post-grace manifests и latest-SQL rollback helpers. Старый snapshot не используется для отката. Raw production данные в репозиторий, CI или отчёт не переносились.
